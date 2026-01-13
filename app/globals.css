@@ -1,6 +1,10 @@
 @import "tailwindcss";
 
 :root {
+  --brand: 15 23 42; /* navy-ish */
+}
+
+:root {
   --background: #ffffff;
   --foreground: #171717;
 }
