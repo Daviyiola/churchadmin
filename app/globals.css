@@ -1,30 +1,39 @@
 @import "tailwindcss";
 
 :root {
-  --brand: 15 23 42; /* navy-ish */
-}
+  /* Brand (tenant customizable) */
+  --color-primary: 47 94 133;        /* #5A7FA3 */
+  --color-primary-hover: 0 26 77;  /* #001A4D */
+  --color-accent: 14 165 233;      /* optional */
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Semantic */
+  --color-success: 22 163 74;
+  --color-warning: 245 158 11;
+  --color-danger: 220 38 38;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-primary: rgb(var(--color-primary));
+  --color-primary-hover: rgb(var(--color-primary-hover));
+  --color-accent: rgb(var(--color-accent));
+
+  --color-success: rgb(var(--color-success));
+  --color-warning: rgb(var(--color-warning));
+  --color-danger: rgb(var(--color-danger));
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+body {
+  font-family: var(--font-geist-sans, Arial, Helvetica, sans-serif);
+}
+@media print {
+  @page {
+    margin-top: 8mm;
+    margin-left: 12mm;
+    margin-right: 12mm;
+    margin-bottom: 12mm;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
-}

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import BrandLogo from "@/components/BrandLogo";
 
 export default function HomePage() {
   return (
@@ -7,27 +8,28 @@ export default function HomePage() {
       <header className="sticky top-0 z-10 border-b bg-white/80 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-2xl bg-slate-900" />
+            <BrandLogo size={45} className="" />
             <div>
-              <div className="text-sm font-semibold leading-tight">Church Admin</div>
-              <div className="text-xs text-slate-500">Church operations, simplified</div>
+              <div className="text-lg font-semibold leading-tight">Church Admin</div>
+              <div className="text-sm text-slate-500">Church Operations Simplified</div>
             </div>
           </div>
 
           <nav className="flex items-center gap-3">
-            <Link className="text-sm text-slate-600 hover:text-slate-900" href="#features">
+            {/* <Link className="text-sm text-slate-600 hover:text-slate-900" href="#features">
               Features
             </Link>
             <Link className="text-sm text-slate-600 hover:text-slate-900" href="#workflows">
               Workflows
-            </Link>
+            </Link> */}
+            {/* <Link href="/signin" className="text-sm text-slate-600 hover:text-slate-900">Sign in</Link> */}
             <Link
               className="rounded-2xl border px-4 py-2 text-sm font-medium hover:bg-slate-50"
               href="/app"
             >
-              Open Demo
+              Contact Us
             </Link>
-            <Link href="/signin" className="...">Sign in</Link>
+            
           </nav>
         </div>
       </header>
@@ -36,10 +38,10 @@ export default function HomePage() {
       <section className="mx-auto max-w-6xl px-6 pt-16 pb-10">
         <div className="grid gap-10 lg:grid-cols-2 lg:items-center">
           <div>
-            <div className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs text-slate-600">
-              <span className="h-2 w-2 rounded-full bg-slate-900" />
+            {/* <div className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs text-slate-600">
+              <span className="h-2 w-2 rounded-full bg-primary" />
               Draft → Publish workflow (coming soon)
-            </div>
+            </div> */}
 
             <h1 className="mt-5 text-4xl font-semibold tracking-tight sm:text-5xl">
               A modern admin dashboard for churches.
@@ -53,9 +55,9 @@ export default function HomePage() {
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Link
                 href="/app"
-                className="inline-flex items-center justify-center rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800"
+                className="inline-flex items-center justify-center rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800"
               >
-                Try the demo
+                Sign into your Organization
               </Link>
               <a
                 href="#features"
@@ -111,7 +113,7 @@ export default function HomePage() {
               </div>
 
               <div className="mt-4 flex gap-2">
-                <div className="flex-1 rounded-2xl bg-slate-900 px-4 py-2 text-center text-sm font-semibold text-white">
+                <div className="flex-1 rounded-2xl bg-primary px-4 py-2 text-center text-sm font-semibold text-white">
                   New Entry
                 </div>
                 <div className="flex-1 rounded-2xl border px-4 py-2 text-center text-sm font-semibold">
@@ -120,9 +122,9 @@ export default function HomePage() {
               </div>
             </div>
 
-            <div className="mt-3 text-center text-xs text-slate-500">
+            {/* <div className="mt-3 text-center text-xs text-slate-500">
               Real app UI will look like this demo style.
-            </div>
+            </div> */}
           </div>
         </div>
       </section>
@@ -152,7 +154,7 @@ export default function HomePage() {
       </section>
 
       {/* Workflows */}
-      <section id="workflows" className="mx-auto max-w-6xl px-6 pb-16">
+      {/* <section id="workflows" className="mx-auto max-w-6xl px-6 pb-16">
         <div className="rounded-3xl border bg-slate-50 p-6">
           <h3 className="text-lg font-semibold">Try the demo flow</h3>
           <p className="mt-2 text-sm text-slate-600">
@@ -161,13 +163,13 @@ export default function HomePage() {
           <div className="mt-5">
             <Link
               href="/app"
-              className="inline-flex items-center justify-center rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800"
+              className="inline-flex items-center justify-center rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800"
             >
               Open Demo
             </Link>
           </div>
         </div>
-      </section>
+      </section> */}
 
       {/* Footer */}
       <footer className="border-t">

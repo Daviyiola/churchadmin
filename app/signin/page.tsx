@@ -1,43 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+// import { supabase } from "@/lib/supabaseClient";
+import { useRouter } from "next/navigation";
+import { signInWithOrg } from "@/lib/auth";
+import BrandLogo from "@/components/BrandLogo";
 
-function CoolModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  if (!open) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
-      <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-xl">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="text-lg font-semibold">Sign in</div>
-            <div className="mt-1 text-sm text-slate-600">Cool, this works! ✅</div>
-          </div>
-          <button
-            onClick={onClose}
-            className="rounded-2xl border px-3 py-1 text-sm hover:bg-slate-50"
-          >
-            Close
-          </button>
-        </div>
-
-        <div className="mt-5 rounded-2xl border bg-slate-50 p-4 text-sm text-slate-700">
-          Next step: connect this flow to Supabase Auth + tenant lookup.
-        </div>
-
-        <div className="mt-6 flex justify-end">
-          <button
-            onClick={onClose}
-            className="rounded-2xl bg-[rgb(var(--brand))] px-4 py-2 text-sm font-semibold text-white hover:opacity-95"
-          >
-            Nice
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+type Org = { id: string; name: string; slug: string };
+//const [selectedOrgId, setSelectedOrgId] = useState<string>("");
 
 export default function SignInPage() {
   const [open, setOpen] = useState(false);
@@ -45,56 +16,108 @@ export default function SignInPage() {
   // Stepper
   const [step, setStep] = useState<1 | 2>(1);
 
-  // Org chooser (UI-only)
+  // Org chooser
   const [orgQuery, setOrgQuery] = useState("");
   const [orgName, setOrgName] = useState("");
 
-  // Mock org results (later from Supabase)
-  const orgResults = useMemo(() => {
-    const all = ["GOFAMINT Glory House", "ETSU Campus Fellowship", "New Life Assembly", "City of Faith"];
-    const q = orgQuery.trim().toLowerCase();
-    if (!q) return all.slice(0, 4);
-    return all.filter((x) => x.toLowerCase().includes(q)).slice(0, 6);
-  }, [orgQuery]);
+  // Supabase orgs
+  const [orgs, setOrgs] = useState<Org[]>([]);
+  const [loadingOrgs, setLoadingOrgs] = useState(true);
+  const [orgLoadError, setOrgLoadError] = useState<string>("");
 
-  const canContinue = orgName.trim().length > 1;
+  //email and password states
+  const router = useRouter();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
+
+  const [selectedOrgId, setSelectedOrgId] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadOrgs() {
+      setLoadingOrgs(true);
+      setOrgLoadError("");
+
+      const res = await fetch("/api/org/public-list");
+      const json = await res.json();
+
+      if (!alive) return;
+
+      if (!res.ok) {
+        setOrgLoadError(json.error || "Failed to load organizations.");
+        setOrgs([]);
+      } else {
+        setOrgs((json.orgs ?? []) as Org[]);
+      }
+
+      setLoadingOrgs(false);
+    }
+
+    loadOrgs();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const orgResults = useMemo(() => {
+    const q = orgQuery.trim().toLowerCase();
+    if (!q) return orgs.slice(0, 10);
+    return orgs.filter((x) => x.name.toLowerCase().includes(q)).slice(0, 10);
+  }, [orgQuery, orgs]);
+
+  // existing orgs only
+  const canContinue = selectedOrgId.length > 0;
 
   return (
     <main className="min-h-screen bg-white text-slate-900">
       <header className="border-b">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <Link href="/" className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-2xl bg-[rgb(var(--brand))]" />
+            <BrandLogo size={45} className="" />
             <div>
-              <div className="text-sm font-semibold leading-tight">churchadmin</div>
-              <div className="text-xs text-slate-500">Sign in</div>
+              <div className="text-lg font-semibold leading-tight">Church Admin</div>
+              <div className="text-sm text-slate-500">Church Operations Simplified</div>
             </div>
           </Link>
 
           <Link
-            href="/app"
+            href="/"
             className="rounded-2xl border px-4 py-2 text-sm font-medium hover:bg-slate-50"
           >
-            Open Demo
+            Landing Page
           </Link>
         </div>
       </header>
 
       <section className="mx-auto max-w-md px-6 pt-14">
         <div className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs text-slate-600">
-          <span className={`h-2 w-2 rounded-full ${step === 1 ? "bg-[rgb(var(--brand))]" : "bg-slate-300"}`} />
+          <span
+            className={`h-2 w-2 rounded-full ${
+              step === 1 ? "bg-primary" : "bg-slate-300"
+            }`}
+          />
           Organization
           <span className="mx-1 text-slate-400">→</span>
-          <span className={`h-2 w-2 rounded-full ${step === 2 ? "bg-[rgb(var(--brand))]" : "bg-slate-300"}`} />
+          <span
+            className={`h-2 w-2 rounded-full ${
+              step === 2 ? "bg-primary" : "bg-slate-300"
+            }`}
+          />
           Sign in
         </div>
 
         <h1 className="mt-5 text-3xl font-semibold tracking-tight">
           {step === 1 ? "Choose your organization" : "Welcome back"}
         </h1>
+
         <p className="mt-2 text-slate-600">
           {step === 1
-            ? "Start typing your church name. Later this will route you to churchname.app.com."
+            ? "Select your church from the list. New churches will be onboarded later."
             : `Signing in to: ${orgName || "—"}`}
         </p>
 
@@ -113,39 +136,45 @@ export default function SignInPage() {
                 <div className="px-4 py-2 text-xs font-semibold text-slate-500">
                   Suggestions
                 </div>
+
                 <div className="max-h-56 overflow-auto">
-                  {orgResults.map((org) => (
-                    <button
-                      key={org}
-                      onClick={() => {
-                        setOrgName(org);
-                        setOrgQuery(org);
-                      }}
-                      className={`w-full px-4 py-3 text-left text-sm hover:bg-slate-50 ${
-                        orgName === org ? "bg-slate-50" : ""
-                      }`}
-                    >
-                      {org}
-                    </button>
-                  ))}
-                  {orgResults.length === 0 ? (
+                  {loadingOrgs ? (
                     <div className="px-4 py-3 text-sm text-slate-600">
-                      No matches. You can still continue with “{orgQuery || "your org"}”.
+                      Loading organizations…
                     </div>
-                  ) : null}
+                  ) : orgLoadError ? (
+                    <div className="px-4 py-3 text-sm text-red-600">
+                      Failed to load organizations: {orgLoadError}
+                    </div>
+                  ) : orgResults.length > 0 ? (
+                    orgResults.map((org) => (
+                      <button
+                        key={org.id}
+                        onClick={() => {
+                          setSelectedOrgId(org.id);
+                        setOrgName(org.name);
+                            setOrgQuery(org.name);
+                        }}
+                        className={`w-full px-4 py-3 text-left text-sm hover:bg-slate-50 ${
+                          orgName === org.name ? "bg-slate-50" : ""
+                        }`}
+                      >
+                        {org.name}
+                      </button>
+                    ))
+                  ) : (
+                    <div className="px-4 py-3 text-sm text-slate-600">
+                      No matches. Please contact your administrator to be added.
+                    </div>
+                  )}
                 </div>
               </div>
 
               <div className="mt-5 flex items-center justify-between gap-3">
                 <button
-                  onClick={() => {
-                    // if user typed something not selected, accept it
-                    const typed = orgQuery.trim();
-                    if (!orgName && typed) setOrgName(typed);
-                    setStep(2);
-                  }}
-                  disabled={!canContinue && orgQuery.trim().length < 2}
-                  className="w-full rounded-2xl bg-[rgb(var(--brand))] px-4 py-3 text-sm font-semibold text-white hover:opacity-95 disabled:opacity-50"
+                  onClick={() => setStep(2)}
+                  disabled={!canContinue}
+                  className="w-full rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-white hover:opacity-95 disabled:opacity-50"
                 >
                   Continue
                 </button>
@@ -172,23 +201,46 @@ export default function SignInPage() {
 
               <label className="block text-sm font-medium">Email</label>
               <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 placeholder="you@example.com"
-              />
+                />
 
               <label className="mt-4 block text-sm font-medium">Password</label>
-              <input
+                <input
                 type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 placeholder="••••••••"
-              />
+                />
 
               <button
-                onClick={() => setOpen(true)}
-                className="mt-6 w-full rounded-2xl bg-[rgb(var(--brand))] px-4 py-3 text-sm font-semibold text-white hover:opacity-95"
-              >
-                Sign in
-              </button>
+                onClick={async () => {
+                    setAuthError("");
+                    setAuthLoading(true);
+
+                    const res = await signInWithOrg(email.trim(), password, selectedOrgId);
+
+                    setAuthLoading(false);
+
+                    if (!res.ok) {
+                    setAuthError(res.message);
+                    return;
+                    }
+
+                    router.push("/app");
+                }}
+                disabled={authLoading || !email.trim() || !password || !selectedOrgId}
+                className="mt-6 w-full rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-white hover:opacity-95 disabled:opacity-50"
+                >
+                {authLoading ? "Signing in..." : "Sign in"}
+                </button>
+
+              {authError ? (
+                <div className="mt-3 text-sm text-red-600">{authError}</div>
+                ) : null}
 
               <div className="mt-4 text-center text-xs text-slate-500">
                 Forgot password and SSO come later.
@@ -198,7 +250,6 @@ export default function SignInPage() {
         </div>
       </section>
 
-      <CoolModal open={open} onClose={() => setOpen(false)} />
     </main>
   );
 }

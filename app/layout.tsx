@@ -14,7 +14,10 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Church Admin",
-  description: "Modern church administration dashboard"
+  description: "Church operations Simplified",
+  icons: {
+    icon: "/brand/logo.svg",
+  },
 };
 
 export default function RootLayout({
