@@ -1,0 +1,248 @@
+import { NextResponse } from "next/server";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { chromium } from "playwright";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+type Role = "owner" | "admin" | "finance" | "member";
+
+function asRole(raw: unknown): Role {
+  const v = String(raw);
+  if (v === "owner" || v === "admin" || v === "finance" || v === "member") return v;
+  return "member";
+}
+
+type Mode = "income" | "expense" | "attendance";
+
+type PaymentMethod = "cash" | "cheque" | "online";
+
+type AttendanceView = "summary" | "detailed";
+
+type QuickReportRequest = {
+  organization_id: string;
+  mode: Mode;
+  start_date: string; // yyyy-mm-dd
+  end_date: string;   // yyyy-mm-dd
+
+  // categories table ids
+  service_ids?: string[];   // categories.type='services'
+  category_ids?: string[];  // income or expense depending on mode
+
+  payment_methods?: PaymentMethod[];
+
+  // expense
+  vendors?: string[];
+
+  // attendance
+  segments?: ("men" | "women" | "boys" | "girls")[];
+  age_groups?: string[]; // whatever you store
+  attendance_view?: AttendanceView;
+};
+
+type BuildReportArgs = {
+  supabaseAdmin: SupabaseClient;
+  organizationId: string;
+  mode: Mode;
+  body: QuickReportRequest;
+};
+
+export async function GET() {
+  return NextResponse.json(
+    { error: "PDF endpoint not implemented yet" },
+    { status: 501 }
+  );
+}
+
+export async function POST(req: Request) {
+  try {
+    const body = (await req.json()) as QuickReportRequest;
+    const { organization_id, mode } = body;
+
+    if (!organization_id || !mode) {
+      return NextResponse.json({ error: "organization_id and mode are required" }, { status: 400 });
+    }
+
+    // --- Auth (your pattern) ---
+    const authHeader = req.headers.get("authorization") || "";
+    const accessToken = authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : null;
+    if (!accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const { data: userRes, error: userErr } = await supabaseAdmin.auth.getUser(accessToken);
+    if (userErr || !userRes?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const userId = userRes.user.id;
+
+    const { data: membership, error: memErr } = await supabaseAdmin
+      .from("user_organizations")
+      .select("role")
+      .eq("organization_id", organization_id)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (memErr) return NextResponse.json({ error: memErr.message }, { status: 400 });
+    if (!membership) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+    const role = asRole(membership.role);
+    const canExport = role === "owner" || role === "admin" || role === "finance";
+    if (!canExport) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+    // --- Fetch org settings for header/subheader + logo path ---
+    const { data: orgSettings } = await supabaseAdmin
+      .from("organization_settings")
+      .select("report_header_text,report_subheader_text,report_banner_bg_rgb,report_banner_text_rgb")
+      .eq("organization_id", organization_id)
+      .maybeSingle();
+
+    // --- Resolve logo (signed url recommended) ---
+    const logoPath = `org/${organization_id}/logo.png`; // adjust if you store extension dynamically
+    const { data: signed } = await supabaseAdmin.storage
+      .from("org-logos")
+      .createSignedUrl(logoPath, 60);
+
+    const logoUrl = signed?.signedUrl ?? null;
+
+    // --- Query data depending on mode ---
+    // NOTE: implement these 3 functions as pure helpers that return {title, filtersLine, tableHtml}
+    const report = await buildReportHtml({
+      supabaseAdmin,
+      organizationId: organization_id,
+      mode,
+      body,
+    });
+
+    const generatedAt = new Date();
+    const generatedText = generatedAt.toISOString().slice(0, 16).replace("T", " ");
+
+    const html = renderFullHtml({
+      orgHeader: orgSettings?.report_header_text ?? "",
+      orgSubheader: orgSettings?.report_subheader_text ?? "",
+      logoUrl,
+      bannerBg: orgSettings?.report_banner_bg_rgb ?? "15 23 42",
+      bannerText: orgSettings?.report_banner_text_rgb ?? "255 255 255",
+      timePeriod: `${body.start_date} to ${body.end_date}`,
+      filtersLine: report.filtersLine,
+      contentHtml: report.contentHtml,
+    });
+
+    // --- Playwright PDF ---
+    const browser = await chromium.launch();
+    const page = await browser.newPage();
+
+    await page.setContent(html, { waitUntil: "networkidle" });
+
+    const pdf = await page.pdf({
+      format: "Letter",
+      landscape: true,
+      printBackground: true,
+      displayHeaderFooter: true,
+      margin: { top: "18mm", right: "10mm", bottom: "18mm", left: "10mm" },
+      footerTemplate: `
+        <div style="width:100%; font-size:10px; padding:0 10mm; display:flex; justify-content:space-between;">
+          <div>Generated: ${generatedText}</div>
+          <div>Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>
+        </div>
+      `,
+      headerTemplate: `<div></div>`,
+    });
+
+    await page.close();
+    await browser.close();
+
+    const pdfBytes = new Uint8Array(pdf);
+
+    return new NextResponse(pdfBytes, {
+    status: 200,
+    headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `inline; filename="quick-report-${mode}.pdf"`,
+    },
+    });
+  } catch (e: unknown) {
+  const message = e instanceof Error ? e.message : "Unknown error";
+  return NextResponse.json({ error: message }, { status: 500 });
+}
+}
+
+// You’ll implement these:
+async function buildReportHtml({ mode, body }: BuildReportArgs) {
+  return {
+    filtersLine: `Mode: ${mode}, Period: ${body.start_date} to ${body.end_date}`,
+    contentHtml: "<div>TODO</div>",
+  };
+}
+
+function renderFullHtml(args: {
+  orgHeader: string;
+  orgSubheader: string;
+  logoUrl: string | null;
+  bannerBg: string;      // "r g b"
+  bannerText: string;    // "r g b"
+  timePeriod: string;
+  filtersLine: string;
+  contentHtml: string;
+}) {
+  const { orgHeader, orgSubheader, logoUrl, bannerBg, bannerText, timePeriod, filtersLine, contentHtml } = args;
+
+  const logoImg = logoUrl
+    ? `<img src="${logoUrl}" style="width:56px;height:56px;object-fit:contain;border-radius:12px;" />`
+    : `<div style="width:56px;height:56px;"></div>`;
+
+  const filtersHtml = filtersLine
+    ? `<div style="margin-top:6px;font-size:11px;color:#334155;">${escapeHtml(filtersLine)}</div>`
+    : "";
+
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 0; color: #0f172a; }
+  .page { padding: 10mm; }
+  .banner { padding: 14px 16px; border-radius: 18px; background: rgb(${bannerBg}); color: rgb(${bannerText}); }
+  .bannerGrid { display: grid; grid-template-columns: 72px 1fr 72px; align-items: center; }
+  .title { font-size: 26px; font-weight: 800; text-align: center; line-height: 1.1; }
+  .subtitle { font-size: 18px; font-weight: 700; text-align: center; opacity: .95; margin-top: 4px; }
+  .meta { margin-top: 10px; font-size: 12px; color: #334155; }
+  .meta strong { color: #0f172a; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 11px; }
+  th { background: #e2e8f0; text-align: left; font-weight: 700; }
+  .right { text-align: right; }
+  .center { text-align: center; }
+  .totals { background: #f1f5f9; font-weight: 800; }
+  .section { margin-top: 14px; }
+  .sectionTitle { font-size: 13px; font-weight: 800; margin: 12px 0 6px; }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div class="banner">
+      <div class="bannerGrid">
+        <div>${logoImg}</div>
+        <div>
+          <div class="title">${escapeHtml(orgHeader || "")}</div>
+          <div class="subtitle">${escapeHtml(orgSubheader || "")}</div>
+        </div>
+        <div style="width:72px;"></div>
+      </div>
+    </div>
+
+    <div class="meta">
+      <div><strong>Time Period:</strong> ${escapeHtml(timePeriod)}</div>
+      ${filtersHtml}
+    </div>
+
+    ${contentHtml}
+  </div>
+</body>
+</html>`;
+}
+
+function escapeHtml(s: string) {
+  return s
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
