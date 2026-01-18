@@ -66,7 +66,6 @@ function fmtDate(isoOrDate: string) {
   return dt.toLocaleDateString();
 }
 
-
 function formatMoney(cents: number) {
   const sign = cents < 0 ? "-" : "";
   const abs = Math.abs(cents);
@@ -112,10 +111,14 @@ function Toast({ show, text }: { show: boolean; text: string }) {
   return (
     <div
       className={`fixed right-6 top-6 z-[9999] transition-all duration-300 ${
-        show ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2 pointer-events-none"
+        show
+          ? "opacity-100 translate-y-0"
+          : "opacity-0 -translate-y-2 pointer-events-none"
       }`}
     >
-      <div className="rounded-2xl border bg-primary/10 bg-white px-4 py-3 text-sm shadow-lg">{text}</div>
+      <div className="rounded-2xl border bg-primary/10 bg-white px-4 py-3 text-sm shadow-lg">
+        {text}
+      </div>
     </div>
   );
 }
@@ -127,6 +130,11 @@ export default function IncomePage() {
   const [role, setRole] = useState<Role | null>(null);
   const isFinance = role === "finance" || role === "admin" || role === "owner";
   const isAdmin = role === "admin" || role === "owner";
+
+  const [quickIncomeCatOpen, setQuickIncomeCatOpen] = useState(false);
+  const [qicName, setQicName] = useState("");
+  const [qicSaving, setQicSaving] = useState(false);
+  const [qicErr, setQicErr] = useState("");
 
   // reference data
   const [members, setMembers] = useState<MemberRow[]>([]);
@@ -174,28 +182,141 @@ export default function IncomePage() {
   const [adjOpen, setAdjOpen] = useState(false);
   const [adjMemberId, setAdjMemberId] = useState<string>("");
   const [adjIncomeCategoryId, setAdjIncomeCategoryId] = useState<string>("");
-  const [adjPaymentMethod, setAdjPaymentMethod] = useState<PaymentMethod>("cash");
+  const [adjPaymentMethod, setAdjPaymentMethod] =
+    useState<PaymentMethod>("cash");
   const [adjChequeNumber, setAdjChequeNumber] = useState<string>("");
   const [adjAmount, setAdjAmount] = useState<string>("");
   const [adjNote, setAdjNote] = useState<string>("");
   const [adjErr, setAdjErr] = useState("");
   const [postingAdj, setPostingAdj] = useState(false);
 
-  const [memberQuery, setMemberQuery] = useState(""); // what user types
-    const [adjMemberQuery, setAdjMemberQuery] = useState(""); // for adjustment modal
+  const [quickMemberOpen, setQuickMemberOpen] = useState(false);
+  const [qmFirst, setQmFirst] = useState("");
+  const [qmLast, setQmLast] = useState("");
+  const [qmGender, setQmGender] = useState<"male" | "female" | "">("");
+  const [qmAgeGroup, setQmAgeGroup] = useState<
+    "1-12" | "13-17" | "18-35" | "36+" | ""
+  >("");
+  const [qmSaving, setQmSaving] = useState(false);
+  const [qmErr, setQmErr] = useState("");
 
-    const memberLabelById = useMemo(() => {
+  const [memberQuery, setMemberQuery] = useState(""); // what user types
+  const [adjMemberQuery, setAdjMemberQuery] = useState(""); // for adjustment modal
+
+  const clearedOnFocusRef = useRef(false);
+  const clearedIncomeCatOnFocusRef = useRef(false);
+
+  const [incomeCatQuery, setIncomeCatQuery] = useState("");
+  const [incomeCatSuggestOpen, setIncomeCatSuggestOpen] = useState(false);
+
+  const incomeCatLabelById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of incomeCats) map.set(c.id, c.name);
+    return map;
+  }, [incomeCats]);
+
+  const incomeCatIdByLabel = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of incomeCats) map.set(c.name.toLowerCase(), c.id);
+    return map;
+  }, [incomeCats]);
+
+  const filteredIncomeCats = useMemo(() => {
+    const needle = incomeCatQuery.trim().toLowerCase();
+    if (!needle) return incomeCats.slice(0, 8);
+    return incomeCats
+      .filter((c) => c.name.toLowerCase().includes(needle))
+      .slice(0, 8);
+  }, [incomeCatQuery, incomeCats]);
+
+  const exactIncomeCatMatchId = useMemo(() => {
+    const id = incomeCatIdByLabel.get(incomeCatQuery.trim().toLowerCase());
+    return id ?? null;
+  }, [incomeCatQuery, incomeCatIdByLabel]);
+
+  const showAddIncomeCatRow = useMemo(() => {
+    const q = incomeCatQuery.trim();
+    if (q.length < 2) return false;
+    return !exactIncomeCatMatchId;
+  }, [incomeCatQuery, exactIncomeCatMatchId]);
+
+  function openQuickAddIncomeCategoryFromQuery(q: string) {
+    setQicName(q.trim()); // prefill modal input
+    setQicErr("");
+    setQuickIncomeCatOpen(true);
+  }
+
+  async function saveQuickIncomeCategory() {
+    if (!orgId) return;
+    const name = qicName.trim();
+    if (!name) {
+      setQicErr("Category name is required.");
+      return;
+    }
+
+    setQicSaving(true);
+    setQicErr("");
+
+    const { data: sessionRes } = await supabase.auth.getSession();
+    const userId = sessionRes.session?.user?.id;
+    if (!userId) {
+      setQicErr("You must be signed in.");
+      setQicSaving(false);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("categories")
+      .insert({
+        org_id: orgId,
+        name,
+        type: "income",
+        status: "active",
+        created_by: userId,
+      })
+      .select("id,name")
+      .single();
+
+    if (error) {
+      setQicErr(error.message);
+      setQicSaving(false);
+      return;
+    }
+
+    await loadAll();
+
+    if (data?.id) {
+      setIncomeCategoryId(data.id);
+    }
+
+    setQicSaving(false);
+    setQuickIncomeCatOpen(false);
+    showToast("Income category added");
+    setIncomeCatQuery(data.name);
+  }
+
+  function openQuickAddMemberFromQuery(q: string) {
+    const parts = q.trim().split(/\s+/).filter(Boolean);
+    setQmFirst(parts[0] ?? "");
+    setQmLast(parts.slice(1).join(" ") || "");
+    setQmGender("");
+    setQmAgeGroup("");
+    setQmErr("");
+    setQuickMemberOpen(true);
+  }
+
+  const memberLabelById = useMemo(() => {
     const map = new Map<string, string>();
     for (const m of members) map.set(m.id, `${m.first_name} ${m.last_name}`);
     return map;
-    }, [members]);
+  }, [members]);
 
-    const memberIdByLabel = useMemo(() => {
+  const memberIdByLabel = useMemo(() => {
     const map = new Map<string, string>();
-    for (const m of members) map.set(`${m.first_name} ${m.last_name}`.toLowerCase(), m.id);
+    for (const m of members)
+      map.set(`${m.first_name} ${m.last_name}`.toLowerCase(), m.id);
     return map;
-    }, [members]);
-
+  }, [members]);
 
   const selectedBatch = useMemo(
     () => batches.find((b) => b.id === selectedBatchId) ?? null,
@@ -223,6 +344,30 @@ export default function IncomePage() {
     for (const m of members) map.set(m.id, `${m.first_name} ${m.last_name}`);
     return map;
   }, [members]);
+
+  const [memberSuggestOpen, setMemberSuggestOpen] = useState(false);
+
+  const filteredMembers = useMemo(() => {
+    const needle = memberQuery.trim().toLowerCase();
+    if (!needle) return members.slice(0, 8);
+    return members
+      .filter((m) =>
+        `${m.first_name} ${m.last_name}`.toLowerCase().includes(needle)
+      )
+      .slice(0, 8);
+  }, [memberQuery, members]);
+
+  const exactMemberMatchId = useMemo(() => {
+    const id = memberIdByLabel.get(memberQuery.trim().toLowerCase());
+    return id ?? null;
+  }, [memberQuery, memberIdByLabel]);
+
+  const showAddMemberRow = useMemo(() => {
+    const q = memberQuery.trim();
+    if (q.length < 2) return false;
+    // show if not an exact match
+    return !exactMemberMatchId;
+  }, [memberQuery, exactMemberMatchId]);
 
   const incomeCatNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -256,7 +401,9 @@ export default function IncomePage() {
         .order("name", { ascending: true }),
       supabase
         .from("income_draft_batches")
-        .select("id,org_id,service_category_id,session_date,status,created_by,created_at,updated_at,posted_by,posted_at")
+        .select(
+          "id,org_id,service_category_id,session_date,status,created_by,created_at,updated_at,posted_by,posted_at"
+        )
         .eq("org_id", orgId)
         .eq("status", "draft")
         .order("updated_at", { ascending: false }),
@@ -298,7 +445,9 @@ export default function IncomePage() {
     if (!orgId) return;
     const res = await supabase
       .from("income_draft_items")
-      .select("id,org_id,batch_id,member_id,income_category_id,payment_method,cheque_number,amount_cents,created_by,created_at,updated_at")
+      .select(
+        "id,org_id,batch_id,member_id,income_category_id,payment_method,cheque_number,amount_cents,created_by,created_at,updated_at"
+      )
       .eq("org_id", orgId)
       .eq("batch_id", batchId)
       .order("created_at", { ascending: true });
@@ -383,10 +532,15 @@ export default function IncomePage() {
       return;
     }
 
-    const ok = confirm("Delete this draft batch? This will remove all its draft items.");
+    const ok = confirm(
+      "Delete this draft batch? This will remove all its draft items."
+    );
     if (!ok) return;
 
-    const { error } = await supabase.from("income_draft_batches").delete().eq("id", batchId);
+    const { error } = await supabase
+      .from("income_draft_batches")
+      .delete()
+      .eq("id", batchId);
     if (error) {
       setErr(error.message);
       return;
@@ -402,8 +556,11 @@ export default function IncomePage() {
   const resetItemForm = () => {
     const firstId = members[0]?.id ?? "";
     setMemberId(firstId);
-    setMemberQuery(firstId ? (memberLabelById.get(firstId) ?? "") : "");
-    setIncomeCategoryId(incomeCats[0]?.id ?? "");
+    setMemberQuery(firstId ? memberLabelById.get(firstId) ?? "" : "");
+
+    const firstCat = incomeCats[0]?.id ?? "";
+    setIncomeCategoryId(firstCat);
+    setIncomeCatQuery(firstCat ? incomeCatLabelById.get(firstCat) ?? "" : "");
     setPaymentMethod("cash");
     setChequeNumber("");
     setAmount("");
@@ -421,13 +578,80 @@ export default function IncomePage() {
     setItemOpen(true);
   };
 
+  function computeSegment(
+    g: "male" | "female",
+    ag: "1-12" | "13-17" | "18-35" | "36+"
+  ) {
+    const under18 = ag === "1-12" || ag === "13-17";
+    if (under18) return g === "male" ? "boys" : "girls";
+    return g === "male" ? "men" : "women";
+  }
+
+  async function saveQuickMember() {
+    if (!orgId) return;
+    setQmErr("");
+
+    if (!qmFirst.trim() || !qmLast.trim() || !qmGender || !qmAgeGroup) {
+      setQmErr("First name, last name, gender, and age group are required.");
+      return;
+    }
+
+    const segment = computeSegment(qmGender, qmAgeGroup);
+    setQmSaving(true);
+
+    const { data, error } = await supabase
+      .from("members")
+      .insert({
+        org_id: orgId,
+        first_name: qmFirst.trim(),
+        last_name: qmLast.trim(),
+        gender: qmGender,
+        age_group: qmAgeGroup,
+        segment,
+        status: "active",
+      })
+      .select("id,first_name,last_name")
+      .single();
+
+    if (error) {
+      setQmErr(error.message);
+      setQmSaving(false);
+      return;
+    }
+
+    // refresh members and select new one
+    await loadAll();
+
+    const newId = data?.id as string | undefined;
+    const label = `${data?.first_name ?? ""} ${data?.last_name ?? ""}`.trim();
+
+    if (newId) {
+      setMemberId(newId);
+      setMemberQuery(label);
+    }
+
+    setQmSaving(false);
+    setQuickMemberOpen(false);
+    showToast("Member added");
+  }
+
+  function isGender(v: string): v is "male" | "female" {
+    return v === "male" || v === "female";
+  }
+
+  function isAgeGroup(v: string): v is "1-12" | "13-17" | "18-35" | "36+" {
+    return v === "1-12" || v === "13-17" || v === "18-35" || v === "36+";
+  }
+
   const openEditItem = (it: DraftItem) => {
     if (!selectedBatch || selectedBatch.status !== "draft") return;
     setItemMode("edit");
     setEditItemId(it.id);
     setMemberId(it.member_id);
     setMemberQuery(memberLabelById.get(it.member_id) ?? "");
+
     setIncomeCategoryId(it.income_category_id);
+    setIncomeCatQuery(incomeCatLabelById.get(it.income_category_id) ?? "");
     setPaymentMethod(it.payment_method);
     setChequeNumber(it.cheque_number ?? "");
     setAmount((it.amount_cents / 100).toFixed(2));
@@ -495,7 +719,8 @@ export default function IncomePage() {
           member_id: memberId,
           income_category_id: incomeCategoryId,
           payment_method: paymentMethod,
-          cheque_number: paymentMethod === "cheque" ? chequeNumber.trim() : null,
+          cheque_number:
+            paymentMethod === "cheque" ? chequeNumber.trim() : null,
           amount_cents: cents,
         })
         .eq("id", editItemId);
@@ -519,7 +744,10 @@ export default function IncomePage() {
     const ok = confirm("Remove this draft item?");
     if (!ok) return;
 
-    const { error } = await supabase.from("income_draft_items").delete().eq("id", id);
+    const { error } = await supabase
+      .from("income_draft_items")
+      .delete()
+      .eq("id", id);
     if (error) {
       setErr(error.message);
       return;
@@ -550,7 +778,9 @@ export default function IncomePage() {
     setPublishing(true);
     setErr("");
 
-    const { error } = await supabase.rpc("publish_income_draft", { p_batch_id: selectedBatch.id });
+    const { error } = await supabase.rpc("publish_income_draft", {
+      p_batch_id: selectedBatch.id,
+    });
     if (error) {
       setErr(error.message);
       setPublishing(false);
@@ -575,7 +805,7 @@ export default function IncomePage() {
     }
     const firstId = members[0]?.id ?? "";
     setAdjMemberId(firstId);
-    setAdjMemberQuery(firstId ? (memberLabelById.get(firstId) ?? "") : "");
+    setAdjMemberQuery(firstId ? memberLabelById.get(firstId) ?? "" : "");
     setAdjIncomeCategoryId(incomeCats[0]?.id ?? "");
     setAdjPaymentMethod("cash");
     setAdjChequeNumber("");
@@ -621,7 +851,8 @@ export default function IncomePage() {
       p_member_id: adjMemberId,
       p_income_category_id: adjIncomeCategoryId,
       p_payment_method: adjPaymentMethod,
-      p_cheque_number: adjPaymentMethod === "cheque" ? adjChequeNumber.trim() : null,
+      p_cheque_number:
+        adjPaymentMethod === "cheque" ? adjChequeNumber.trim() : null,
       p_amount_cents: absCents, // RPC will force negative
       p_note: adjNote || null,
     });
@@ -638,7 +869,9 @@ export default function IncomePage() {
   };
 
   if (!orgId) {
-    return <div className="p-6 text-slate-700">No active organization selected.</div>;
+    return (
+      <div className="p-6 text-slate-700">No active organization selected.</div>
+    );
   }
 
   if (loading) {
@@ -654,25 +887,33 @@ export default function IncomePage() {
         <div className="flex items-center justify-between px-6 py-4">
           <div>
             <div className="text-xl font-semibold">Income</div>
-            <div className="text-sm text-slate-600">Draft batches and Publish to ledger</div>
+            <div className="text-sm text-slate-600">
+              Draft batches and Publish to ledger
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                draftCount >= 10 ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
+                draftCount >= 10
+                  ? "bg-slate-300"
+                  : "bg-primary hover:bg-primary/85"
               }`}
               disabled={draftCount >= 10}
               onClick={openCreateBatch}
-              title={draftCount >= 10 ? "Max 10 drafts reached" : "Create a new draft batch"}
+              title={
+                draftCount >= 10
+                  ? "Max 10 drafts reached"
+                  : "Create a new draft batch"
+              }
             >
               New draft batch
             </button>
-             <button
+            <button
               className="rounded-2xl border px-4 py-2 text-sm font-semibold hover:bg-slate-50"
               onClick={() => router.push("/app/income/published")}
             >
-             View Published
+              View Published
             </button>
           </div>
         </div>
@@ -694,7 +935,9 @@ export default function IncomePage() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-semibold">Draft Batches</div>
-                <div className="mt-1 text-xs text-slate-600">{draftCount} / 10 drafts</div>
+                <div className="mt-1 text-xs text-slate-600">
+                  {draftCount} / 10 drafts
+                </div>
               </div>
               {/* <Pill>v1</Pill> */}
             </div>
@@ -707,27 +950,37 @@ export default function IncomePage() {
               ) : (
                 batches.map((b) => {
                   const active = b.id === selectedBatchId;
-                  const sName = serviceNameById.get(b.service_category_id) ?? "Service";
+                  const sName =
+                    serviceNameById.get(b.service_category_id) ?? "Service";
                   const label = `${sName} — ${fmtDate(b.session_date)}`;
 
                   return (
-                    <div key={b.id} className="rounded-2xl border bg-white overflow-hidden">
+                    <div
+                      key={b.id}
+                      className="rounded-2xl border bg-white overflow-hidden"
+                    >
                       <button
                         className={`w-full px-4 py-3 text-left text-sm ${
-                          active ?"bg-primary text-white": "hover:bg-slate-50"
+                          active ? "bg-primary text-white" : "hover:bg-slate-50"
                         }`}
                         onClick={() => setSelectedBatchId(b.id)}
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="font-medium truncate">{label}</div>
-                            <div className={`font-medium truncate ${active ? "text-white" : ""}`}>
-                              {b.status === "draft" ? "Draft" : "Published"} • Updated{" "}
-                              {fmtDate(b.updated_at)}
+                            <div
+                              className={`font-medium truncate ${
+                                active ? "text-white" : ""
+                              }`}
+                            >
+                              {b.status === "draft" ? "Draft" : "Published"} •
+                              Updated {fmtDate(b.updated_at)}
                             </div>
                           </div>
                           <div className="shrink-0">
-                            <Pill>{b.status === "draft" ? "Draft" : "Published"}</Pill>
+                            <Pill>
+                              {b.status === "draft" ? "Draft" : "Published"}
+                            </Pill>
                           </div>
                         </div>
                       </button>
@@ -761,17 +1014,16 @@ export default function IncomePage() {
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <div className="text-sm font-semibold">
-                      {serviceNameById.get(selectedBatch.service_category_id) ?? "Service"} —{" "}
-                      {fmtDate(selectedBatch.session_date)}
+                      {serviceNameById.get(selectedBatch.service_category_id) ??
+                        "Service"}{" "}
+                      — {fmtDate(selectedBatch.session_date)}
                     </div>
                     <div className="mt-1 text-xs text-slate-600">
-                      Status: {selectedBatch.status} • {batchSummary.count} items •{" "}
-                      {formatMoney(batchSummary.cents)} (draft total)
-                      {selectedBatch.status === "published" && selectedBatch.posted_at ? (
-                        <>
-                          {" "}
-                          • Posted {fmtDate(selectedBatch.posted_at)}
-                        </>
+                      Status: {selectedBatch.status} • {batchSummary.count}{" "}
+                      items • {formatMoney(batchSummary.cents)} (draft total)
+                      {selectedBatch.status === "published" &&
+                      selectedBatch.posted_at ? (
+                        <> • Posted {fmtDate(selectedBatch.posted_at)}</>
                       ) : null}
                     </div>
                   </div>
@@ -793,7 +1045,11 @@ export default function IncomePage() {
                           }`}
                           disabled={!isFinance || publishing}
                           onClick={publishBatch}
-                          title={!isFinance ? "Finance/Admin only" : "Publish this draft"}
+                          title={
+                            !isFinance
+                              ? "Finance/Admin only"
+                              : "Publish this draft"
+                          }
                         >
                           {publishing ? "Publishing…" : "Publish"}
                         </button>
@@ -802,11 +1058,17 @@ export default function IncomePage() {
                       <>
                         <button
                           className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                            !isAdmin ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
+                            !isAdmin
+                              ? "bg-slate-300"
+                              : "bg-primary hover:bg-primary/85"
                           }`}
                           disabled={!isAdmin}
                           onClick={openAdjustment}
-                          title={!isAdmin ? "Admin only" : "Post a negative adjustment"}
+                          title={
+                            !isAdmin
+                              ? "Admin only"
+                              : "Post a negative adjustment"
+                          }
                         >
                           Negative adjustment (−)
                         </button>
@@ -834,9 +1096,9 @@ export default function IncomePage() {
                       <div className="grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100 rounded-t-3xl">
                         <div className="col-span-3">Member</div>
                         <div className="col-span-1">Category</div>
+                        <div className="col-span-2 ">Amount</div>
                         <div className="col-span-1">Method</div>
-                        <div className="col-span-1">Cheque #</div>
-                        <div className="col-span-2 text-right">Amount</div>
+                        <div className="col-span-1">Cheque #</div>                        
                         <div className="col-span-3 text-right">Actions</div>
                       </div>
 
@@ -847,22 +1109,29 @@ export default function IncomePage() {
                       ) : (
                         <div className="divide-y">
                           {items.map((it) => (
-                            <div key={it.id} className="grid grid-cols-12 items-center px-5 py-4 text-sm">
+                            <div
+                              key={it.id}
+                              className="grid grid-cols-12 items-center px-5 py-4 text-sm"
+                            >
                               <div className="col-span-3 font-semibold">
                                 {memberNameById.get(it.member_id) ?? "—"}
                               </div>
                               <div className="col-span-1 text-slate-700">
-                                {incomeCatNameById.get(it.income_category_id) ?? "—"}
+                                {incomeCatNameById.get(it.income_category_id) ??
+                                  "—"}
+                              </div>
+                              <div className="col-span-2  font-semibold">
+                                {formatMoney(it.amount_cents)}
                               </div>
                               <div className="col-span-1 text-slate-700">
                                 {it.payment_method}
                               </div>
                               <div className="col-span-1 text-slate-700">
-                                {it.payment_method === "cheque" ? it.cheque_number ?? "—" : "—"}
+                                {it.payment_method === "cheque"
+                                  ? it.cheque_number ?? "—"
+                                  : "—"}
                               </div>
-                              <div className="col-span-2 text-right font-semibold">
-                                {formatMoney(it.amount_cents)}
-                              </div>
+                              
 
                               <div className="col-span-3 flex justify-end gap-2">
                                 {selectedBatch.status === "draft" ? (
@@ -881,7 +1150,9 @@ export default function IncomePage() {
                                     </button>
                                   </>
                                 ) : (
-                                  <span className="text-xs text-slate-400">—</span>
+                                  <span className="text-xs text-slate-400">
+                                    —
+                                  </span>
                                 )}
                               </div>
                             </div>
@@ -905,22 +1176,27 @@ export default function IncomePage() {
 
       {/* Create batch modal */}
       {batchOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
-        onClick={() => setBatchOpen(false)}
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+          onClick={() => setBatchOpen(false)}
         >
-          <div className="w-full max-w-xl rounded-3xl bg-white shadow-xl"
-          onClick={(e) => e.stopPropagation()}
+          <div
+            className="w-full max-w-xl rounded-3xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="border-b px-6 py-4">
               <div className="text-sm font-semibold">New draft batch</div>
               <div className="text-xs text-slate-600">
-                Choose a service and date. You can create another batch with the same service/date later.
+                Choose a service and date. You can create another batch with the
+                same service/date later.
               </div>
             </div>
 
             <div className="px-6 py-6 space-y-4">
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">Service *</div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Service *
+                </div>
                 <select
                   className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                   value={batchServiceId}
@@ -936,7 +1212,9 @@ export default function IncomePage() {
               </div>
 
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">Date *</div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Date *
+                </div>
                 <input
                   type="date"
                   className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
@@ -947,21 +1225,24 @@ export default function IncomePage() {
 
               {draftCount >= 10 ? (
                 <div className="rounded-2xl border bg-primary/10 border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                  Max 10 drafts reached. Publish or delete one to create a new batch.
+                  Max 10 drafts reached. Publish or delete one to create a new
+                  batch.
                 </div>
               ) : null}
             </div>
 
             <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
               <button
-                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                className="rounded-2xl border px-20 py-2 text-sm hover:bg-slate-50"
                 onClick={() => setBatchOpen(false)}
               >
                 Cancel
               </button>
               <button
-                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                  draftCount >= 10 ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
+                className={`rounded-2xl px-20 py-2 text-sm font-semibold text-white ${
+                  draftCount >= 10
+                    ? "bg-slate-300"
+                    : "bg-primary hover:bg-primary/85"
                 }`}
                 disabled={draftCount >= 10}
                 onClick={createBatch}
@@ -975,78 +1256,236 @@ export default function IncomePage() {
 
       {/* Add/Edit item modal */}
       {itemOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
-        onClick={() => setItemOpen(false)}
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+          // onClick={() => setItemOpen(false)}
         >
-          <div className="w-full max-w-3xl rounded-3xl bg-white shadow-xl"
-          onClick={(e) => e.stopPropagation()}
+          <div
+            className="w-full max-w-3xl rounded-3xl bg-white shadow-xl"
+            // onClick={(e) => e.stopPropagation()}
           >
-            <div className="border-b px-6 py-4">
-              <div className="text-sm font-semibold">
-                {itemMode === "create" ? "Add income line" : "Edit income line"}
+            <div className="border-b px-6 py-4 flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-semibold">
+                  {itemMode === "create"
+                    ? "Add income line"
+                    : "Edit income line"}
+                </div>
+                <div className="text-xs text-slate-600">
+                  Draft items can be edited freely until publishing.
+                </div>
               </div>
-              <div className="text-xs text-slate-600">Draft items can be edited freely until publishing.</div>
+
+              <button
+                type="button"
+                onClick={() => setItemOpen(false)}
+                className="rounded-full p-1.5 text-slate-900 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close"
+              >
+                ✕
+              </button>
             </div>
 
-            <div className="max-h-[75vh] overflow-auto px-6 py-6 space-y-4">
+            <div className="max-h-[75vh] min-h-[35vh] overflow-auto px-6 py-6 space-y-4">
               <div className="grid gap-3 sm:grid-cols-2">
+                {/* Member */}
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Member *</div>
-                  <div>                 
+                  <div className="mb-1 flex items-center justify-between">
+                    <div className="text-xs font-semibold text-slate-600">
+                      Member *
+                    </div>
+                  </div>
 
+                  <div className="relative">
                     <input
-                        list="members-datalist"
-                        className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                        value={memberQuery}
-                        onChange={(e) => {
+                      className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                      value={memberQuery}
+                      onFocus={() => {
+                        setMemberSuggestOpen(true);
+                        if (!clearedOnFocusRef.current) {
+                          clearedOnFocusRef.current = true;
+                          setMemberQuery("");
+                          setMemberId("");
+                          setItemErr("");
+                        }
+                      }}
+                      onBlur={() => {
+                        window.setTimeout(
+                          () => setMemberSuggestOpen(false),
+                          120
+                        );
+                        clearedOnFocusRef.current = false;
+                      }}
+                      onChange={(e) => {
                         const v = e.target.value;
                         setMemberQuery(v);
                         setItemErr("");
 
                         const id = memberIdByLabel.get(v.trim().toLowerCase());
-                        if (id) setMemberId(id);
-                        else setMemberId(""); // forces validation if not a real pick
-                        }}
-                        placeholder="Type a name…"
+                        setMemberId(id ?? "");
+                        setMemberSuggestOpen(true);
+                      }}
+                      placeholder="Type a name…"
                     />
 
-                    <datalist id="members-datalist">
-                        {members.map((m) => (
-                        <option key={m.id} value={`${m.first_name} ${m.last_name}`} />
-                        ))}
-                    </datalist>
+                    {memberSuggestOpen ? (
+                      <div className="absolute z-50 mt-2 w-full overflow-hidden rounded-2xl border bg-white shadow-lg max-h-56 overflow-auto">
+                        {filteredMembers.length === 0 ? (
+                          <div className="px-4 py-3 text-sm text-slate-600">
+                            No matches.
+                          </div>
+                        ) : (
+                          filteredMembers.map((m) => {
+                            const label = `${m.first_name} ${m.last_name}`;
+                            return (
+                              <button
+                                type="button"
+                                key={m.id}
+                                className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  setMemberId(m.id);
+                                  setMemberQuery(label);
+                                  setMemberSuggestOpen(false);
+                                  setItemErr("");
+                                }}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })
+                        )}
+
+                        {showAddMemberRow ? (
+                          <div className="border-t">
+                            <button
+                              type="button"
+                              className="block w-full px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-slate-50"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() =>
+                                openQuickAddMemberFromQuery(memberQuery)
+                              }
+                            >
+                              + Add new member
+                              {memberQuery.trim()
+                                ? `: “${memberQuery.trim()}”`
+                                : ""}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
 
                     {!memberId && memberQuery.trim().length > 0 ? (
-                        <div className="mt-1 text-xs text-amber-700">
-                        Select a valid member from suggestions.
-                        </div>
+                      <div className="mt-1 text-xs text-amber-700">
+                        Select a valid member (or add a new one).
+                      </div>
                     ) : null}
-                    </div>
+                  </div>
                 </div>
 
+                {/* Income category */}
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Income category *</div>
-                  <select
-                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                    value={incomeCategoryId}
-                    onChange={(e) => {
-                      setIncomeCategoryId(e.target.value);
-                      setItemErr("");
-                    }}
-                  >
-                    <option value="">Select…</option>
-                    {incomeCats.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Income category *
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                      value={incomeCatQuery}
+                      onFocus={() => {
+                        setIncomeCatSuggestOpen(true);
+
+                        if (!clearedIncomeCatOnFocusRef.current) {
+                          clearedIncomeCatOnFocusRef.current = true;
+                          setIncomeCatQuery("");
+                          setIncomeCategoryId("");
+                          setItemErr("");
+                        }
+                      }}
+                      onBlur={() => {
+                        window.setTimeout(
+                          () => setIncomeCatSuggestOpen(false),
+                          120
+                        );
+                        clearedIncomeCatOnFocusRef.current = false;
+                      }}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setIncomeCatQuery(v);
+                        setItemErr("");
+
+                        const id = incomeCatIdByLabel.get(
+                          v.trim().toLowerCase()
+                        );
+                        setIncomeCategoryId(id ?? "");
+                        setIncomeCatSuggestOpen(true);
+                      }}
+                      placeholder="Type a category…"
+                    />
+
+                    {incomeCatSuggestOpen ? (
+                      <div className="absolute z-50 mt-2 w-full overflow-hidden rounded-2xl border bg-white shadow-lg max-h-56 overflow-auto">
+                        {filteredIncomeCats.length === 0 ? (
+                          <div className="px-4 py-3 text-sm text-slate-600">
+                            No matches.
+                          </div>
+                        ) : (
+                          filteredIncomeCats.map((c) => (
+                            <button
+                              type="button"
+                              key={c.id}
+                              className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => {
+                                setIncomeCategoryId(c.id);
+                                setIncomeCatQuery(c.name);
+                                setIncomeCatSuggestOpen(false);
+                                setItemErr("");
+                              }}
+                            >
+                              {c.name}
+                            </button>
+                          ))
+                        )}
+
+                        {showAddIncomeCatRow ? (
+                          <div className="border-t">
+                            <button
+                              type="button"
+                              className="block w-full px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-slate-50"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() =>
+                                openQuickAddIncomeCategoryFromQuery(
+                                  incomeCatQuery
+                                )
+                              }
+                            >
+                              + Add income category
+                              {incomeCatQuery.trim()
+                                ? `: “${incomeCatQuery.trim()}”`
+                                : ""}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {!incomeCategoryId && incomeCatQuery.trim().length > 0 ? (
+                      <div className="mt-1 text-xs text-amber-700">
+                        Select a valid category (or add a new one).
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
 
               <div className="grid gap-3 sm:grid-cols-3">
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Method *</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Method *
+                  </div>
                   <select
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                     value={paymentMethod}
@@ -1067,7 +1506,9 @@ export default function IncomePage() {
                   </div>
                   <input
                     className={`w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 ${
-                      paymentMethod !== "cheque" ? "bg-slate-50 text-slate-500" : ""
+                      paymentMethod !== "cheque"
+                        ? "bg-slate-50 text-slate-500"
+                        : ""
                     }`}
                     value={chequeNumber}
                     onChange={(e) => {
@@ -1075,25 +1516,29 @@ export default function IncomePage() {
                       setItemErr("");
                     }}
                     disabled={paymentMethod !== "cheque"}
-                    placeholder={paymentMethod === "cheque" ? "e.g., 103849" : "—"}
+                    placeholder={
+                      paymentMethod === "cheque" ? "e.g., 103849" : "—"
+                    }
                   />
                 </div>
               </div>
 
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">Amount *</div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Amount *
+                </div>
                 <input
-                    ref={amountRef}
-                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                    value={amount}
-                    onChange={(e) => {
+                  ref={amountRef}
+                  className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                  value={amount}
+                  onChange={(e) => {
                     setAmount(e.target.value);
                     setItemErr("");
-                    }}
-                    placeholder="e.g., 100.00"
+                  }}
+                  placeholder="e.g., 100.00"
                 />
                 {/* <div className="mt-1 text-xs text-slate-500">Stored as integer cents internally.</div> */}
-                </div>
+              </div>
 
               {itemErr ? (
                 <div className="rounded-2xl border bg-primary/10 border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -1104,20 +1549,190 @@ export default function IncomePage() {
 
             <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
               <button
-                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                className="rounded-2xl border px-35 py-2 text-sm hover:bg-slate-50"
                 onClick={() => setItemOpen(false)}
               >
                 Cancel
               </button>
 
               <button
-                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
+                className={`rounded-2xl px-35 py-2 text-sm font-semibold text-white ${
                   savingItem ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
                 }`}
                 disabled={savingItem}
                 onClick={saveItem}
               >
                 {savingItem ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {quickMemberOpen ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
+          onClick={() => setQuickMemberOpen(false)}
+        >
+          <div
+            className="w-full max-w-2xl rounded-3xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b px-6 py-4">
+              <div className="text-sm font-semibold">Add member</div>
+              <div className="text-xs text-slate-600">
+                Quick add without leaving Income.
+              </div>
+            </div>
+
+            <div className="px-6 py-6 space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    First name *
+                  </div>
+                  <input
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                    value={qmFirst}
+                    onChange={(e) => setQmFirst(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Last name *
+                  </div>
+                  <input
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                    value={qmLast}
+                    onChange={(e) => setQmLast(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Gender *
+                  </div>
+                  <select
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                    value={qmGender}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "" || isGender(v)) setQmGender(v);
+                    }}
+                  >
+                    <option value="">Select…</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                  </select>
+                </div>
+
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Age group *
+                  </div>
+                  <select
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                    value={qmAgeGroup}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "" || isAgeGroup(v)) setQmAgeGroup(v);
+                    }}
+                  >
+                    <option value="">Select…</option>
+                    <option value="1-12">1 to 12</option>
+                    <option value="13-17">13 to 17</option>
+                    <option value="18-35">18 to 35</option>
+                    <option value="36+">36 and above</option>
+                  </select>
+                </div>
+              </div>
+
+              {qmErr ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {qmErr}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
+              <button
+                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                onClick={() => setQuickMemberOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
+                  qmSaving ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
+                }`}
+                disabled={qmSaving}
+                onClick={saveQuickMember}
+              >
+                {qmSaving ? "Saving…" : "Save member"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {quickIncomeCatOpen ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
+          onClick={() => setQuickIncomeCatOpen(false)}
+        >
+          <div
+            className="w-full max-w-xl rounded-3xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b px-6 py-4">
+              <div className="text-sm font-semibold">Add income category</div>
+              <div className="text-xs text-slate-600">
+                Quick add without leaving Income.
+              </div>
+            </div>
+
+            <div className="px-6 py-6 space-y-4">
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Name *
+                </div>
+                <input
+                  className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                  value={qicName}
+                  onChange={(e) => {
+                    setQicName(e.target.value);
+                    setQicErr("");
+                  }}
+                  placeholder="e.g., Tithe, Offering…"
+                  autoFocus
+                />
+              </div>
+
+              {qicErr ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {qicErr}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
+              <button
+                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                onClick={() => setQuickIncomeCatOpen(false)}
+              >
+                Cancel
+              </button>
+
+              <button
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
+                  qicSaving ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
+                }`}
+                disabled={qicSaving}
+                onClick={saveQuickIncomeCategory}
+              >
+                {qicSaving ? "Saving…" : "Save category"}
               </button>
             </div>
           </div>
@@ -1131,25 +1746,29 @@ export default function IncomePage() {
             <div className="border-b px-6 py-4">
               <div className="text-sm font-semibold">Negative adjustment</div>
               <div className="text-xs text-slate-600">
-                Posts a correcting entry. Published entries can’t be edited. Admin only.
+                Posts a correcting entry. Published entries can’t be edited.
+                Admin only.
               </div>
             </div>
 
             <div className="px-6 py-6 space-y-4">
               <div className="rounded-2xl border bg-primary/10 border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                This will post a <span className="font-semibold">negative</span> amount to correct an earlier mistake.
-                If you need to add missing income, create a new draft batch instead.
+                This will post a <span className="font-semibold">negative</span>{" "}
+                amount to correct an earlier mistake. If you need to add missing
+                income, create a new draft batch instead.
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Member *</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Member *
+                  </div>
                   <div>
                     <input
-                        list="members-datalist-adj"
-                        className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                        value={adjMemberQuery}
-                        onChange={(e) => {
+                      list="members-datalist-adj"
+                      className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                      value={adjMemberQuery}
+                      onChange={(e) => {
                         const v = e.target.value;
                         setAdjMemberQuery(v);
                         setAdjErr("");
@@ -1157,26 +1776,31 @@ export default function IncomePage() {
                         const id = memberIdByLabel.get(v.trim().toLowerCase());
                         if (id) setAdjMemberId(id);
                         else setAdjMemberId("");
-                        }}
-                        placeholder="Type a name…"
+                      }}
+                      placeholder="Type a name…"
                     />
 
                     <datalist id="members-datalist-adj">
-                        {members.map((m) => (
-                        <option key={m.id} value={`${m.first_name} ${m.last_name}`} />
-                        ))}
+                      {members.map((m) => (
+                        <option
+                          key={m.id}
+                          value={`${m.first_name} ${m.last_name}`}
+                        />
+                      ))}
                     </datalist>
 
                     {!adjMemberId && adjMemberQuery.trim().length > 0 ? (
-                        <div className="mt-1 text-xs text-amber-700">
+                      <div className="mt-1 text-xs text-amber-700">
                         Select a valid member from suggestions.
-                        </div>
+                      </div>
                     ) : null}
-                    </div>
+                  </div>
                 </div>
 
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Income category *</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Income category *
+                  </div>
                   <select
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                     value={adjIncomeCategoryId}
@@ -1197,7 +1821,9 @@ export default function IncomePage() {
 
               <div className="grid gap-3 sm:grid-cols-3">
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Method *</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Method *
+                  </div>
                   <select
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                     value={adjPaymentMethod}
@@ -1218,7 +1844,9 @@ export default function IncomePage() {
                   </div>
                   <input
                     className={`w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 ${
-                      adjPaymentMethod !== "cheque" ? "bg-slate-50 text-slate-500" : ""
+                      adjPaymentMethod !== "cheque"
+                        ? "bg-slate-50 text-slate-500"
+                        : ""
                     }`}
                     value={adjChequeNumber}
                     onChange={(e) => {
@@ -1226,13 +1854,17 @@ export default function IncomePage() {
                       setAdjErr("");
                     }}
                     disabled={adjPaymentMethod !== "cheque"}
-                    placeholder={adjPaymentMethod === "cheque" ? "e.g., 103849" : "—"}
+                    placeholder={
+                      adjPaymentMethod === "cheque" ? "e.g., 103849" : "—"
+                    }
                   />
                 </div>
               </div>
 
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">Amount (will be negative) *</div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Amount (will be negative) *
+                </div>
                 <div className="flex">
                   <div className="flex items-center rounded-l-2xl border border-r-0 bg-slate-50 px-4 text-sm font-semibold text-slate-700">
                     −$
@@ -1248,12 +1880,15 @@ export default function IncomePage() {
                   />
                 </div>
                 <div className="mt-1 text-xs text-slate-500">
-                  We take the absolute value and store it as a negative correction (typing “-90” is okay).
+                  We take the absolute value and store it as a negative
+                  correction (typing “-90” is okay).
                 </div>
               </div>
 
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">Reason / Note (optional)</div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Reason / Note (optional)
+                </div>
                 <input
                   className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                   value={adjNote}

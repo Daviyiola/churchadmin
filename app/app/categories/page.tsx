@@ -66,7 +66,9 @@ function Pill({
       : "border-slate-200 bg-slate-50 text-slate-700";
 
   return (
-    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${cls}`}>
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${cls}`}
+    >
       {children}
     </span>
   );
@@ -100,6 +102,9 @@ export default function CategoriesPage() {
   const [catType, setCatType] = useState<CategoryType>("income");
   const [saving, setSaving] = useState(false);
   const [formErr, setFormErr] = useState("");
+
+  const [mode, setMode] = useState<"create" | "edit">("create");
+  const [editId, setEditId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -143,6 +148,8 @@ export default function CategoriesPage() {
   }, [orgId, tab]);
 
   const openCreate = () => {
+    setMode("create");
+    setEditId(null);
     setName("");
     setCatType("income");
     setFormErr("");
@@ -150,11 +157,112 @@ export default function CategoriesPage() {
     setOpen(true);
   };
 
+  const openEdit = (c: CategoryRow) => {
+    setMode("edit");
+    setEditId(c.id);
+    setName(c.name);
+    setCatType(c.type);
+    setFormErr("");
+    setErr("");
+    setOpen(true);
+  };
+
   const closeModal = () => {
     setOpen(false);
+    setMode("create");
+    setEditId(null);
     setName("");
     setCatType("income");
     setFormErr("");
+  };
+
+  const updateCategory = async () => {
+    if (!orgId) return;
+
+    setFormErr("");
+    setErr("");
+
+    if (!isAdmin) {
+      setFormErr("Only admins can edit categories.");
+      return;
+    }
+
+    const cleanName = name.trim();
+    if (!cleanName) {
+      setFormErr("Name is required.");
+      return;
+    }
+    if (!editId) {
+      setFormErr("Missing category id.");
+      return;
+    }
+
+    const nameNorm = normalizeName(cleanName);
+
+    // soft pre-check for duplicates (excluding self)
+    const { data: exists, error: existsErr } = await supabase
+      .from("categories")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("type", catType)
+      .eq("name_norm", nameNorm)
+      .neq("id", editId)
+      .maybeSingle();
+
+    if (existsErr) {
+      setFormErr(existsErr.message);
+      return;
+    }
+
+    if (exists?.id) {
+      setFormErr(
+        `A ${typeLabel(catType)} category named "${cleanName}" already exists.`
+      );
+      return;
+    }
+
+    setSaving(true);
+
+    const { error } = await supabase
+      .from("categories")
+      .update({
+        name: cleanName,
+        type: catType,
+        // updated_at is handled by trigger, but ok to leave it out
+      })
+      .eq("id", editId);
+
+    if (error) {
+      if (isPostgresUniqueViolation(error)) {
+        setFormErr(
+          `A ${typeLabel(
+            catType
+          )} category named "${cleanName}" already exists.`
+        );
+      } else {
+        setFormErr(error.message);
+      }
+      setSaving(false);
+      return;
+    }
+
+    setSaving(false);
+    closeModal();
+    await load();
+  };
+
+  const deleteCategory = async (id: string) => {
+    if (!isAdmin) {
+      setErr("Only admins can delete categories.");
+      return;
+    }
+    setErr("");
+    const ok = confirm("Delete this category? This cannot be undone.");
+    if (!ok) return;
+
+    const { error } = await supabase.from("categories").delete().eq("id", id);
+    if (error) setErr(error.message);
+    else await load();
   };
 
   const canSave = name.trim().length > 0 && !saving;
@@ -190,7 +298,9 @@ export default function CategoriesPage() {
       .maybeSingle();
 
     if (exists?.id) {
-      setFormErr(`A ${typeLabel(catType)} category named "${cleanName}" already exists.`);
+      setFormErr(
+        `A ${typeLabel(catType)} category named "${cleanName}" already exists.`
+      );
       return;
     }
 
@@ -198,22 +308,24 @@ export default function CategoriesPage() {
 
     const { error } = await supabase.from("categories").insert({
       org_id: orgId,
-      name: cleanName,      
+      name: cleanName,
       type: catType,
       status: "active",
       created_by: userId,
     });
 
     if (error) {
-        if (isPostgresUniqueViolation(error)) {
-            setFormErr(
-            `A ${typeLabel(catType)} category named "${cleanName}" already exists.`
-            );
-        } else {
-            setFormErr(error.message);
-        }
-        setSaving(false);
-        return;
+      if (isPostgresUniqueViolation(error)) {
+        setFormErr(
+          `A ${typeLabel(
+            catType
+          )} category named "${cleanName}" already exists.`
+        );
+      } else {
+        setFormErr(error.message);
+      }
+      setSaving(false);
+      return;
     }
 
     setSaving(false);
@@ -290,12 +402,16 @@ export default function CategoriesPage() {
                 className="w-full sm:w-44 rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 value={typeFilter}
                 onChange={(e) => {
-                    const v = e.target.value;
-                    if (v === "" || v === "income" || v === "expense" || v === "services") {
-                        setTypeFilter(v);
-                    }
-                    }}
-
+                  const v = e.target.value;
+                  if (
+                    v === "" ||
+                    v === "income" ||
+                    v === "expense" ||
+                    v === "services"
+                  ) {
+                    setTypeFilter(v);
+                  }
+                }}
               >
                 <option value="">All types</option>
                 <option value="income">Income</option>
@@ -346,35 +462,58 @@ export default function CategoriesPage() {
               ) : (
                 <div className="divide-y">
                   {filtered.map((c) => (
-                    <div key={c.id} className="grid grid-cols-12 items-center px-5 py-4 text-sm">
+                    <div
+                      key={c.id}
+                      className="grid grid-cols-12 items-center px-5 py-4 text-sm"
+                    >
                       <div className="col-span-6">
                         <div className="font-semibold">{c.name}</div>
-                        <div className="mt-1 text-xs text-slate-500">{c.status}</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          {c.status}
+                        </div>
                       </div>
 
                       <div className="col-span-2">
                         <Pill tone="slate">{typeLabel(c.type)}</Pill>
                       </div>
 
-                      <div className="col-span-3 text-slate-700">{fmtDate(c.created_at)}</div>
+                      <div className="col-span-3 text-slate-700">
+                        {fmtDate(c.created_at)}
+                      </div>
 
                       <div className="col-span-1 flex justify-end">
                         {isAdmin ? (
-                          c.status === "active" ? (
+                          <div className="flex items-center gap-2">
                             <button
                               className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
-                              onClick={() => setStatus(c.id, "archived")}
+                              onClick={() => openEdit(c)}
                             >
-                              Archive
+                              Edit
                             </button>
-                          ) : (
+
+                            {c.status === "active" ? (
+                              <button
+                                className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
+                                onClick={() => setStatus(c.id, "archived")}
+                              >
+                                Archive
+                              </button>
+                            ) : (
+                              <button
+                                className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
+                                onClick={() => setStatus(c.id, "active")}
+                              >
+                                Restore
+                              </button>
+                            )}
+
                             <button
-                              className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
-                              onClick={() => setStatus(c.id, "active")}
+                              className="rounded-xl border border-red-200 px-3 py-1 text-xs text-red-700 hover:bg-red-50"
+                              onClick={() => deleteCategory(c.id)}
                             >
-                              Restore
+                              Delete
                             </button>
-                          )
+                          </div>
                         ) : (
                           <span className="text-xs text-slate-400">—</span>
                         )}
@@ -397,13 +536,23 @@ export default function CategoriesPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-2xl rounded-3xl bg-white shadow-xl">
             <div className="border-b px-6 py-4">
-              <div className="text-sm font-semibold">Add category</div>
-              <div className="text-xs text-slate-600">Anyone can add a category.</div>
+              <div className="text-sm font-semibold">
+                {mode === "create" ? "Add category" : "Edit category"}
+              </div>
+              <div className="text-xs text-slate-600">
+                {mode === "create"
+                  ? "Anyone can add a category."
+                  : isAdmin
+                  ? "Admin-only edit."
+                  : "Admin-only edit."}
+              </div>
             </div>
 
             <div className="px-6 py-6 space-y-4">
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">Name *</div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Name *
+                </div>
                 <input
                   className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                   value={name}
@@ -417,7 +566,9 @@ export default function CategoriesPage() {
               </div>
 
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">Type *</div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Type *
+                </div>
                 <select
                   className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                   value={catType}
@@ -452,7 +603,7 @@ export default function CategoriesPage() {
                   !canSave ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
                 }`}
                 disabled={!canSave}
-                onClick={saveCategory}
+                onClick={mode === "create" ? saveCategory : updateCategory}
               >
                 {saving ? "Saving…" : "Save"}
               </button>

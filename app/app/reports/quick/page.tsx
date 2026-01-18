@@ -42,12 +42,13 @@ export default function QuickReportPage() {
   const [start, setStart] = useState(defaultStart);
   const [end, setEnd] = useState(defaultEnd);
 
-  // Separate selections per tab
+  // Separate selections per tab (default: all selected after load)
   const [incomeCategoryIds, setIncomeCategoryIds] = useState<string[]>([]);
   const [expenseCategoryIds, setExpenseCategoryIds] = useState<string[]>([]);
   const [incomeServiceIds, setIncomeServiceIds] = useState<string[]>([]);
   const [attendanceServiceIds, setAttendanceServiceIds] = useState<string[]>([]);
 
+  // Attendance radio stays as-is (do NOT default-check beyond "summary")
   const [attendanceView, setAttendanceView] = useState<AttendanceView>("summary");
 
   const [serviceOptions, setServiceOptions] = useState<Option[]>([]);
@@ -72,9 +73,19 @@ export default function QuickReportPage() {
 
         if (!alive) return;
 
-        setServiceOptions(svcs.map((x) => ({ id: x.id, name: x.name })));
-        setIncomeCategoryOptions(inc.map((x) => ({ id: x.id, name: x.name })));
-        setExpenseCategoryOptions(exp.map((x) => ({ id: x.id, name: x.name })));
+        const svcOpts = svcs.map((x) => ({ id: x.id, name: x.name }));
+        const incOpts = inc.map((x) => ({ id: x.id, name: x.name }));
+        const expOpts = exp.map((x) => ({ id: x.id, name: x.name }));
+
+        setServiceOptions(svcOpts);
+        setIncomeCategoryOptions(incOpts);
+        setExpenseCategoryOptions(expOpts);
+
+        // ✅ default-check EVERYTHING for checklists (income, expense, attendance)
+        setIncomeServiceIds(svcOpts.map((x) => x.id));
+        setAttendanceServiceIds(svcOpts.map((x) => x.id));
+        setIncomeCategoryIds(incOpts.map((x) => x.id));
+        setExpenseCategoryIds(expOpts.map((x) => x.id));
       } catch (e: unknown) {
         if (!alive) return;
         setLoadErr(e instanceof Error ? e.message : "Failed to load categories.");
@@ -91,7 +102,11 @@ export default function QuickReportPage() {
     if (end < start) return alert("End date cannot be earlier than start date.");
 
     const service_ids =
-      mode === "income" ? incomeServiceIds : mode === "attendance" ? attendanceServiceIds : undefined;
+      mode === "income"
+        ? incomeServiceIds
+        : mode === "attendance"
+          ? attendanceServiceIds
+          : undefined;
 
     const category_ids =
       mode === "income" ? incomeCategoryIds : mode === "expense" ? expenseCategoryIds : undefined;
@@ -100,8 +115,8 @@ export default function QuickReportPage() {
       mode,
       start,
       end,
-      service_ids,
-      category_ids,
+      service_ids: service_ids?.length ? service_ids : undefined,
+      category_ids: category_ids?.length ? category_ids : undefined,
       view: mode === "attendance" ? attendanceView : undefined,
     });
 
@@ -114,7 +129,9 @@ export default function QuickReportPage() {
         <div className="flex items-center justify-between px-6 py-4">
           <div>
             <div className="text-xl font-semibold">Quick report</div>
-            <div className="text-sm text-slate-600">Choose a mode, set filters, then open the print view.</div>
+            <div className="text-sm text-slate-600">
+              Choose a mode, set filters, then open the print view.
+            </div>
           </div>
 
           <button
@@ -132,7 +149,9 @@ export default function QuickReportPage() {
           <div className="rounded-3xl border bg-white">
             <div className="border-b px-5 py-4">
               <div className="text-xs font-semibold">FILTERS</div>
-              <div className="mt-1 text-xs text-slate-600">These filters will be applied to the printable report.</div>
+              <div className="mt-1 text-xs text-slate-600">
+                These filters will be applied to the printable report.
+              </div>
             </div>
 
             <div className="p-5">
@@ -145,7 +164,11 @@ export default function QuickReportPage() {
               <div className="flex flex-wrap gap-2">
                 <ModePill label="Income" active={mode === "income"} onClick={() => setMode("income")} />
                 <ModePill label="Expense" active={mode === "expense"} onClick={() => setMode("expense")} />
-                <ModePill label="Attendance" active={mode === "attendance"} onClick={() => setMode("attendance")} />
+                <ModePill
+                  label="Attendance"
+                  active={mode === "attendance"}
+                  onClick={() => setMode("attendance")}
+                />
               </div>
 
               {/* Expense: Dates | Categories */}
@@ -223,7 +246,9 @@ export default function QuickReportPage() {
                           ? setIncomeServiceIds(serviceOptions.map((x) => x.id))
                           : setAttendanceServiceIds(serviceOptions.map((x) => x.id))
                       }
-                      onClear={() => (mode === "income" ? setIncomeServiceIds([]) : setAttendanceServiceIds([]))}
+                      onClear={() =>
+                        mode === "income" ? setIncomeServiceIds([]) : setAttendanceServiceIds([])
+                      }
                       emptyText="No services yet."
                     />
                   </Card>
@@ -243,10 +268,10 @@ export default function QuickReportPage() {
                         name="attendanceView"
                         value={attendanceView}
                         onChange={(v) => setAttendanceView(v as AttendanceView)}
-                        options={[                          
+                        options={[
                           { value: "summary", label: "Summary" },
                           { value: "detailed", label: "Detailed" },
-                        ]}                        
+                        ]}
                       />
                     )}
                   </Card>
@@ -296,7 +321,9 @@ function ModePill({ label, active, onClick }: { label: string; active: boolean; 
       onClick={onClick}
       className={[
         "rounded-full border px-4 py-2 text-sm font-semibold",
-        active ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
+        active
+          ? "border-slate-900 bg-slate-900 text-white"
+          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
       ].join(" ")}
       type="button"
     >
@@ -325,11 +352,19 @@ function CheckList({
       <div className="flex items-center justify-between gap-3 px-3 py-2">
         <div className="text-xs font-semibold text-slate-600">{selected.length} selected</div>
         <div className="flex items-center gap-2">
-          <button onClick={onSelectAll} className="text-xs font-semibold text-slate-600 hover:text-slate-900" type="button">
+          <button
+            onClick={onSelectAll}
+            className="text-xs font-semibold text-slate-600 hover:text-slate-900"
+            type="button"
+          >
             Select all
           </button>
           <span className="text-slate-300">|</span>
-          <button onClick={onClear} className="text-xs font-semibold text-slate-600 hover:text-slate-900" type="button">
+          <button
+            onClick={onClear}
+            className="text-xs font-semibold text-slate-600 hover:text-slate-900"
+            type="button"
+          >
             Clear
           </button>
         </div>

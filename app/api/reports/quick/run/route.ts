@@ -42,7 +42,8 @@ type MemberRow = {
 
 function asRole(raw: unknown): Role {
   const v = String(raw);
-  if (v === "owner" || v === "admin" || v === "finance" || v === "member") return v;
+  if (v === "owner" || v === "admin" || v === "finance" || v === "member")
+    return v;
   return "member";
 }
 
@@ -63,6 +64,19 @@ function makeMemberName(m: MemberRow): string {
   const b = safeTrim(m.first_name);
   if (a && b) return `${a}, ${b}`;
   return a || b || "Unknown member";
+}
+
+function isNonZero(n: number, eps = 1e-9): boolean {
+  return Math.abs(n) > eps;
+}
+
+function pickRecord<T extends Record<string, number>>(
+  obj: T,
+  keys: string[]
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const k of keys) out[k] = obj[k] ?? 0;
+  return out;
 }
 
 async function getCategoryNameMap(orgId: string) {
@@ -127,7 +141,12 @@ export async function POST(req: Request) {
   try {
     const body = (await req.json()) as RunQuickReportBody;
 
-    if (!body.organization_id || !body.mode || !body.start_date || !body.end_date) {
+    if (
+      !body.organization_id ||
+      !body.mode ||
+      !body.start_date ||
+      !body.end_date
+    ) {
       return NextResponse.json(
         { error: "organization_id, mode, start_date, end_date are required" },
         { status: 400 }
@@ -145,7 +164,9 @@ export async function POST(req: Request) {
     }
 
     // --- Validate user ---
-    const { data: userRes, error: userErr } = await supabaseAdmin.auth.getUser(accessToken);
+    const { data: userRes, error: userErr } = await supabaseAdmin.auth.getUser(
+      accessToken
+    );
     if (userErr || !userRes?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -160,8 +181,10 @@ export async function POST(req: Request) {
       .eq("user_id", userId)
       .maybeSingle();
 
-    if (memErr) return NextResponse.json({ error: memErr.message }, { status: 400 });
-    if (!membership) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (memErr)
+      return NextResponse.json({ error: memErr.message }, { status: 400 });
+    if (!membership)
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     const role = asRole((membership as UserOrgRow).role);
 
@@ -195,12 +218,16 @@ export async function POST(req: Request) {
         .gte("session_date", body.start_date)
         .lte("session_date", body.end_date);
 
-      if (isNonEmptyArray(body.service_ids)) q = q.in("service_category_id", body.service_ids);
-      if (isNonEmptyArray(body.category_ids)) q = q.in("income_category_id", body.category_ids);
-      if (isNonEmptyArray(body.payment_methods)) q = q.in("payment_method", body.payment_methods);
+      if (isNonEmptyArray(body.service_ids))
+        q = q.in("service_category_id", body.service_ids);
+      if (isNonEmptyArray(body.category_ids))
+        q = q.in("income_category_id", body.category_ids);
+      if (isNonEmptyArray(body.payment_methods))
+        q = q.in("payment_method", body.payment_methods);
 
       const { data, error } = await q;
-      if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+      if (error)
+        return NextResponse.json({ error: error.message }, { status: 400 });
 
       const entries = (data ?? []) as IncomeEntryRow[];
       const memberIds = Array.from(new Set(entries.map((e) => e.member_id)));
@@ -216,14 +243,18 @@ export async function POST(req: Request) {
         .eq("org_id", body.organization_id)
         .in("id", memberIds);
 
-      if (mem2Err) return NextResponse.json({ error: mem2Err.message }, { status: 400 });
+      if (mem2Err)
+        return NextResponse.json({ error: mem2Err.message }, { status: 400 });
 
       const members = (memRows ?? []) as MemberRow[];
       const memberNameById = new Map<string, string>();
       for (const m of members) memberNameById.set(m.id, makeMemberName(m));
 
       const columns = catIds
-        .map((id) => ({ id, name: categoryNameById.get(id) ?? "Unknown category" }))
+        .map((id) => ({
+          id,
+          name: categoryNameById.get(id) ?? "Unknown category",
+        }))
         .sort((a, b) => a.name.localeCompare(b.name));
 
       type PivotRow = {
@@ -269,12 +300,44 @@ export async function POST(req: Request) {
         }
       }
 
+      const rowsNZ = rows.filter((r) => isNonZero(r.total));
+
+      // 2) Drop columns with col total = 0
+      const keptColIds = columns
+        .filter((c) => isNonZero(colTotals[c.id] ?? 0))
+        .map((c) => c.id);
+
+      const columnsNZ = columns.filter((c) => keptColIds.includes(c.id));
+
+      // 3) Prune values to kept columns
+      const rowsPruned = rowsNZ.map((r) => ({
+        ...r,
+        values: pickRecord(r.values, keptColIds),
+      }));
+
+      // 4) Rebuild colTotals from filtered rows (authoritative)
+      const colTotalsNZ: Record<string, number> = {};
+      for (const cid of keptColIds) colTotalsNZ[cid] = 0;
+
+      let grandTotalNZ = 0;
+      for (const r of rowsPruned) {
+        grandTotalNZ += r.total;
+        for (const cid of keptColIds) {
+          colTotalsNZ[cid] += r.values[cid] ?? 0;
+        }
+      }
+
       const resp: IncomeReport = {
         ok: true,
         mode: "income",
         branding,
         meta: { role },
-        table: { columns, rows, colTotals, grandTotal },
+        table: {
+          columns: columnsNZ,
+          rows: rowsPruned,
+          colTotals: colTotalsNZ,
+          grandTotal: grandTotalNZ,
+        },
       };
 
       return NextResponse.json(resp);
@@ -303,7 +366,8 @@ export async function POST(req: Request) {
       }
 
       const { data, error } = await q;
-      if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+      if (error)
+        return NextResponse.json({ error: error.message }, { status: 400 });
 
       const entries = (data ?? []) as ExpenseEntry[];
 
@@ -311,14 +375,19 @@ export async function POST(req: Request) {
       for (const e of entries) usedCategoryIds.add(e.expense_category_id);
 
       const columnIds = isNonEmptyArray(body.category_ids)
-        ? body.category_ids.filter((id) => usedCategoryIds.has(id) || categoryNameById.has(id))
+        ? body.category_ids.filter(
+            (id) => usedCategoryIds.has(id) || categoryNameById.has(id)
+          )
         : Array.from(usedCategoryIds);
 
       const columns = columnIds
         .map((id) => ({ id, name: categoryNameById.get(id) ?? "Unknown" }))
         .sort((a, b) => a.name.localeCompare(b.name));
 
-      const rowMap = new Map<string, { description: string; values: Record<string, number> }>();
+      const rowMap = new Map<
+        string,
+        { description: string; values: Record<string, number> }
+      >();
       const colTotals: Record<string, number> = {};
 
       for (const e of entries) {
@@ -340,14 +409,41 @@ export async function POST(req: Request) {
         a.description.localeCompare(b.description)
       );
 
-      // ExpenseReport type must match this shape:
-      // { table: { columns, rows, colTotals } }
+      // --- ZERO FILTERING (Expense) ---
+      // 1) Drop columns whose total is 0
+      const keptColIds = columns
+        .filter((c) => isNonZero(colTotals[c.id] ?? 0))
+        .map((c) => c.id);
+
+      const columnsNZ = columns.filter((c) => keptColIds.includes(c.id));
+
+      // 2) Drop rows where all kept columns are 0
+      const rowsNZ = rows.filter((r) =>
+        keptColIds.some((cid) => isNonZero(r.values[cid] ?? 0))
+      );
+
+      // 3) Prune values
+      const rowsPruned = rowsNZ.map((r) => ({
+        ...r,
+        values: pickRecord(r.values, keptColIds),
+      }));
+
+      // 4) Rebuild colTotals from filtered rows (authoritative)
+      const colTotalsNZ: Record<string, number> = {};
+      for (const cid of keptColIds) colTotalsNZ[cid] = 0;
+
+      for (const r of rowsPruned) {
+        for (const cid of keptColIds) {
+          colTotalsNZ[cid] += r.values[cid] ?? 0;
+        }
+      }
+
       const resp: ExpenseReport = {
         ok: true,
         mode: "expense",
         branding,
         meta: { role },
-        table: { columns, rows, colTotals },
+        table: { columns: columnsNZ, rows: rowsPruned, colTotals: colTotalsNZ },
       };
 
       return NextResponse.json(resp);
@@ -371,21 +467,28 @@ export async function POST(req: Request) {
 
       let q = supabaseAdmin
         .from("attendance_entries")
-        .select("session_date,service_category_id,entry_source,member_id,segment,age_group,count")
+        .select(
+          "session_date,service_category_id,entry_source,member_id,segment,age_group,count"
+        )
         .eq("org_id", body.organization_id)
         .gte("session_date", body.start_date)
         .lte("session_date", body.end_date);
 
-      if (isNonEmptyArray(body.service_ids)) q = q.in("service_category_id", body.service_ids);
-      if (isNonEmptyArray(body.segments)) q = q.in("segment", body.segments as Segment[]);
-      if (isNonEmptyArray(body.age_groups)) q = q.in("age_group", body.age_groups);
+      if (isNonEmptyArray(body.service_ids))
+        q = q.in("service_category_id", body.service_ids);
+      if (isNonEmptyArray(body.segments))
+        q = q.in("segment", body.segments as Segment[]);
+      if (isNonEmptyArray(body.age_groups))
+        q = q.in("age_group", body.age_groups);
 
       const { data, error } = await q;
-      if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+      if (error)
+        return NextResponse.json({ error: error.message }, { status: 400 });
 
       const entries = (data ?? []) as AttendanceEntry[];
 
-      const serviceName = (id: string) => categoryNameById.get(id) ?? "Unknown service";
+      const serviceName = (id: string) =>
+        categoryNameById.get(id) ?? "Unknown service";
 
       // ---- Summary ----
       if (view === "summary") {
@@ -446,9 +549,13 @@ export async function POST(req: Request) {
       // ---- Detailed ----
       // detailed is per service -> segment blocks -> list members with counts
       // NOTE: headcount rows have no member list, so we ignore headcount in detailed.
-      const memberEntries = entries.filter((e) => e.entry_source === "member" && e.member_id);
+      const memberEntries = entries.filter(
+        (e) => e.entry_source === "member" && e.member_id
+      );
 
-      const memberIds = Array.from(new Set(memberEntries.map((e) => e.member_id!)));
+      const memberIds = Array.from(
+        new Set(memberEntries.map((e) => e.member_id!))
+      );
 
       const { data: memData, error: memErr } = await supabaseAdmin
         .from("members")
@@ -456,7 +563,8 @@ export async function POST(req: Request) {
         .eq("org_id", body.organization_id)
         .in("id", memberIds);
 
-      if (memErr) return NextResponse.json({ error: memErr.message }, { status: 400 });
+      if (memErr)
+        return NextResponse.json({ error: memErr.message }, { status: 400 });
 
       const members = (memData ?? []) as MemberRow[];
       const memberById = new Map<string, MemberRow>();

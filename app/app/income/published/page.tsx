@@ -627,10 +627,10 @@ export default function IncomePublishedPage() {
                       <div className="grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100 rounded-t-3xl">
                         <div className="col-span-3">Member</div>
                         <div className="col-span-2">Category</div>
+                        <div className="col-span-2">Amount</div>
                         <div className="col-span-2">Entry</div>
                         <div className="col-span-2">Method</div>
-                        <div className="col-span-1">Cheque #</div>
-                        <div className="col-span-2 text-right">Amount</div>
+                        <div className="col-span-1">Cheque #</div>                        
                       </div>
 
                       {filteredEntries.length === 0 ? (
@@ -645,6 +645,7 @@ export default function IncomePublishedPage() {
                               <div className="col-span-2 text-slate-700">
                                 {incomeCatNameById.get(e.income_category_id) ?? "—"}
                               </div>
+                              <div className="col-span-2 font-semibold">{formatMoney(e.amount_cents)}</div>
                               <div className="col-span-2">
                                 <div className="text-slate-700">{e.entry_type}</div>
                                 {e.note ? <div className="text-xs text-slate-500 truncate">{e.note}</div> : null}
@@ -653,7 +654,7 @@ export default function IncomePublishedPage() {
                               <div className="col-span-1 text-slate-700">
                                 {e.payment_method === "cheque" ? e.cheque_number ?? "—" : "—"}
                               </div>
-                              <div className="col-span-2 text-right font-semibold">{formatMoney(e.amount_cents)}</div>
+                              
                             </div>
                           ))}
                         </div>

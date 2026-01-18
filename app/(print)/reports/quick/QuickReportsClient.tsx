@@ -38,6 +38,10 @@ function money(n: number) {
   return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
 
+function moneyOrEmpty(n: number): string {
+  return Math.abs(n) < 1e-9 ? "" : money(n);
+}
+
 export default function QuickReportPrintPage() {
   const router = useRouter();
   const sp = useSearchParams();
@@ -211,19 +215,19 @@ export default function QuickReportPrintPage() {
         {/* Header: centered, with your exact sizes */}
         <div className="text-center">
           {logoUrl ? (
-            <div className="mb-10 flex justify-center">
+            <div className="mb-3 flex justify-center">
               <Image
                 src={logoUrl}
                 alt="Organization logo"
-                width={72}
-                height={72}
-                className="h-16 w-16 object-contain"
+                width={80}
+                height={80}
+                className="h-20 w-20 object-contain"
                 unoptimized
                 priority
               />
             </div>
           ) : (
-            <div className="mb-10" />
+            <div className="mb-3" />
           )}
 
           <div style={{ fontSize: "22pt", fontWeight: 700 }}>{headerText}</div>
@@ -321,7 +325,7 @@ function IncomeTable({ data }: { data: IncomeReport }) {
                     <td className="border border-black px-2 py-1 td-cell">{r.member_name}</td>
                     {chunk.map((c) => (
                       <td key={c.id} className="border border-black px-2 py-1 text-center td-cell">
-                        {money(r.values[c.id] ?? 0)}
+                        {moneyOrEmpty(r.values[c.id] ?? 0)}
                       </td>
                     ))}
                     {showGrand ? (

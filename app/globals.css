@@ -28,12 +28,9 @@
 body {
   font-family: var(--font-geist-sans, Arial, Helvetica, sans-serif);
 }
-@media print {
-  @page {
-    margin-top: 8mm;
-    margin-left: 12mm;
-    margin-right: 12mm;
-    margin-bottom: 12mm;
-  }
-}
 
+@media print {
+  @page { margin: 10mm 12mm; }
+  .print-hidden { display: none !important; }
+  .break-page { page-break-after: always; break-after: page; }
+}

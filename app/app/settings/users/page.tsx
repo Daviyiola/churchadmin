@@ -178,7 +178,7 @@ export default function UsersSettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function createInvite() {
+  async function sendInvite() {
   if (!orgId) return;
 
   setInviteError("");
@@ -190,9 +190,7 @@ export default function UsersSettingsPage() {
     const accessToken = sessionRes.session?.access_token;
 
     if (!accessToken) {
-      setInviteError("Unauthorized. Please sign in again.");
-      setLoadingInvite(false);
-      return;
+      throw new Error("Unauthorized. Please sign in again.");
     }
 
     const res = await fetch("/api/invites/create", {
@@ -211,21 +209,25 @@ export default function UsersSettingsPage() {
     const json = await res.json();
 
     if (!res.ok) {
-      setInviteError(json.error || "Failed to create invite.");
-      setLoadingInvite(false);
-      return;
+      throw new Error(json.error || "Failed to send invite.");
     }
 
     setInviteUrl(json.inviteUrl);
-    setLoadingInvite(false);
+
+    setToastText(
+      json.emailed ? "Invite email sent ✓" : "Invite created ✓"
+    );
+    setToastOpen(true);
+    window.setTimeout(() => setToastOpen(false), 1600);
 
     loadUsers();
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Network error";
-      setInviteError(msg);
-      setLoadingInvite(false);
-    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Network error";
+    setInviteError(msg);
+  } finally {
+    setLoadingInvite(false);
   }
+}
 
   async function updateRole(user_id: string, newRole: Role) {
   if (!orgId) return;
@@ -633,12 +635,12 @@ export default function UsersSettingsPage() {
                 </select>
 
                 <button
-                  onClick={createInvite}
+                  onClick={sendInvite}
                   disabled={!canInvite || !!inviteUrl || !isAdmin}
                   className="mt-5 w-full rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-white
                             hover:bg-primary/85 disabled:bg-slate-300 disabled:cursor-not-allowed"
                 >
-                  {inviteUrl ? "Invite already created" : !isAdmin? "Only Admins can invite" : loadingInvite ? "Creating invite..." : "Create invite link"}
+                  {inviteUrl ? "Invite already created" : !isAdmin? "Only Admins can invite" : loadingInvite ? "Sending invite..." : "Send Invite Link"}
                 </button>
                 {inviteError ? (
                   <div className="mt-3 text-sm text-red-600">{inviteError}</div>
@@ -666,7 +668,7 @@ export default function UsersSettingsPage() {
                       </button>
                     </div>
                     <div className="mt-2 text-xs text-slate-500">
-                      Share this link with the invited user. Expires in 7 days.
+                      We emailed this invite link to the user. Expires in 7 days.
                     </div>
                   </div>
                 ) : null}

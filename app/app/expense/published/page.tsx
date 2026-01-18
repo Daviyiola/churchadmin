@@ -518,7 +518,11 @@ export default function ExpensePublishedPage() {
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="font-medium truncate">{label}</div>
-                          <div className={`font-medium truncate ${active ? "text-white" : ""}`}>
+                          <div
+                            className={`font-medium truncate ${
+                              active ? "text-white" : ""
+                            }`}
+                          >
                             Posted {b.posted_at ? fmtDate(b.posted_at) : "—"}
                           </div>
                         </div>
@@ -681,12 +685,12 @@ export default function ExpensePublishedPage() {
                     <div className="min-w-[1200px]">
                       <div className="grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100 rounded-t-3xl">
                         <div className="col-span-2">Date</div>
-                        <div className="col-span-3">Description</div>
+                        <div className="col-span-2">Description</div>
                         <div className="col-span-2">Category</div>
+                        <div className="col-span-1">Amount</div>
                         <div className="col-span-2">Vendor</div>
                         <div className="col-span-1">Method</div>
                         <div className="col-span-1">Cheque #</div>
-                        <div className="col-span-1 text-right">Amount</div>
                       </div>
 
                       {filteredEntries.length === 0 ? (
@@ -704,7 +708,7 @@ export default function ExpensePublishedPage() {
                                 {fmtDate(e.expense_date)}
                               </div>
 
-                              <div className="col-span-3">
+                              <div className="col-span-2">
                                 <div className="font-medium text-slate-900 line-clamp-1">
                                   {e.description}
                                 </div>
@@ -726,6 +730,10 @@ export default function ExpensePublishedPage() {
                                 </div>
                               </div>
 
+                              <div className="col-span-1 font-semibold">
+                                  {formatMoney(e.amount_cents)}
+                                </div>
+
                               <div className="col-span-2 text-slate-700">
                                 {e.vendor ?? "—"}
                               </div>
@@ -738,10 +746,6 @@ export default function ExpensePublishedPage() {
                                 {e.payment_method === "cheque"
                                   ? e.cheque_number ?? "—"
                                   : "—"}
-                              </div>
-
-                              <div className="col-span-1 text-right font-semibold">
-                                {formatMoney(e.amount_cents)}
                               </div>
                             </div>
                           ))}
@@ -933,9 +937,7 @@ export default function ExpensePublishedPage() {
 
               <button
                 className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                  postingAdj
-                    ? "bg-slate-300"
-                    : "bg-primary hover:bg-primary/85"
+                  postingAdj ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
                 }`}
                 disabled={postingAdj}
                 onClick={postAdjustment}

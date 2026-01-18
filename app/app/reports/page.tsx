@@ -14,10 +14,8 @@ export default function ReportsHomePage() {
     },
     {
       title: "Income statement",
-      desc: "Income vs Expense summary for a date range (coming soon).",
-      href: "/app/reports/income-statement",
-      badge: "Soon",
-      disabled: true,
+      desc: "Income vs Expense breakdown for a date range.",
+      href: "/app/reports/income-statement",     
     },
     {
       title: "Member giving report",

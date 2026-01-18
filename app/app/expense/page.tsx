@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 
-type Role = "owner" | "admin" | "finance" | "viewer" | "member";
+type Role = "owner" | "admin" | "finance" | "member";
 type CategoryType = "income" | "expense" | "services";
 type PaymentMethod = "cash" | "cheque" | "online";
 
@@ -123,10 +123,14 @@ function Toast({ show, text }: { show: boolean; text: string }) {
   return (
     <div
       className={`fixed right-6 top-6 z-[9999] transition-all duration-300 ${
-        show ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2 pointer-events-none"
+        show
+          ? "opacity-100 translate-y-0"
+          : "opacity-0 -translate-y-2 pointer-events-none"
       }`}
     >
-      <div className="rounded-2xl border bg-white px-4 py-3 text-sm shadow-lg">{text}</div>
+      <div className="rounded-2xl border bg-white px-4 py-3 text-sm shadow-lg">
+        {text}
+      </div>
     </div>
   );
 }
@@ -137,6 +141,12 @@ export default function ExpenseDraftPage() {
 
   const [role, setRole] = useState<Role | null>(null);
   const isFinance = role === "finance" || role === "admin" || role === "owner";
+
+  // quick add expense category
+  const [quickExpenseCatOpen, setQuickExpenseCatOpen] = useState(false);
+  const [qecName, setQecName] = useState("");
+  const [qecSaving, setQecSaving] = useState(false);
+  const [qecErr, setQecErr] = useState("");
 
   // reference
   const [expenseCats, setExpenseCats] = useState<CategoryRow[]>([]);
@@ -184,6 +194,103 @@ export default function ExpenseDraftPage() {
     [batches, selectedBatchId]
   );
 
+  const [expenseCatQuery, setExpenseCatQuery] = useState("");
+  const [expenseCatSuggestOpen, setExpenseCatSuggestOpen] = useState(false);
+  const clearedExpenseCatOnFocusRef = useRef(false);
+
+  const expenseCatLabelById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of expenseCats) map.set(c.id, c.name);
+    return map;
+  }, [expenseCats]);
+
+  const expenseCatIdByLabel = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of expenseCats) map.set(c.name.toLowerCase(), c.id);
+    return map;
+  }, [expenseCats]);
+
+  const filteredExpenseCats = useMemo(() => {
+    const needle = expenseCatQuery.trim().toLowerCase();
+    if (!needle) return expenseCats.slice(0, 8);
+    return expenseCats
+      .filter((c) => c.name.toLowerCase().includes(needle))
+      .slice(0, 8);
+  }, [expenseCatQuery, expenseCats]);
+
+  const exactExpenseCatMatchId = useMemo(() => {
+    const id = expenseCatIdByLabel.get(expenseCatQuery.trim().toLowerCase());
+    return id ?? null;
+  }, [expenseCatQuery, expenseCatIdByLabel]);
+
+  const showAddExpenseCatRow = useMemo(() => {
+    const q = expenseCatQuery.trim();
+    if (q.length < 2) return false;
+    return !exactExpenseCatMatchId;
+  }, [expenseCatQuery, exactExpenseCatMatchId]);
+
+  function openQuickAddExpenseCategoryFromQuery(q: string) {
+    setQecName(q.trim());
+    setQecErr("");
+    setQuickExpenseCatOpen(true);
+  }
+
+  function openQuickAddExpenseCategory() {
+    setQecName("");
+    setQecErr("");
+    setQuickExpenseCatOpen(true);
+  }
+
+  async function saveQuickExpenseCategory() {
+    if (!orgId) return;
+
+    const name = qecName.trim();
+    if (!name) {
+      setQecErr("Category name is required.");
+      return;
+    }
+
+    setQecSaving(true);
+    setQecErr("");
+
+    const { data: sessionRes } = await supabase.auth.getSession();
+    const userId = sessionRes.session?.user?.id;
+    if (!userId) {
+      setQecErr("You must be signed in.");
+      setQecSaving(false);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("categories")
+      .insert({
+        org_id: orgId,
+        name,
+        type: "expense",
+        status: "active",
+        created_by: userId,
+      })
+      .select("id,name")
+      .single();
+
+    if (error) {
+      setQecErr(error.message);
+      setQecSaving(false);
+      return;
+    }
+
+    await loadAll();
+
+    if (data?.id) {
+      setExpenseCategoryId(data.id);
+      setExpenseCatQuery(data.name);
+    }
+
+    setQecSaving(false);
+    setQuickExpenseCatOpen(false);
+    showToast("Expense category added");
+  }
+
   const draftCount = useMemo(() => batches.length, [batches]);
 
   const batchSummary = useMemo(() => {
@@ -222,7 +329,9 @@ export default function ExpenseDraftPage() {
         .order("name", { ascending: true }),
       supabase
         .from("expense_draft_batches")
-        .select("id,org_id,period_month,status,created_by,created_at,updated_at,posted_by,posted_at")
+        .select(
+          "id,org_id,period_month,status,created_by,created_at,updated_at,posted_by,posted_at"
+        )
         .eq("org_id", orgId)
         .eq("status", "draft")
         .order("updated_at", { ascending: false }),
@@ -329,10 +438,15 @@ export default function ExpenseDraftPage() {
       return;
     }
 
-    const ok = confirm("Delete this draft batch? This will remove all its draft items.");
+    const ok = confirm(
+      "Delete this draft batch? This will remove all its draft items."
+    );
     if (!ok) return;
 
-    const { error } = await supabase.from("expense_draft_batches").delete().eq("id", batchId);
+    const { error } = await supabase
+      .from("expense_draft_batches")
+      .delete()
+      .eq("id", batchId);
     if (error) {
       setErr(error.message);
       return;
@@ -347,7 +461,11 @@ export default function ExpenseDraftPage() {
   // ====== Item add/edit/delete ======
   const resetItemForm = () => {
     setExpenseDate(todayISO());
-    setExpenseCategoryId(expenseCats[0]?.id ?? "");
+
+    const firstCat = expenseCats[0]?.id ?? "";
+    setExpenseCategoryId(firstCat);
+    setExpenseCatQuery(firstCat ? expenseCatLabelById.get(firstCat) ?? "" : "");
+
     setPaymentMethod("cash");
     setChequeNumber("");
     setAmount("");
@@ -379,6 +497,7 @@ export default function ExpenseDraftPage() {
     setEditItemId(it.id);
     setExpenseDate(it.expense_date);
     setExpenseCategoryId(it.expense_category_id);
+    setExpenseCatQuery(expenseCatLabelById.get(it.expense_category_id) ?? "");
     setPaymentMethod(it.payment_method);
     setChequeNumber(it.cheque_number ?? "");
     setAmount((it.amount_cents / 100).toFixed(2));
@@ -484,7 +603,10 @@ export default function ExpenseDraftPage() {
     const ok = confirm("Remove this draft expense?");
     if (!ok) return;
 
-    const { error } = await supabase.from("expense_draft_items").delete().eq("id", id);
+    const { error } = await supabase
+      .from("expense_draft_items")
+      .delete()
+      .eq("id", id);
     if (error) {
       setErr(error.message);
       return;
@@ -515,7 +637,9 @@ export default function ExpenseDraftPage() {
     setPublishing(true);
     setErr("");
 
-    const { error } = await supabase.rpc("publish_expense_draft", { p_batch_id: selectedBatch.id });
+    const { error } = await supabase.rpc("publish_expense_draft", {
+      p_batch_id: selectedBatch.id,
+    });
     if (error) {
       setErr(error.message);
       setPublishing(false);
@@ -531,7 +655,9 @@ export default function ExpenseDraftPage() {
   };
 
   if (!orgId) {
-    return <div className="p-6 text-slate-700">No active organization selected.</div>;
+    return (
+      <div className="p-6 text-slate-700">No active organization selected.</div>
+    );
   }
 
   if (loading) {
@@ -547,17 +673,25 @@ export default function ExpenseDraftPage() {
         <div className="flex items-center justify-between px-6 py-4">
           <div>
             <div className="text-xl font-semibold">Expense</div>
-            <div className="text-sm text-slate-600">Draft batches and Publish to ledger</div>
+            <div className="text-sm text-slate-600">
+              Draft batches and Publish to ledger
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                draftCount >= 10 ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
+                draftCount >= 10
+                  ? "bg-slate-300"
+                  : "bg-primary hover:bg-primary/85"
               }`}
               disabled={draftCount >= 10}
               onClick={openCreateBatch}
-              title={draftCount >= 10 ? "Max 10 drafts reached" : "Create a new draft batch"}
+              title={
+                draftCount >= 10
+                  ? "Max 10 drafts reached"
+                  : "Create a new draft batch"
+              }
             >
               New draft batch
             </button>
@@ -588,7 +722,9 @@ export default function ExpenseDraftPage() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-semibold">Draft Batches</div>
-                <div className="mt-1 text-xs text-slate-600">{draftCount} / 10 drafts</div>
+                <div className="mt-1 text-xs text-slate-600">
+                  {draftCount} / 10 drafts
+                </div>
               </div>
               {/* <Pill>v1</Pill> */}
             </div>
@@ -604,17 +740,24 @@ export default function ExpenseDraftPage() {
                   const label = `Expense Entry — ${fmtMonth(b.period_month)}`;
 
                   return (
-                    <div key={b.id} className="rounded-2xl border bg-white overflow-hidden">
+                    <div
+                      key={b.id}
+                      className="rounded-2xl border bg-white overflow-hidden"
+                    >
                       <button
-                       className={`w-full px-4 py-3 text-left text-sm ${
-                          active ?"bg-primary text-white": "hover:bg-slate-50"
+                        className={`w-full px-4 py-3 text-left text-sm ${
+                          active ? "bg-primary text-white" : "hover:bg-slate-50"
                         }`}
                         onClick={() => setSelectedBatchId(b.id)}
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="font-medium truncate">{label}</div>
-                            <div className={`font-medium truncate ${active ? "text-white" : ""}`}>
+                            <div
+                              className={`font-medium truncate ${
+                                active ? "text-white" : ""
+                              }`}
+                            >
                               Draft • Updated {fmtDate(b.updated_at)}
                             </div>
                           </div>
@@ -655,7 +798,8 @@ export default function ExpenseDraftPage() {
                       Expense Entry — {fmtMonth(selectedBatch.period_month)}
                     </div>
                     <div className="mt-1 text-xs text-slate-600">
-                      Status: draft • {batchSummary.count} items • {formatMoney(batchSummary.cents)} (draft total)
+                      Status: draft • {batchSummary.count} items •{" "}
+                      {formatMoney(batchSummary.cents)} (draft total)
                     </div>
                   </div>
 
@@ -669,11 +813,15 @@ export default function ExpenseDraftPage() {
 
                     <button
                       className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                        !isFinance || publishing ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
+                        !isFinance || publishing
+                          ? "bg-slate-300"
+                          : "bg-primary hover:bg-primary/85"
                       }`}
                       disabled={!isFinance || publishing}
                       onClick={publishBatch}
-                      title={!isFinance ? "Finance/Admin only" : "Publish this draft"}
+                      title={
+                        !isFinance ? "Finance/Admin only" : "Publish this draft"
+                      }
                     >
                       {publishing ? "Publishing…" : "Publish"}
                     </button>
@@ -681,7 +829,8 @@ export default function ExpenseDraftPage() {
                 </div>
 
                 <div className="mt-5 rounded-2xl border bg-slate-50 p-4 text-sm text-slate-700">
-                  Add and edit draft expenses, then publish. Published entries become immutable.
+                  Add and edit draft expenses, then publish. Published entries
+                  become immutable.
                 </div>
 
                 {/* Items table */}
@@ -692,51 +841,71 @@ export default function ExpenseDraftPage() {
                         <div className="col-span-2">Date</div>
                         <div className="col-span-3">Description</div>
                         <div className="col-span-1">Category</div>
+                        <div className="col-span-1 ">Amount</div>
                         <div className="col-span-1">Method</div>
                         <div className="col-span-1">Cheque #</div>
-                        <div className="col-span-1 text-right">Amount</div>
                         <div className="col-span-3 text-right">Actions</div>
                       </div>
 
                       {items.length === 0 ? (
-                        <div className="p-6 text-sm text-slate-600">No items in this draft yet.</div>
+                        <div className="p-6 text-sm text-slate-600">
+                          No items in this draft yet.
+                        </div>
                       ) : (
                         <div className="divide-y">
                           {items.map((it) => (
-                            <div key={it.id} className="grid grid-cols-12 items-center gap-2 px-5 py-4 text-sm">
-                                <div className="col-span-2 text-slate-700">{fmtDate(it.expense_date)}</div>
-                                <div className="col-span-3">
-                                <div className="font-medium text-slate-900 line-clamp-1">{it.description}</div>
-                                {it.vendor ? <div className="mt-0.5 text-xs text-slate-500">Vendor: {it.vendor}</div> : null}
+                            <div
+                              key={it.id}
+                              className="grid grid-cols-12 items-center gap-2 px-5 py-4 text-sm"
+                            >
+                              <div className="col-span-2 text-slate-700">
+                                {fmtDate(it.expense_date)}
+                              </div>
+                              <div className="col-span-3">
+                                <div className="font-medium text-slate-900 line-clamp-1">
+                                  {it.description}
                                 </div>
+                                {it.vendor ? (
+                                  <div className="mt-0.5 text-xs text-slate-500">
+                                    Vendor: {it.vendor}
+                                  </div>
+                                ) : null}
+                              </div>
 
-                                <div className="col-span-1 font-semibold">
-                                {expenseCatNameById.get(it.expense_category_id) ?? "—"}
-                                </div>
+                              <div className="col-span-1 font-semibold">
+                                {expenseCatNameById.get(
+                                  it.expense_category_id
+                                ) ?? "—"}
+                              </div>
 
-                                <div className="col-span-1 text-slate-700">{it.payment_method}</div>
+                              <div className="col-span-1 font-semibold">
+                                {formatMoney(it.amount_cents)}
+                              </div>
 
-                                <div className="col-span-1 text-slate-700">
-                                {it.payment_method === "cheque" ? it.cheque_number ?? "—" : "—"}
-                                </div>
+                              <div className="col-span-1 text-slate-700">
+                                {it.payment_method}
+                              </div>
 
-                                <div className="col-span-1 text-right font-semibold">{formatMoney(it.amount_cents)}</div>
+                              <div className="col-span-1 text-slate-700">
+                                {it.payment_method === "cheque"
+                                  ? it.cheque_number ?? "—"
+                                  : "—"}
+                              </div>
 
-                                <div className="col-span-3 flex justify-end gap-2">
+                              <div className="col-span-3 flex justify-end gap-2">
                                 <button
-                                    className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
-                                    onClick={() => openEditItem(it)}
+                                  className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
+                                  onClick={() => openEditItem(it)}
                                 >
-                                    Edit
+                                  Edit
                                 </button>
                                 <button
-                                    className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
-                                    onClick={() => removeItem(it.id)}
+                                  className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
+                                  onClick={() => removeItem(it.id)}
                                 >
-                                    Remove
+                                  Remove
                                 </button>
-                                </div>
-
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -747,7 +916,8 @@ export default function ExpenseDraftPage() {
 
                 {!isFinance ? (
                   <div className="mt-4 text-xs text-slate-500">
-                    Anyone can add/edit drafts. Only Finance/Admin can publish. Only Finance/Admin can delete drafts.
+                    Anyone can add/edit drafts. Only Finance/Admin can publish.
+                    Only Finance/Admin can delete drafts.
                   </div>
                 ) : null}
               </>
@@ -758,18 +928,39 @@ export default function ExpenseDraftPage() {
 
       {/* Create batch modal */}
       {batchOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
-        onClick={() => setBatchOpen(false)}>
-          <div className="w-full max-w-xl rounded-3xl bg-white shadow-xl"
-          onClick={(e) => e.stopPropagation()}>
-            <div className="border-b px-6 py-4">
-              <div className="text-sm font-semibold">New expense draft batch</div>
-              <div className="text-xs text-slate-600">Pick the month you’re entering expenses for.</div>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+          onClick={() => setBatchOpen(false)}
+        >
+          <div
+            className="w-full max-w-xl rounded-3xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b px-6 py-4 flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-semibold">
+                  New expense draft batch
+                </div>
+                <div className="text-xs text-slate-600">
+                  Pick the month you’re entering expenses for.
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setBatchOpen(false)}
+                className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close"
+              >
+                ✕
+              </button>
             </div>
 
             <div className="px-6 py-6 space-y-4">
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">Month *</div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Month *
+                </div>
                 <input
                   type="month"
                   className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
@@ -777,13 +968,17 @@ export default function ExpenseDraftPage() {
                   onChange={(e) => setBatchMonth(e.target.value)}
                 />
                 <div className="mt-2 text-xs text-slate-500">
-                  This will create a batch like: <span className="font-semibold">Expense Entry — {batchMonth ? batchMonth : "YYYY-MM"}</span>
+                  This will create a batch like:{" "}
+                  <span className="font-semibold">
+                    Expense Entry — {batchMonth ? batchMonth : "YYYY-MM"}
+                  </span>
                 </div>
               </div>
 
               {draftCount >= 10 ? (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                  Max 10 drafts reached. Publish or delete one to create a new batch.
+                  Max 10 drafts reached. Publish or delete one to create a new
+                  batch.
                 </div>
               ) : null}
             </div>
@@ -795,9 +990,12 @@ export default function ExpenseDraftPage() {
               >
                 Cancel
               </button>
+
               <button
                 className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                  draftCount >= 10 ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
+                  draftCount >= 10
+                    ? "bg-slate-300"
+                    : "bg-primary hover:bg-primary/85"
                 }`}
                 disabled={draftCount >= 10}
                 onClick={createBatch}
@@ -809,23 +1007,100 @@ export default function ExpenseDraftPage() {
         </div>
       ) : null}
 
+      {quickExpenseCatOpen ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
+          onClick={() => setQuickExpenseCatOpen(false)}
+        >
+          <div
+            className="w-full max-w-xl rounded-3xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b px-6 py-4">
+              <div className="text-sm font-semibold">Add expense category</div>
+              <div className="text-xs text-slate-600">
+                Quick add without leaving Expense.
+              </div>
+            </div>
+
+            <div className="px-6 py-6 space-y-4">
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Name *
+                </div>
+                <input
+                  className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                  value={qecName}
+                  onChange={(e) => {
+                    setQecName(e.target.value);
+                    setQecErr("");
+                  }}
+                  placeholder="e.g., Fuel, Rent, Utilities…"
+                  autoFocus
+                />
+              </div>
+
+              {qecErr ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {qecErr}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
+              <button
+                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                onClick={() => setQuickExpenseCatOpen(false)}
+              >
+                Cancel
+              </button>
+
+              <button
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
+                  qecSaving ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
+                }`}
+                disabled={qecSaving}
+                onClick={saveQuickExpenseCategory}
+              >
+                {qecSaving ? "Saving…" : "Save category"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* Add/Edit item modal */}
       {itemOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
-        onClick={() => setItemOpen(false)}>
-          <div className="w-full max-w-3xl rounded-3xl bg-white shadow-xl"
-          onClick={(e) => e.stopPropagation()}>
-            <div className="border-b px-6 py-4">
-              <div className="text-sm font-semibold">
-                {itemMode === "create" ? "Add expense line" : "Edit expense line"}
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-3xl rounded-3xl bg-white shadow-xl">
+            <div className="border-b px-6 py-4 flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-semibold">
+                  {itemMode === "create"
+                    ? "Add expense line"
+                    : "Edit expense line"}
+                </div>
+                <div className="text-xs text-slate-600">
+                  Draft items can be edited freely until publishing.
+                </div>
               </div>
-              <div className="text-xs text-slate-600">Draft items can be edited freely until publishing.</div>
+
+              <button
+                type="button"
+                onClick={() => setItemOpen(false)}
+                className="rounded-full p-1.5 text-slate-900 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close"
+              >
+                ✕
+              </button>
             </div>
 
             <div className="max-h-[75vh] overflow-auto px-6 py-6 space-y-4">
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Date *</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Date *
+                  </div>
                   <input
                     type="date"
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
@@ -838,27 +1113,105 @@ export default function ExpenseDraftPage() {
                 </div>
 
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Expense category *</div>
-                  <select
-                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                    value={expenseCategoryId}
-                    onChange={(e) => {
-                      setExpenseCategoryId(e.target.value);
-                      setItemErr("");
-                    }}
-                  >
-                    <option value="">Select…</option>
-                    {expenseCats.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Expense category *
+                  </div>
+                  <div className="relative">
+                    <input
+                      className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                      value={expenseCatQuery}
+                      onFocus={() => {
+                        setExpenseCatSuggestOpen(true);
+
+                        // clear when cursor hits field (same behavior you liked)
+                        if (!clearedExpenseCatOnFocusRef.current) {
+                          clearedExpenseCatOnFocusRef.current = true;
+                          setExpenseCatQuery("");
+                          setExpenseCategoryId("");
+                          setItemErr("");
+                        }
+                      }}
+                      onBlur={() => {
+                        window.setTimeout(
+                          () => setExpenseCatSuggestOpen(false),
+                          120
+                        );
+                        clearedExpenseCatOnFocusRef.current = false;
+                      }}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setExpenseCatQuery(v);
+                        setItemErr("");
+
+                        const id = expenseCatIdByLabel.get(
+                          v.trim().toLowerCase()
+                        );
+                        setExpenseCategoryId(id ?? "");
+                        setExpenseCatSuggestOpen(true);
+                      }}
+                      placeholder="Type a category…"
+                    />
+
+                    {expenseCatSuggestOpen ? (
+                      <div className="absolute z-50 mt-2 w-full overflow-hidden rounded-2xl border bg-white shadow-lg">
+                        {filteredExpenseCats.length === 0 ? (
+                          <div className="px-4 py-3 text-sm text-slate-600">
+                            No matches.
+                          </div>
+                        ) : (
+                          filteredExpenseCats.map((c) => (
+                            <button
+                              type="button"
+                              key={c.id}
+                              className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => {
+                                setExpenseCategoryId(c.id);
+                                setExpenseCatQuery(c.name);
+                                setExpenseCatSuggestOpen(false);
+                                setItemErr("");
+                              }}
+                            >
+                              {c.name}
+                            </button>
+                          ))
+                        )}
+
+                        {showAddExpenseCatRow ? (
+                          <div className="border-t">
+                            <button
+                              type="button"
+                              className="block w-full px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-slate-50"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() =>
+                                openQuickAddExpenseCategoryFromQuery(
+                                  expenseCatQuery
+                                )
+                              }
+                            >
+                              + Add expense category
+                              {expenseCatQuery.trim()
+                                ? `: “${expenseCatQuery.trim()}”`
+                                : ""}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {!expenseCategoryId && expenseCatQuery.trim().length > 0 ? (
+                      <div className="mt-1 text-xs text-amber-700">
+                        Select a valid category (or add a new one).
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
 
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">Description *</div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Description *
+                </div>
                 <input
                   className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                   value={description}
@@ -871,7 +1224,9 @@ export default function ExpenseDraftPage() {
               </div>
 
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">Vendor (optional)</div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Vendor (optional)
+                </div>
                 <input
                   className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                   value={vendor}
@@ -885,7 +1240,9 @@ export default function ExpenseDraftPage() {
 
               <div className="grid gap-3 sm:grid-cols-3">
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Method *</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Method *
+                  </div>
                   <select
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                     value={paymentMethod}
@@ -907,7 +1264,9 @@ export default function ExpenseDraftPage() {
                   </div>
                   <input
                     className={`w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 ${
-                      paymentMethod !== "cheque" ? "bg-slate-50 text-slate-500" : ""
+                      paymentMethod !== "cheque"
+                        ? "bg-slate-50 text-slate-500"
+                        : ""
                     }`}
                     value={chequeNumber}
                     onChange={(e) => {
@@ -915,13 +1274,17 @@ export default function ExpenseDraftPage() {
                       setItemErr("");
                     }}
                     disabled={paymentMethod !== "cheque"}
-                    placeholder={paymentMethod === "cheque" ? "e.g., 103849" : "—"}
+                    placeholder={
+                      paymentMethod === "cheque" ? "e.g., 103849" : "—"
+                    }
                   />
                 </div>
               </div>
 
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">Amount *</div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Amount *
+                </div>
                 <input
                   ref={amountRef}
                   className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
@@ -943,20 +1306,24 @@ export default function ExpenseDraftPage() {
 
             <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
               <button
-                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                className="rounded-2xl border px-35 py-2 text-sm hover:bg-slate-50"
                 onClick={() => setItemOpen(false)}
               >
                 Close
               </button>
 
               <button
-                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
+                className={`rounded-2xl px-35 py-2 text-sm font-semibold text-white ${
                   savingItem ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
                 }`}
                 disabled={savingItem}
                 onClick={saveItem}
               >
-                {savingItem ? "Saving…" : itemMode === "create" ? "Save & add another" : "Save"}
+                {savingItem
+                  ? "Saving…"
+                  : itemMode === "create"
+                  ? "Save"
+                  : "Save"}
               </button>
             </div>
           </div>
