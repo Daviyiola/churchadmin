@@ -206,6 +206,7 @@ export default function DashboardPage() {
 
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const CHART_MIN_HEIGHT = 420; 
 
   // Income + Expense on, Net off by default
   const [visibleLines, setVisibleLines] = useState<Record<LineKey, boolean>>({
@@ -557,7 +558,10 @@ export default function DashboardPage() {
           {/* Chart */}
           <div
             className="rounded-3xl border bg-white p-5 lg:col-span-7 h-full flex flex-col"
-            style={rightCardMinH ? { minHeight: rightCardMinH } : undefined}
+            style={{
+            minHeight: Math.max(CHART_MIN_HEIGHT, rightCardMinH ?? 0),
+          }}
+
           >
             <div className="flex items-start justify-between gap-3">
               <div>

@@ -905,8 +905,12 @@ export default function IncomePage() {
 
       {/* Create batch modal */}
       {batchOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-          <div className="w-full max-w-xl rounded-3xl bg-white shadow-xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+        onClick={() => setBatchOpen(false)}
+        >
+          <div className="w-full max-w-xl rounded-3xl bg-white shadow-xl"
+          onClick={(e) => e.stopPropagation()}
+          >
             <div className="border-b px-6 py-4">
               <div className="text-sm font-semibold">New draft batch</div>
               <div className="text-xs text-slate-600">
@@ -971,8 +975,12 @@ export default function IncomePage() {
 
       {/* Add/Edit item modal */}
       {itemOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-          <div className="w-full max-w-3xl rounded-3xl bg-white shadow-xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+        onClick={() => setItemOpen(false)}
+        >
+          <div className="w-full max-w-3xl rounded-3xl bg-white shadow-xl"
+          onClick={(e) => e.stopPropagation()}
+          >
             <div className="border-b px-6 py-4">
               <div className="text-sm font-semibold">
                 {itemMode === "create" ? "Add income line" : "Edit income line"}
