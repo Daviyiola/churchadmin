@@ -35,7 +35,8 @@ async function isAdminForActiveOrg(orgId: string): Promise<boolean> {
     .maybeSingle();
 
   if (error) return false;
-  return data?.role === "admin";
+
+  return data?.role === "admin" || data?.role === "owner";
 }
 
 function formatDate(d?: string | null) {
@@ -463,7 +464,7 @@ export default function MembersPage() {
 
         {!isAdmin ? (
           <div className="mt-4 text-xs text-slate-500">
-            You can add members, but only admins can edit, archive/restore, or delete member info.
+            You can add members, but only admins/owners can edit, archive/restore, or delete member info.
           </div>
         ) : null}
       </div>
