@@ -181,7 +181,7 @@ export default function SignInPage() {
               </div>
 
               <div className="mt-4 text-center text-xs text-slate-500">
-                Admins can later manage multiple organizations.
+                Admins can manage multiple organizations.
               </div>
             </>
           ) : (

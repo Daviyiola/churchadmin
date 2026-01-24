@@ -62,8 +62,8 @@ function Pill({
     tone === "green"
       ? "border-green-200 bg-green-50 text-green-700"
       : tone === "amber"
-      ? "border-amber-200 bg-amber-50 text-amber-700"
-      : "border-slate-200 bg-slate-50 text-slate-700";
+        ? "border-amber-200 bg-amber-50 text-amber-700"
+        : "border-slate-200 bg-slate-50 text-slate-700";
 
   return (
     <span
@@ -109,12 +109,35 @@ export default function CategoriesPage() {
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return rows.filter((r) => {
-      if (typeFilter && r.type !== typeFilter) return false;
       if (!needle) return true;
-      const n = r.name.toLowerCase();
-      return n.includes(needle);
+      return r.name.toLowerCase().includes(needle);
     });
-  }, [rows, q, typeFilter]);
+  }, [rows, q]);
+
+  const kpis = useMemo(() => {
+    const base = filtered;
+
+    const res = {
+      total: 0,
+      income: 0,
+      expense: 0,
+      services: 0,
+    };
+
+    for (const c of base) {
+      res.total += 1;
+      if (c.type === "income") res.income += 1;
+      else if (c.type === "expense") res.expense += 1;
+      else res.services += 1;
+    }
+
+    return res;
+  }, [filtered]);
+
+  const displayed = useMemo(() => {
+    if (!typeFilter) return filtered;
+    return filtered.filter((c) => c.type === typeFilter);
+  }, [filtered, typeFilter]);
 
   const load = async () => {
     if (!orgId) return;
@@ -141,6 +164,10 @@ export default function CategoriesPage() {
 
     setLoading(false);
   };
+
+  useEffect(() => {
+    setTypeFilter("");
+  }, [tab, orgId]);
 
   useEffect(() => {
     load();
@@ -216,7 +243,7 @@ export default function CategoriesPage() {
 
     if (exists?.id) {
       setFormErr(
-        `A ${typeLabel(catType)} category named "${cleanName}" already exists.`
+        `A ${typeLabel(catType)} category named "${cleanName}" already exists.`,
       );
       return;
     }
@@ -236,8 +263,8 @@ export default function CategoriesPage() {
       if (isPostgresUniqueViolation(error)) {
         setFormErr(
           `A ${typeLabel(
-            catType
-          )} category named "${cleanName}" already exists.`
+            catType,
+          )} category named "${cleanName}" already exists.`,
         );
       } else {
         setFormErr(error.message);
@@ -299,7 +326,7 @@ export default function CategoriesPage() {
 
     if (exists?.id) {
       setFormErr(
-        `A ${typeLabel(catType)} category named "${cleanName}" already exists.`
+        `A ${typeLabel(catType)} category named "${cleanName}" already exists.`,
       );
       return;
     }
@@ -318,8 +345,8 @@ export default function CategoriesPage() {
       if (isPostgresUniqueViolation(error)) {
         setFormErr(
           `A ${typeLabel(
-            catType
-          )} category named "${cleanName}" already exists.`
+            catType,
+          )} category named "${cleanName}" already exists.`,
         );
       } else {
         setFormErr(error.message);
@@ -398,7 +425,7 @@ export default function CategoriesPage() {
             </div>
 
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-              <select
+              {/* <select
                 className="w-full sm:w-44 rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 value={typeFilter}
                 onChange={(e) => {
@@ -417,7 +444,7 @@ export default function CategoriesPage() {
                 <option value="income">Income</option>
                 <option value="expense">Expense</option>
                 <option value="services">Services</option>
-              </select>
+              </select> */}
 
               <input
                 className="w-full sm:w-80 rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
@@ -442,7 +469,123 @@ export default function CategoriesPage() {
           <div className="overflow-x-auto">
             {/* responsive horizontal scroll container */}
             <div className="min-w-[900px]">
-              <div className="grid grid-cols-12 border-b bg-primary px-5 py-4 text-sm font-semibold text-slate-100 rounded-t-3xl">
+              {/* KPI row */}
+              <div className="border-b bg-white px-5 py-6">
+                <div className="flex items-center justify-between gap-3">
+                  {typeFilter ? (
+                    <button
+                      type="button"
+                      className="rounded-xl border px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      onClick={() => setTypeFilter("")}
+                      title="Clear type filter"
+                    >
+                      Clear filter ✕
+                    </button>
+                  ) : (
+                    <div className="text-xs text-slate-500">
+                      Click a card to filter the table.
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-2 grid gap-7 sm:grid-cols-2 lg:grid-cols-4">
+                  {/* Total */}
+                  <button
+                    type="button"
+                    onClick={() => setTypeFilter("")}
+                    className={`rounded-2xl border px-4 py-3 text-left transition ${
+                      typeFilter === ""
+                        ? "bg-white border-primary"
+                        : "bg-white hover:bg-slate-50"
+                    }`}
+                    title="Show all types"
+                  >
+                    <div className="text-xs font-semibold text-slate-600">
+                      Total categories
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">
+                      {kpis.total}
+                    </div>
+                  </button>
+
+                  {/* Income */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setTypeFilter((cur) => (cur === "income" ? "" : "income"))
+                    }
+                    className={`rounded-2xl border px-4 py-3 text-left transition ${
+                      typeFilter === "income"
+                        ? "bg-primary/15 border-primary"
+                        : "bg-white hover:bg-slate-50"
+                    }`}
+                    title="Filter to Income"
+                  >
+                    <div className="text-xs font-semibold text-slate-600">
+                      Income
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">
+                      {kpis.income}
+                    </div>
+                  </button>
+
+                  {/* Expense */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setTypeFilter((cur) =>
+                        cur === "expense" ? "" : "expense",
+                      )
+                    }
+                    className={`rounded-2xl border px-4 py-3 text-left transition ${
+                      typeFilter === "expense"
+                        ? "bg-primary/15 border-primary"
+                        : "bg-white hover:bg-slate-50"
+                    }`}
+                    title="Filter to Expense"
+                  >
+                    <div className="text-xs font-semibold text-slate-600">
+                      Expense
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">
+                      {kpis.expense}
+                    </div>
+                  </button>
+
+                  {/* Services */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setTypeFilter((cur) =>
+                        cur === "services" ? "" : "services",
+                      )
+                    }
+                    className={`rounded-2xl border px-4 py-3 text-left transition ${
+                      typeFilter === "services"
+                        ? "bg-primary/15 border-primary"
+                        : "bg-white hover:bg-slate-50"
+                    }`}
+                    title="Filter to Services"
+                  >
+                    <div className="text-xs font-semibold text-slate-600">
+                      Services
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">
+                      {kpis.services}
+                    </div>
+                  </button>
+                </div>
+
+                <div className="mt-3 text-xs text-slate-500">
+                  Showing{" "}
+                  <span className="font-semibold">{displayed.length}</span>{" "}
+                  {displayed.length === 1 ? "category" : "categories"}
+                  {q.trim() ? ` matching “${q.trim()}”` : ""}
+                  {typeFilter ? ` in ${typeLabel(typeFilter)}` : ""}.
+                </div>
+              </div>
+
+              <div className="grid grid-cols-12 border-b bg-primary px-5 py-4 text-sm font-semibold text-slate-100">
                 <div className="col-span-6">Name</div>
                 <div className="col-span-2">Type</div>
                 <div className="col-span-3">Created</div>
@@ -451,17 +594,28 @@ export default function CategoriesPage() {
 
               {loading ? (
                 <div className="p-6 text-sm text-slate-600">Loading…</div>
-              ) : filtered.length === 0 ? (
+              ) : displayed.length === 0 ? (
                 <div className="p-6 text-sm text-slate-600">
-                  {q.trim()
-                    ? "No categories match your search."
-                    : tab === "active"
-                    ? "No active categories yet."
-                    : "No archived categories."}
+                  {typeFilter ? (
+                    <>
+                      No{" "}
+                      <span className="font-semibold">
+                        {typeLabel(typeFilter)}
+                      </span>{" "}
+                      categories
+                      {q.trim() ? " for this search." : "."}
+                    </>
+                  ) : q.trim() ? (
+                    "No categories match your search."
+                  ) : tab === "active" ? (
+                    "No active categories yet."
+                  ) : (
+                    "No archived categories."
+                  )}
                 </div>
               ) : (
                 <div className="divide-y">
-                  {filtered.map((c) => (
+                  {displayed.map((c) => (
                     <div
                       key={c.id}
                       className="grid grid-cols-12 items-center px-5 py-4 text-sm"
@@ -543,8 +697,8 @@ export default function CategoriesPage() {
                 {mode === "create"
                   ? "Anyone can add a category."
                   : isAdmin
-                  ? "Admin-only edit."
-                  : "Admin-only edit."}
+                    ? "Admin-only edit."
+                    : "Admin-only edit."}
               </div>
             </div>
 
