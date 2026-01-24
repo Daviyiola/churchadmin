@@ -333,7 +333,7 @@ export default function AttendanceDraftPage() {
       supabase
         .from("members")
         .select(
-          "id,first_name,last_name,status,gender,dob,age_group,segment,note",
+          "id,first_name,last_name,status,gender,dob,age_group,segment",
         )
         .eq("org_id", orgId)
         .eq("status", "active")
