@@ -984,7 +984,7 @@ export default function DashboardPage() {
       <div className="border-b">
         <div className="px-6 py-4">
           <div className="flex items-center gap-4">
-            <div className="mt-70">
+            <div className="mt-7">
               <div className="text-xl font-semibold ">Dashboard</div>
               <div className="text-sm text-slate-600">
                 Published summaries • Jan–Dec trend
