@@ -72,7 +72,7 @@ function isNonZero(n: number, eps = 1e-9): boolean {
 
 function pickRecord<T extends Record<string, number>>(
   obj: T,
-  keys: string[]
+  keys: string[],
 ): Record<string, number> {
   const out: Record<string, number> = {};
   for (const k of keys) out[k] = obj[k] ?? 0;
@@ -106,7 +106,7 @@ async function getBranding(orgId: string) {
   const { data: s, error: sErr } = await supabaseAdmin
     .from("organization_settings")
     .select(
-      "organization_id,logo_path,use_default_logo,report_header_text,report_subheader_text,report_banner_bg_rgb,report_banner_text_rgb"
+      "organization_id,logo_path,use_default_logo,report_header_text,report_subheader_text,report_banner_bg_rgb,report_banner_text_rgb",
     )
     .eq("organization_id", orgId)
     .maybeSingle();
@@ -149,7 +149,7 @@ export async function POST(req: Request) {
     ) {
       return NextResponse.json(
         { error: "organization_id, mode, start_date, end_date are required" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -164,9 +164,8 @@ export async function POST(req: Request) {
     }
 
     // --- Validate user ---
-    const { data: userRes, error: userErr } = await supabaseAdmin.auth.getUser(
-      accessToken
-    );
+    const { data: userRes, error: userErr } =
+      await supabaseAdmin.auth.getUser(accessToken);
     if (userErr || !userRes?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -212,7 +211,7 @@ export async function POST(req: Request) {
       let q = supabaseAdmin
         .from("income_entries")
         .select(
-          "session_date,service_category_id,member_id,income_category_id,payment_method,amount_cents,entry_type"
+          "session_date,service_category_id,member_id,income_category_id,payment_method,amount_cents,entry_type",
         )
         .eq("org_id", body.organization_id)
         .gte("session_date", body.start_date)
@@ -287,7 +286,7 @@ export async function POST(req: Request) {
       }
 
       const rows = Array.from(rowMap.values()).sort((a, b) =>
-        a.member_name.localeCompare(b.member_name)
+        a.member_name.localeCompare(b.member_name),
       );
 
       const colTotals: Record<string, number> = {};
@@ -348,22 +347,26 @@ export async function POST(req: Request) {
     // =========================
     if (body.mode === "expense") {
       type ExpenseEntry = {
+        expense_date: string;
         expense_category_id: string;
         description: string | null;
+        vendor: string | null;
         amount_cents: number;
         entry_type: "normal" | "adjustment";
       };
 
       let q = supabaseAdmin
         .from("expense_entries")
-        .select("expense_category_id,description,amount_cents,entry_type")
+        .select(
+          "expense_date,expense_category_id,description,vendor,amount_cents,entry_type",
+        )
         .eq("org_id", body.organization_id)
         .gte("expense_date", body.start_date)
         .lte("expense_date", body.end_date);
 
-      if (isNonEmptyArray(body.category_ids)) {
+      if (isNonEmptyArray(body.category_ids))
         q = q.in("expense_category_id", body.category_ids);
-      }
+      if (isNonEmptyArray(body.vendors)) q = q.in("vendor", body.vendors);
 
       const { data, error } = await q;
       if (error)
@@ -371,79 +374,51 @@ export async function POST(req: Request) {
 
       const entries = (data ?? []) as ExpenseEntry[];
 
-      const usedCategoryIds = new Set<string>();
-      for (const e of entries) usedCategoryIds.add(e.expense_category_id);
+      const rows = entries.map((e) => {
+        const category_name =
+          categoryNameById.get(e.expense_category_id) ?? "Unknown";
+        return {
+          expense_date: e.expense_date,
+          description: safeTrim(e.description) || "—",
+          vendor: safeTrim(e.vendor) || "—",
+          category_id: e.expense_category_id,
+          category_name,
+          amount: moneyFromCents(e.amount_cents),
+        };
+      });
 
-      const columnIds = isNonEmptyArray(body.category_ids)
-        ? body.category_ids.filter(
-            (id) => usedCategoryIds.has(id) || categoryNameById.has(id)
-          )
-        : Array.from(usedCategoryIds);
+      const sort = body.expense_sort === "category" ? "category" : "date";
 
-      const columns = columnIds
-        .map((id) => ({ id, name: categoryNameById.get(id) ?? "Unknown" }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-
-      const rowMap = new Map<
-        string,
-        { description: string; values: Record<string, number> }
-      >();
-      const colTotals: Record<string, number> = {};
-
-      for (const e of entries) {
-        const desc = safeTrim(e.description) || "—";
-        const cid = e.expense_category_id;
-        const amt = moneyFromCents(e.amount_cents);
-
-        let row = rowMap.get(desc);
-        if (!row) {
-          row = { description: desc, values: {} };
-          rowMap.set(desc, row);
+      rows.sort((a, b) => {
+        if (sort === "date") {
+          if (a.expense_date !== b.expense_date)
+            return a.expense_date.localeCompare(b.expense_date);
+          // stable-ish tie breaks
+          if (a.category_name !== b.category_name)
+            return a.category_name.localeCompare(b.category_name);
+          return a.description.localeCompare(b.description);
         }
 
-        row.values[cid] = (row.values[cid] ?? 0) + amt;
-        colTotals[cid] = (colTotals[cid] ?? 0) + amt;
-      }
+        // category sort
+        if (a.category_name !== b.category_name)
+          return a.category_name.localeCompare(b.category_name);
+        if (a.expense_date !== b.expense_date)
+          return a.expense_date.localeCompare(b.expense_date);
+        return a.description.localeCompare(b.description);
+      });
 
-      const rows = Array.from(rowMap.values()).sort((a, b) =>
-        a.description.localeCompare(b.description)
-      );
-
-      // --- ZERO FILTERING (Expense) ---
-      // 1) Drop columns whose total is 0
-      const keptColIds = columns
-        .filter((c) => isNonZero(colTotals[c.id] ?? 0))
-        .map((c) => c.id);
-
-      const columnsNZ = columns.filter((c) => keptColIds.includes(c.id));
-
-      // 2) Drop rows where all kept columns are 0
-      const rowsNZ = rows.filter((r) =>
-        keptColIds.some((cid) => isNonZero(r.values[cid] ?? 0))
-      );
-
-      // 3) Prune values
-      const rowsPruned = rowsNZ.map((r) => ({
-        ...r,
-        values: pickRecord(r.values, keptColIds),
-      }));
-
-      // 4) Rebuild colTotals from filtered rows (authoritative)
-      const colTotalsNZ: Record<string, number> = {};
-      for (const cid of keptColIds) colTotalsNZ[cid] = 0;
-
-      for (const r of rowsPruned) {
-        for (const cid of keptColIds) {
-          colTotalsNZ[cid] += r.values[cid] ?? 0;
-        }
-      }
+      const grandTotal = rows.reduce((sum, r) => sum + r.amount, 0);
 
       const resp: ExpenseReport = {
         ok: true,
         mode: "expense",
         branding,
         meta: { role },
-        table: { columns: columnsNZ, rows: rowsPruned, colTotals: colTotalsNZ },
+        table: {
+          rows,
+          grandTotal,
+          sort,
+        },
       };
 
       return NextResponse.json(resp);
@@ -468,7 +443,7 @@ export async function POST(req: Request) {
       let q = supabaseAdmin
         .from("attendance_entries")
         .select(
-          "session_date,service_category_id,entry_source,member_id,segment,age_group,count"
+          "session_date,service_category_id,entry_source,member_id,segment,age_group,count",
         )
         .eq("org_id", body.organization_id)
         .gte("session_date", body.start_date)
@@ -550,16 +525,27 @@ export async function POST(req: Request) {
       // detailed is per service -> segment blocks -> list members with counts
       // NOTE: headcount rows have no member list, so we ignore headcount in detailed.
       const memberEntries = entries.filter(
-        (e) => e.entry_source === "member" && e.member_id
+        (e) => e.entry_source === "member" && e.member_id,
       );
 
       const memberIds = Array.from(
-        new Set(memberEntries.map((e) => e.member_id!))
+        new Set(memberEntries.map((e) => e.member_id!)),
       );
+
+      if (memberIds.length === 0) {
+        const resp: AttendanceReport = {
+          ok: true,
+          mode: "attendance",
+          branding,
+          meta: { role, view: "detailed" },
+          detailed: { services: [] },
+        };
+        return NextResponse.json(resp);
+      }
 
       const { data: memData, error: memErr } = await supabaseAdmin
         .from("members")
-        .select("id,first_name,last_name,segment")
+        .select("id,first_name,last_name")
         .eq("org_id", body.organization_id)
         .in("id", memberIds);
 
@@ -588,8 +574,9 @@ export async function POST(req: Request) {
 
       for (const e of memberEntries) {
         const mid = e.member_id!;
-        const m = memberById.get(mid);
-        if (!m || !m.segment) continue;
+        const seg = e.segment;
+        const add = Number(e.count ?? 0);
+        if (!add) continue;
 
         let segMap = serviceMap.get(e.service_category_id);
         if (!segMap) {
@@ -598,10 +585,10 @@ export async function POST(req: Request) {
           serviceMap.set(e.service_category_id, segMap);
         }
 
-        const memberCounts = segMap.get(m.segment);
+        const memberCounts = segMap.get(seg);
         if (!memberCounts) continue;
 
-        memberCounts.set(mid, (memberCounts.get(mid) ?? 0) + 1);
+        memberCounts.set(mid, (memberCounts.get(mid) ?? 0) + add);
       }
 
       const services: ServiceBlock[] = Array.from(serviceMap.entries())

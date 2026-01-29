@@ -1,39 +1,6 @@
-import { getActiveOrgId } from "@/lib/auth";
 export type QuickReportMode = "income" | "expense" | "attendance";
 export type PaymentMethod = "cash" | "cheque" | "online";
 export type Segment = "men" | "women" | "boys" | "girls";
-
-export function buildQuickReportPrintUrl(params: Record<string, string | string[]>) {
-  const orgId = getActiveOrgId();
-  if (!orgId) throw new Error("No active organization selected.");
-
-  const usp = new URLSearchParams();
-  usp.set("org", orgId);
-
-  for (const [k, v] of Object.entries(params)) {
-    if (Array.isArray(v)) v.forEach((x) => usp.append(k, x));
-    else usp.set(k, v);
-  }
-
-  return `/reports/quick/print?${usp.toString()}`;
-}
-
-export type RunQuickReportBody = {
-  organization_id: string;
-  mode: QuickReportMode;
-  start_date: string; // yyyy-mm-dd
-  end_date: string;   // yyyy-mm-dd
-
-  service_ids?: string[];
-  category_ids?: string[];
-  payment_methods?: PaymentMethod[];
-
-  vendors?: string[];
-
-  segments?: Segment[];
-  age_groups?: string[];
-  view?: AttendanceView;
-};
 
 // ---------- Response Types ----------
 export type IncomeColumn = { id: string; name: string };
@@ -58,35 +25,27 @@ export type IncomeReport = {
   };
 };
 
+export type ExpenseSort = "date" | "category";
+
 export type ExpenseLedgerRow = {
-  id: string;
-  date: string; // yyyy-mm-dd
-  category_id: string;
-  category: string;
+  expense_date: string;     // YYYY-MM-DD
   description: string;
   vendor: string;
-  method: string;
-  amount: number; // dollars
-  entry_type: "normal" | "adjustment";
-};
-
-export type ExpenseTotalsRow = { category: string; amount: number };
-
-export type ExpensePivotTable = {
-  columns: { id: string; name: string }[]; // category columns (expense)
-  rows: {
-    description: string;
-    values: Record<string, number>; // category_id -> amount
-  }[];
-  colTotals: Record<string, number>; // category_id -> total
+  category_id: string;
+  category_name: string;
+  amount: number;           // dollars
 };
 
 export type ExpenseReport = {
   ok: true;
   mode: "expense";
-  meta: { role: string };
   branding: Branding;
-  table: ExpensePivotTable;
+  meta: { role: string };
+  table: {
+    rows: ExpenseLedgerRow[];
+    grandTotal: number;
+    sort: ExpenseSort;
+  };
 };
 
 export type AttendanceView = "summary" | "detailed";
@@ -152,3 +111,21 @@ export type Branding = {
 };
 
 
+export type RunQuickReportBody = {
+  organization_id: string;
+  mode: QuickReportMode;
+  start_date: string;
+  end_date: string;
+
+  service_ids?: string[];
+  category_ids?: string[];
+  payment_methods?: PaymentMethod[];
+  vendors?: string[];
+
+  expense_sort?: ExpenseSort;
+
+  // attendance…
+  segments?: Segment[];
+  age_groups?: string[];
+  view?: AttendanceView;
+};

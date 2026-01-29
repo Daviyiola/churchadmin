@@ -2,15 +2,22 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { buildQuickReportPrintUrl, type QuickReportMode } from "@/lib/reports/quick/printUrl";
+import {
+  buildQuickReportPrintUrl,
+  type QuickReportMode,
+} from "@/lib/reports/quick/printUrl";
 
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 
 type CategoryType = "income" | "expense" | "services";
 type Cat = { id: string; name: string; type: CategoryType };
+type ExpenseSort = "date" | "category";
 
-async function fetchCategories(orgId: string, type: CategoryType): Promise<Cat[]> {
+async function fetchCategories(
+  orgId: string,
+  type: CategoryType,
+): Promise<Cat[]> {
   const { data, error } = await supabase
     .from("categories")
     .select("id,name,type,status")
@@ -46,14 +53,22 @@ export default function QuickReportPage() {
   const [incomeCategoryIds, setIncomeCategoryIds] = useState<string[]>([]);
   const [expenseCategoryIds, setExpenseCategoryIds] = useState<string[]>([]);
   const [incomeServiceIds, setIncomeServiceIds] = useState<string[]>([]);
-  const [attendanceServiceIds, setAttendanceServiceIds] = useState<string[]>([]);
+  const [attendanceServiceIds, setAttendanceServiceIds] = useState<string[]>(
+    [],
+  );
 
   // Attendance radio stays as-is (do NOT default-check beyond "summary")
-  const [attendanceView, setAttendanceView] = useState<AttendanceView>("summary");
+  const [attendanceView, setAttendanceView] =
+    useState<AttendanceView>("summary");
+  const [expenseSort, setExpenseSort] = useState<ExpenseSort>("date");
 
   const [serviceOptions, setServiceOptions] = useState<Option[]>([]);
-  const [incomeCategoryOptions, setIncomeCategoryOptions] = useState<Option[]>([]);
-  const [expenseCategoryOptions, setExpenseCategoryOptions] = useState<Option[]>([]);
+  const [incomeCategoryOptions, setIncomeCategoryOptions] = useState<Option[]>(
+    [],
+  );
+  const [expenseCategoryOptions, setExpenseCategoryOptions] = useState<
+    Option[]
+  >([]);
   const [loadErr, setLoadErr] = useState("");
 
   useEffect(() => {
@@ -88,7 +103,9 @@ export default function QuickReportPage() {
         setExpenseCategoryIds(expOpts.map((x) => x.id));
       } catch (e: unknown) {
         if (!alive) return;
-        setLoadErr(e instanceof Error ? e.message : "Failed to load categories.");
+        setLoadErr(
+          e instanceof Error ? e.message : "Failed to load categories.",
+        );
       }
     })();
 
@@ -99,7 +116,8 @@ export default function QuickReportPage() {
 
   function openPrintView() {
     if (!start || !end) return alert("Please select a start and end date.");
-    if (end < start) return alert("End date cannot be earlier than start date.");
+    if (end < start)
+      return alert("End date cannot be earlier than start date.");
 
     const service_ids =
       mode === "income"
@@ -109,15 +127,23 @@ export default function QuickReportPage() {
           : undefined;
 
     const category_ids =
-      mode === "income" ? incomeCategoryIds : mode === "expense" ? expenseCategoryIds : undefined;
+      mode === "income"
+        ? incomeCategoryIds
+        : mode === "expense"
+          ? expenseCategoryIds
+          : undefined;
 
     const url = buildQuickReportPrintUrl({
       mode,
       start,
       end,
-      service_ids: service_ids?.length ? service_ids : undefined,
-      category_ids: category_ids?.length ? category_ids : undefined,
+
+      service_id: service_ids?.length ? service_ids : undefined,
+      category_id: category_ids?.length ? category_ids : undefined,
+
       view: mode === "attendance" ? attendanceView : undefined,
+
+      expense_sort: mode === "expense" ? expenseSort : undefined,
     });
 
     window.open(url, "_blank", "noopener,noreferrer");
@@ -162,8 +188,16 @@ export default function QuickReportPage() {
               ) : null}
 
               <div className="flex flex-wrap gap-2">
-                <ModePill label="Income" active={mode === "income"} onClick={() => setMode("income")} />
-                <ModePill label="Expense" active={mode === "expense"} onClick={() => setMode("expense")} />
+                <ModePill
+                  label="Income"
+                  active={mode === "income"}
+                  onClick={() => setMode("income")}
+                />
+                <ModePill
+                  label="Expense"
+                  active={mode === "expense"}
+                  onClick={() => setMode("expense")}
+                />
                 <ModePill
                   label="Attendance"
                   active={mode === "attendance"}
@@ -173,8 +207,8 @@ export default function QuickReportPage() {
 
               {/* Expense: Dates | Categories */}
               {mode === "expense" ? (
-                <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
-                  <Card title="Date range">
+                <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-3">
+                 <Card title="Date range">
                     <div className="grid grid-cols-1 gap-3">
                       <Field label="Start date">
                         <input
@@ -200,10 +234,28 @@ export default function QuickReportPage() {
                     <CheckList
                       options={expenseCategoryOptions}
                       selected={expenseCategoryIds}
-                      onToggle={(id) => setExpenseCategoryIds(toggleId(expenseCategoryIds, id))}
-                      onSelectAll={() => setExpenseCategoryIds(expenseCategoryOptions.map((x) => x.id))}
+                      onToggle={(id) =>
+                        setExpenseCategoryIds(toggleId(expenseCategoryIds, id))
+                      }
+                      onSelectAll={() =>
+                        setExpenseCategoryIds(
+                          expenseCategoryOptions.map((x) => x.id),
+                        )
+                      }
                       onClear={() => setExpenseCategoryIds([])}
                       emptyText="No categories yet."
+                    />
+                  </Card>
+
+                    <Card title="Sort">
+                    <RadioGroup
+                      name="expenseSort"
+                      value={expenseSort}
+                      onChange={(v) => setExpenseSort(v as ExpenseSort)}
+                      options={[
+                        { value: "date", label: "Date (earliest → latest)" },
+                        { value: "category", label: "Category (A → Z)" },
+                      ]}
                     />
                   </Card>
                 </div>
@@ -235,31 +287,51 @@ export default function QuickReportPage() {
                   <Card title="Services">
                     <CheckList
                       options={serviceOptions}
-                      selected={mode === "income" ? incomeServiceIds : attendanceServiceIds}
+                      selected={
+                        mode === "income"
+                          ? incomeServiceIds
+                          : attendanceServiceIds
+                      }
                       onToggle={(id) =>
                         mode === "income"
                           ? setIncomeServiceIds(toggleId(incomeServiceIds, id))
-                          : setAttendanceServiceIds(toggleId(attendanceServiceIds, id))
+                          : setAttendanceServiceIds(
+                              toggleId(attendanceServiceIds, id),
+                            )
                       }
                       onSelectAll={() =>
                         mode === "income"
                           ? setIncomeServiceIds(serviceOptions.map((x) => x.id))
-                          : setAttendanceServiceIds(serviceOptions.map((x) => x.id))
+                          : setAttendanceServiceIds(
+                              serviceOptions.map((x) => x.id),
+                            )
                       }
                       onClear={() =>
-                        mode === "income" ? setIncomeServiceIds([]) : setAttendanceServiceIds([])
+                        mode === "income"
+                          ? setIncomeServiceIds([])
+                          : setAttendanceServiceIds([])
                       }
                       emptyText="No services yet."
                     />
                   </Card>
 
-                  <Card title={mode === "income" ? "Income categories" : "Report type"}>
+                  <Card
+                    title={
+                      mode === "income" ? "Income categories" : "Report type"
+                    }
+                  >
                     {mode === "income" ? (
                       <CheckList
                         options={incomeCategoryOptions}
                         selected={incomeCategoryIds}
-                        onToggle={(id) => setIncomeCategoryIds(toggleId(incomeCategoryIds, id))}
-                        onSelectAll={() => setIncomeCategoryIds(incomeCategoryOptions.map((x) => x.id))}
+                        onToggle={(id) =>
+                          setIncomeCategoryIds(toggleId(incomeCategoryIds, id))
+                        }
+                        onSelectAll={() =>
+                          setIncomeCategoryIds(
+                            incomeCategoryOptions.map((x) => x.id),
+                          )
+                        }
                         onClear={() => setIncomeCategoryIds([])}
                         emptyText="No categories yet."
                       />
@@ -287,7 +359,9 @@ export default function QuickReportPage() {
                   Open print view
                 </button>
 
-                <div className="mt-2 text-xs text-slate-500">Note: Totals always include adjustments.</div>
+                <div className="mt-2 text-xs text-slate-500">
+                  Note: Totals always include adjustments.
+                </div>
               </div>
             </div>
           </div>
@@ -297,7 +371,13 @@ export default function QuickReportPage() {
   );
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="rounded-3xl border bg-white p-4">
       <div className="text-xs font-semibold text-slate-600">{title}</div>
@@ -306,7 +386,13 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div>
       <div className="mb-1 text-xs font-semibold text-slate-600">{label}</div>
@@ -315,7 +401,15 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function ModePill({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+function ModePill({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
   return (
     <button
       onClick={onClick}
@@ -350,7 +444,9 @@ function CheckList({
   return (
     <div className="rounded-2xl border">
       <div className="flex items-center justify-between gap-3 px-3 py-2">
-        <div className="text-xs font-semibold text-slate-600">{selected.length} selected</div>
+        <div className="text-xs font-semibold text-slate-600">
+          {selected.length} selected
+        </div>
         <div className="flex items-center gap-2">
           <button
             onClick={onSelectAll}
@@ -377,7 +473,10 @@ function CheckList({
           options.map((o) => {
             const isOn = selected.includes(o.id);
             return (
-              <label key={o.id} className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-slate-50">
+              <label
+                key={o.id}
+                className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-slate-50"
+              >
                 <input
                   type="checkbox"
                   checked={isOn}
@@ -411,7 +510,10 @@ function RadioGroup({
     <div className="rounded-2xl border bg-white p-3">
       <div className="flex flex-col gap-2">
         {options.map((o) => (
-          <label key={o.value} className="flex cursor-pointer items-center gap-3">
+          <label
+            key={o.value}
+            className="flex cursor-pointer items-center gap-3"
+          >
             <input
               type="radio"
               name={name}

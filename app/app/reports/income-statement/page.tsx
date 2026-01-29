@@ -11,7 +11,28 @@ type CategoryType = "income" | "expense" | "services";
 type Cat = { id: string; name: string; type: CategoryType };
 type Option = { id: string; name: string };
 
-async function fetchCategories(orgId: string, type: CategoryType): Promise<Cat[]> {
+type Role = "owner" | "admin" | "finance" | "viewer" | "member";
+
+async function getMyRoleForOrg(orgId: string): Promise<Role | null> {
+  const { data: sessionRes } = await supabase.auth.getSession();
+  const userId = sessionRes.session?.user?.id;
+  if (!userId) return null;
+
+  const { data, error } = await supabase
+    .from("user_organizations")
+    .select("role")
+    .eq("organization_id", orgId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) return null;
+  return (data?.role as Role) ?? null;
+}
+
+async function fetchCategories(
+  orgId: string,
+  type: CategoryType,
+): Promise<Cat[]> {
   const { data, error } = await supabase
     .from("categories")
     .select("id,name,type,status")
@@ -45,61 +66,85 @@ export default function IncomeStatementPage() {
 
   // options
   const [serviceOptions, setServiceOptions] = useState<Option[]>([]);
-  const [incomeCategoryOptions, setIncomeCategoryOptions] = useState<Option[]>([]);
-  const [expenseCategoryOptions, setExpenseCategoryOptions] = useState<Option[]>([]);
+  const [incomeCategoryOptions, setIncomeCategoryOptions] = useState<Option[]>(
+    [],
+  );
+  const [expenseCategoryOptions, setExpenseCategoryOptions] = useState<
+    Option[]
+  >([]);
+
+  const [authChecked, setAuthChecked] = useState(false);
+  const [isAllowed, setIsAllowed] = useState(false);
 
   const [loadErr, setLoadErr] = useState("");
 
-  useEffect(() => {
-    let alive = true;
+ useEffect(() => {
+  let alive = true;
 
-    (async () => {
-      try {
-        setLoadErr("");
-        const orgId = getActiveOrgId();
-        if (!orgId) throw new Error("No active organization selected.");
+  (async () => {
+    try {
+      setLoadErr("");
+      const orgId = getActiveOrgId();
+      if (!orgId) throw new Error("No active organization selected.");
 
-        const [svcs, inc, exp] = await Promise.all([
-          fetchCategories(orgId, "services"),
-          fetchCategories(orgId, "income"),
-          fetchCategories(orgId, "expense"),
-        ]);
+      // --- AUTH GATE ---
+      const role = await getMyRoleForOrg(orgId);
+      const allowed = role === "owner" || role === "admin";
 
-        if (!alive) return;
+      if (!alive) return;
+      setIsAllowed(allowed);
+      setAuthChecked(true);
 
-        const svcOpts = svcs.map((x) => ({ id: x.id, name: x.name }));
-        const incOpts = inc.map((x) => ({ id: x.id, name: x.name }));
-        const expOpts = exp.map((x) => ({ id: x.id, name: x.name }));
+      if (!allowed) return; // stop here
 
-        setServiceOptions(svcOpts);
-        setIncomeCategoryOptions(incOpts);
-        setExpenseCategoryOptions(expOpts);
+      // --- NORMAL LOAD ---
+      const [svcs, inc, exp] = await Promise.all([
+        fetchCategories(orgId, "services"),
+        fetchCategories(orgId, "income"),
+        fetchCategories(orgId, "expense"),
+      ]);
 
-        // check everything by default (on initial load)
-        setServiceIds(svcOpts.map((x) => x.id));
-        setIncomeCategoryIds(incOpts.map((x) => x.id));
-        setExpenseCategoryIds(expOpts.map((x) => x.id));
-      } catch (e: unknown) {
-        if (!alive) return;
-        setLoadErr(e instanceof Error ? e.message : "Failed to load categories.");
-      }
-    })();
+      if (!alive) return;
 
-    return () => {
-      alive = false;
-    };
-  }, []);
+      const svcOpts = svcs.map((x) => ({ id: x.id, name: x.name }));
+      const incOpts = inc.map((x) => ({ id: x.id, name: x.name }));
+      const expOpts = exp.map((x) => ({ id: x.id, name: x.name }));
+
+      setServiceOptions(svcOpts);
+      setIncomeCategoryOptions(incOpts);
+      setExpenseCategoryOptions(expOpts);
+
+      setServiceIds(svcOpts.map((x) => x.id));
+      setIncomeCategoryIds(incOpts.map((x) => x.id));
+      setExpenseCategoryIds(expOpts.map((x) => x.id));
+    } catch (e: unknown) {
+      if (!alive) return;
+      setAuthChecked(true);
+      setLoadErr(e instanceof Error ? e.message : "Failed to load categories.");
+    }
+  })();
+
+  return () => {
+    alive = false;
+  };
+}, []);
+
 
   function openPrintView() {
     if (!start || !end) return alert("Please select a start and end date.");
-    if (end < start) return alert("End date cannot be earlier than start date.");
+    if (end < start)
+      return alert("End date cannot be earlier than start date.");
 
     const url = buildIncomeStatementPrintUrl({
       start_date: start,
       end_date: end,
       service_ids: serviceIds.length ? serviceIds : undefined,
-      income_category_ids: incomeCategoryIds.length ? incomeCategoryIds : undefined,
-      expense_category_ids: expenseCategoryIds.length ? expenseCategoryIds : undefined,
+      income_category_ids: incomeCategoryIds.length
+        ? incomeCategoryIds
+        : undefined,
+      expense_category_ids: expenseCategoryIds.length
+        ? expenseCategoryIds
+        : undefined,
     });
 
     window.open(url, "_blank", "noopener,noreferrer");
@@ -107,11 +152,37 @@ export default function IncomeStatementPage() {
 
   return (
     <>
+    {authChecked && !isAllowed ? (
+  <div className="p-6">
+    <div className="max-w-2xl">
+      <div className="rounded-3xl border bg-white p-6">
+        <div className="text-lg font-semibold">Income statement</div>
+        <div className="mt-2 text-sm text-slate-600">
+          This report is available to <span className="font-semibold">Admins/Owners</span> only.
+          Ask an admin to grant you access.
+        </div>
+
+        <div className="mt-5">
+          <button
+            onClick={() => router.push("/app/reports")}
+            className="rounded-xl border bg-white px-4 py-2 text-sm font-semibold"
+            type="button"
+          >
+            Back to Reports
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+) : null}
+
       <div className="border-b">
         <div className="flex items-center justify-between px-6 py-4">
           <div>
             <div className="text-xl font-semibold">Income statement</div>
-            <div className="text-sm text-slate-600">Set filters, then open the print view.</div>
+            <div className="text-sm text-slate-600">
+              Set filters, then open the print view.
+            </div>
           </div>
 
           <button
@@ -171,7 +242,9 @@ export default function IncomeStatementPage() {
                     options={serviceOptions}
                     selected={serviceIds}
                     onToggle={(id) => setServiceIds(toggleId(serviceIds, id))}
-                    onSelectAll={() => setServiceIds(serviceOptions.map((x) => x.id))}
+                    onSelectAll={() =>
+                      setServiceIds(serviceOptions.map((x) => x.id))
+                    }
                     onClear={() => setServiceIds([])}
                     emptyText="No services yet."
                   />
@@ -181,9 +254,13 @@ export default function IncomeStatementPage() {
                   <CheckList
                     options={incomeCategoryOptions}
                     selected={incomeCategoryIds}
-                    onToggle={(id) => setIncomeCategoryIds(toggleId(incomeCategoryIds, id))}
+                    onToggle={(id) =>
+                      setIncomeCategoryIds(toggleId(incomeCategoryIds, id))
+                    }
                     onSelectAll={() =>
-                      setIncomeCategoryIds(incomeCategoryOptions.map((x) => x.id))
+                      setIncomeCategoryIds(
+                        incomeCategoryOptions.map((x) => x.id),
+                      )
                     }
                     onClear={() => setIncomeCategoryIds([])}
                     emptyText="No income categories yet."
@@ -194,9 +271,13 @@ export default function IncomeStatementPage() {
                   <CheckList
                     options={expenseCategoryOptions}
                     selected={expenseCategoryIds}
-                    onToggle={(id) => setExpenseCategoryIds(toggleId(expenseCategoryIds, id))}
+                    onToggle={(id) =>
+                      setExpenseCategoryIds(toggleId(expenseCategoryIds, id))
+                    }
                     onSelectAll={() =>
-                      setExpenseCategoryIds(expenseCategoryOptions.map((x) => x.id))
+                      setExpenseCategoryIds(
+                        expenseCategoryOptions.map((x) => x.id),
+                      )
                     }
                     onClear={() => setExpenseCategoryIds([])}
                     emptyText="No expense categories yet."
@@ -225,7 +306,13 @@ export default function IncomeStatementPage() {
   );
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="rounded-3xl border bg-white p-4">
       <div className="text-xs font-semibold text-slate-600">{title}</div>
@@ -252,7 +339,9 @@ function CheckList<TId extends string>({
   return (
     <div className="rounded-2xl border">
       <div className="flex items-center justify-between gap-3 px-3 py-2">
-        <div className="text-xs font-semibold text-slate-600">{selected.length} selected</div>
+        <div className="text-xs font-semibold text-slate-600">
+          {selected.length} selected
+        </div>
         <div className="flex items-center gap-2">
           <button
             onClick={onSelectAll}

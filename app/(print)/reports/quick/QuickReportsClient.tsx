@@ -58,13 +58,16 @@ export default function QuickReportPrintPage() {
   const filtersLine = (() => {
     const tmp = new URLSearchParams(qs);
     const rawMode = tmp.get("mode") ?? "income";
-    const mode: QuickReportMode = isQuickReportMode(rawMode) ? rawMode : "income";
+    const mode: QuickReportMode = isQuickReportMode(rawMode)
+      ? rawMode
+      : "income";
     const service_ids = tmp.getAll("service_id");
     const category_ids = tmp.getAll("category_id");
 
     const parts: string[] = [];
     if (service_ids.length) parts.push(`Services: ${service_ids.length}`);
-    if (mode !== "attendance" && category_ids.length) parts.push(`Categories: ${category_ids.length}`);
+    if (mode !== "attendance" && category_ids.length)
+      parts.push(`Categories: ${category_ids.length}`);
     return parts.join(" • ");
   })();
 
@@ -81,13 +84,20 @@ export default function QuickReportPrintPage() {
 
         const organization_id = tmp.get("org") ?? "";
         const rawMode = tmp.get("mode") ?? "income";
-        const mode: QuickReportMode = isQuickReportMode(rawMode) ? rawMode : "income";
+        const mode: QuickReportMode = isQuickReportMode(rawMode)
+          ? rawMode
+          : "income";
+
+       const rawExpenseSort = tmp.get("expense_sort") ?? "date";
+const expenseSort = rawExpenseSort === "category" ? "category" : "date";
+   
 
         const start_date = tmp.get("start") ?? "";
         const end_date = tmp.get("end") ?? "";
 
         if (!organization_id) throw new Error("Missing org in URL.");
-        if (!start_date || !end_date) throw new Error("Missing start/end dates in URL.");
+        if (!start_date || !end_date)
+          throw new Error("Missing start/end dates in URL.");
 
         const service_ids = tmp.getAll("service_id");
         const category_ids = tmp.getAll("category_id");
@@ -98,9 +108,12 @@ export default function QuickReportPrintPage() {
         const segments = tmp.getAll("segment").filter(isSegment);
 
         const rawView = tmp.get("view") ?? "summary";
-        const view: AttendanceView = isAttendanceView(rawView) ? rawView : "summary";
+        const view: AttendanceView = isAttendanceView(rawView)
+          ? rawView
+          : "summary";
 
-        const { data: sessionRes, error: sessionErr } = await supabase.auth.getSession();
+        const { data: sessionRes, error: sessionErr } =
+          await supabase.auth.getSession();
         if (sessionErr) throw new Error(sessionErr.message);
 
         const token = sessionRes.session?.access_token;
@@ -116,8 +129,12 @@ export default function QuickReportPrintPage() {
           payment_methods: payment_methods.length ? payment_methods : undefined,
           vendors: vendors.length ? vendors : undefined,
 
-          segments: mode === "attendance" && segments.length ? segments : undefined,
-          age_groups: mode === "attendance" && age_groups.length ? age_groups : undefined,
+          expense_sort: mode === "expense" ? expenseSort : undefined,
+
+          segments:
+            mode === "attendance" && segments.length ? segments : undefined,
+          age_groups:
+            mode === "attendance" && age_groups.length ? age_groups : undefined,
           view: mode === "attendance" ? view : undefined,
         };
 
@@ -134,7 +151,9 @@ export default function QuickReportPrintPage() {
 
         if (!res.ok) {
           const errObj = json as Partial<ErrorResponse>;
-          throw new Error(errObj.error || `Failed to run report (${res.status})`);
+          throw new Error(
+            errObj.error || `Failed to run report (${res.status})`,
+          );
         }
 
         if (!alive) return;
@@ -199,7 +218,6 @@ export default function QuickReportPrintPage() {
         <div className="flex items-center justify-between px-6 py-3">
           <div className="text-sm text-slate-600">Print view</div>
           <div className="flex items-center gap-2">
-            
             <button
               onClick={() => window.print()}
               className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
@@ -240,7 +258,9 @@ export default function QuickReportPrintPage() {
           </div>
 
           {filtersLine ? (
-            <div style={{ fontSize: "9pt", marginTop: "4pt", color: "#475569" }}>
+            <div
+              style={{ fontSize: "9pt", marginTop: "4pt", color: "#475569" }}
+            >
               {filtersLine}
             </div>
           ) : null}
@@ -250,7 +270,9 @@ export default function QuickReportPrintPage() {
         <div className="mt-10">
           <div className="report-container">
             {loading ? (
-              <div style={{ fontSize: "11pt", color: "#475569" }}>Loading report...</div>
+              <div style={{ fontSize: "11pt", color: "#475569" }}>
+                Loading report...
+              </div>
             ) : err ? (
               <div style={{ fontSize: "11pt", color: "#b91c1c" }}>{err}</div>
             ) : data ? (
@@ -287,7 +309,10 @@ function IncomeTable({ data }: { data: IncomeReport }) {
         const showGrand = idx === colChunks.length - 1;
 
         return (
-          <div key={idx} className={idx < colChunks.length - 1 ? "break-page" : ""}>
+          <div
+            key={idx}
+            className={idx < colChunks.length - 1 ? "break-page" : ""}
+          >
             <table className="report-table" style={{ fontSize: "11pt" }}>
               <colgroup>
                 <col style={{ width: `${MEMBER_W}px` }} />
@@ -322,9 +347,14 @@ function IncomeTable({ data }: { data: IncomeReport }) {
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.member_id}>
-                    <td className="border border-black px-2 py-1 td-cell">{r.member_name}</td>
+                    <td className="border border-black px-2 py-1 td-cell">
+                      {r.member_name}
+                    </td>
                     {chunk.map((c) => (
-                      <td key={c.id} className="border border-black px-2 py-1 text-center td-cell">
+                      <td
+                        key={c.id}
+                        className="border border-black px-2 py-1 text-center td-cell"
+                      >
                         {moneyOrEmpty(r.values[c.id] ?? 0)}
                       </td>
                     ))}
@@ -364,95 +394,100 @@ function IncomeTable({ data }: { data: IncomeReport }) {
 }
 
 function ExpenseTable({ data }: { data: ExpenseReport }) {
-  const { columns, rows, colTotals } = data.table;
+  const { rows, grandTotal } = data.table;
 
-  // Adjust if you want fewer/more category columns per printed page
-  const COLS_PER_CHUNK = 5;
-
-  const DESC_W = 320; // ~ “30”
-  const CAT_W = 110;  // ~ “15”
-
-  const colChunks = chunkArray(columns, COLS_PER_CHUNK);
+  const DATE_W = 130;
+  const DESC_W = 300;
+  const VENDOR_W = 190;
+  const CAT_W = 170;
+  const AMT_W = 130;
 
   return (
     <div style={{ fontSize: "11pt" }}>
-      {colChunks.map((chunk, idx) => (
-        <div key={idx} className={idx < colChunks.length - 1 ? "break-page" : ""}>
-          <table className="report-table">
-            <colgroup>
-              <col style={{ width: `${DESC_W}px` }} />
-              {chunk.map((c) => (
-                <col key={c.id} style={{ width: `${CAT_W}px` }} />
-              ))}
-            </colgroup>
+      <table className="report-table">
+        <colgroup>
+          <col style={{ width: `${DATE_W}px` }} />
+          <col style={{ width: `${DESC_W}px` }} />
+          <col style={{ width: `${VENDOR_W}px` }} />
+          <col style={{ width: `${CAT_W}px` }} />
+          <col style={{ width: `${AMT_W}px` }} />
+        </colgroup>
 
-            <thead>
-              <tr>
-                <th className="border border-black bg-slate-100 px-2 py-1 text-left font-semibold th-cell">
-                  Description
-                </th>
-                {chunk.map((c) => (
-                  <th
-                    key={c.id}
-                    title={c.name}
-                    className="border border-black bg-slate-100 px-2 py-1 text-center font-semibold th-cell"
-                  >
-                    {c.name}
-                  </th>
-                ))}
-              </tr>
-            </thead>
+        <thead>
+          <tr>
+            <th className="border border-black bg-slate-100 px-2 py-1 text-left font-semibold th-cell">
+              Date
+            </th>
+            <th className="border border-black bg-slate-100 px-2 py-1 text-left font-semibold th-cell">
+              Description
+            </th>
+            <th className="border border-black bg-slate-100 px-2 py-1 text-left font-semibold th-cell">
+              Vendor
+            </th>
+            <th className="border border-black bg-slate-100 px-2 py-1 text-left font-semibold th-cell">
+              Category
+            </th>
+            <th className="border border-black bg-slate-100 px-2 py-1 text-right font-semibold th-cell">
+              Amount
+            </th>
+          </tr>
+        </thead>
 
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.description}>
-                  <td className="border border-black px-2 py-1 td-cell" title={r.description}>
-                    {r.description}
-                  </td>
-                  {chunk.map((c) => {
-                    const v = r.values[c.id] ?? 0;
-                    return (
-                      <td key={c.id} className="border border-black px-2 py-1 text-center td-cell">
-                        {v === 0 ? "" : money(v)}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
+        <tbody>
+          {rows.map((r, idx) => (
+            <tr key={`${r.expense_date}__${r.category_id}__${idx}`}>
+              <td className="border border-black px-2 py-1 td-cell">
+                {r.expense_date}
+              </td>
+              <td
+                className="border border-black px-2 py-1 td-cell"
+                title={r.description}
+              >
+                {r.description}
+              </td>
+              <td
+                className="border border-black px-2 py-1 td-cell"
+                title={r.vendor}
+              >
+                {r.vendor}
+              </td>
+              <td
+                className="border border-black px-2 py-1 td-cell"
+                title={r.category_name}
+              >
+                {r.category_name}
+              </td>
+              <td className="border border-black px-2 py-1 text-right td-cell">
+                {money(r.amount)}
+              </td>
+            </tr>
+          ))}
 
-              {/* Column totals only */}
-              <tr>
-                <td className="border border-black bg-slate-100 px-2 py-1 font-semibold td-cell">
-                  Totals
-                </td>
-                {chunk.map((c) => {
-                  const v = colTotals[c.id] ?? 0;
-                  return (
-                    <td
-                      key={c.id}
-                      className="border border-black bg-slate-100 px-2 py-1 text-center font-semibold td-cell"
-                    >
-                      {v === 0 ? "" : money(v)}
-                    </td>
-                  );
-                })}
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      ))}
+          <tr>
+            <td
+              className="border border-black bg-slate-100 px-2 py-1 font-semibold td-cell"
+              colSpan={4}
+            >
+              Grand Total
+            </td>
+            <td className="border border-black bg-slate-100 px-2 py-1 text-right font-semibold td-cell">
+              {money(grandTotal)}
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   );
 }
 
 function isAttendanceSummaryReport(
-  r: AttendanceReport
+  r: AttendanceReport,
 ): r is Extract<AttendanceReport, { meta: { view: "summary" } }> {
   return r.meta.view === "summary";
 }
 
 function isAttendanceDetailedReport(
-  r: AttendanceReport
+  r: AttendanceReport,
 ): r is Extract<AttendanceReport, { meta: { view: "detailed" } }> {
   return r.meta.view === "detailed";
 }
@@ -489,28 +524,57 @@ function AttendanceSummaryTable({ rows }: { rows: AttendanceSummaryRow[] }) {
 
         <thead>
           <tr>
-            <th className="border border-black bg-slate-100 px-2 py-1 text-left font-semibold th-cell">Date</th>
-            <th className="border border-black bg-slate-100 px-2 py-1 text-left font-semibold th-cell">Service</th>
-            <th className="border border-black bg-slate-100 px-2 py-1 text-center font-semibold th-cell">Girls</th>
-            <th className="border border-black bg-slate-100 px-2 py-1 text-center font-semibold th-cell">Boys</th>
-            <th className="border border-black bg-slate-100 px-2 py-1 text-center font-semibold th-cell">Women</th>
-            <th className="border border-black bg-slate-100 px-2 py-1 text-center font-semibold th-cell">Men</th>
-            <th className="border border-black bg-slate-100 px-2 py-1 text-center font-semibold th-cell">Total</th>
+            <th className="border border-black bg-slate-100 px-2 py-1 text-left font-semibold th-cell">
+              Date
+            </th>
+            <th className="border border-black bg-slate-100 px-2 py-1 text-left font-semibold th-cell">
+              Service
+            </th>
+            <th className="border border-black bg-slate-100 px-2 py-1 text-center font-semibold th-cell">
+              Girls
+            </th>
+            <th className="border border-black bg-slate-100 px-2 py-1 text-center font-semibold th-cell">
+              Boys
+            </th>
+            <th className="border border-black bg-slate-100 px-2 py-1 text-center font-semibold th-cell">
+              Women
+            </th>
+            <th className="border border-black bg-slate-100 px-2 py-1 text-center font-semibold th-cell">
+              Men
+            </th>
+            <th className="border border-black bg-slate-100 px-2 py-1 text-center font-semibold th-cell">
+              Total
+            </th>
           </tr>
         </thead>
 
         <tbody>
           {rows.map((r: AttendanceSummaryRow) => (
             <tr key={`${r.date}__${r.service_id}`}>
-              <td className="border border-black px-2 py-1 td-cell">{r.date}</td>
-              <td className="border border-black px-2 py-1 td-cell" title={r.service_name}>
+              <td className="border border-black px-2 py-1 td-cell">
+                {r.date}
+              </td>
+              <td
+                className="border border-black px-2 py-1 td-cell"
+                title={r.service_name}
+              >
                 {r.service_name}
               </td>
-              <td className="border border-black px-2 py-1 text-center td-cell">{r.girls || ""}</td>
-              <td className="border border-black px-2 py-1 text-center td-cell">{r.boys || ""}</td>
-              <td className="border border-black px-2 py-1 text-center td-cell">{r.women || ""}</td>
-              <td className="border border-black px-2 py-1 text-center td-cell">{r.men || ""}</td>
-              <td className="border border-black px-2 py-1 text-center font-semibold td-cell">{r.total || ""}</td>
+              <td className="border border-black px-2 py-1 text-center td-cell">
+                {r.girls || ""}
+              </td>
+              <td className="border border-black px-2 py-1 text-center td-cell">
+                {r.boys || ""}
+              </td>
+              <td className="border border-black px-2 py-1 text-center td-cell">
+                {r.women || ""}
+              </td>
+              <td className="border border-black px-2 py-1 text-center td-cell">
+                {r.men || ""}
+              </td>
+              <td className="border border-black px-2 py-1 text-center font-semibold td-cell">
+                {r.total || ""}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -561,7 +625,10 @@ function AttendanceDetailed({
                   <tbody>
                     {seg.rows.map((r: AttendanceDetailedMemberRow) => (
                       <tr key={r.member_id}>
-                        <td className="border border-black px-2 py-1 td-cell" title={r.member_name}>
+                        <td
+                          className="border border-black px-2 py-1 td-cell"
+                          title={r.member_name}
+                        >
                           {r.member_name}
                         </td>
                         <td className="border border-black px-2 py-1 text-center td-cell">
@@ -598,4 +665,3 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
   return out;
 }
-
