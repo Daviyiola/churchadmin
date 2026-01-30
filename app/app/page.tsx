@@ -737,7 +737,10 @@ export default function DashboardPage() {
         if (memRes.error) throw memRes.error;
         const members = (memRes.data ?? []) as MemberRow[];
 
-        const activeMembers = members.filter((m) => m.status === "active");
+        const activeMembers = members.filter(
+          (m) => m.status === "active" && m.membership_stage === "member",
+        );
+
         const totalFemale = activeMembers.filter(
           (m) => m.gender === "female",
         ).length;
@@ -751,6 +754,7 @@ export default function DashboardPage() {
           if (!m.joined_at) return false;
           return inRangeDate(m.joined_at, m0, m1);
         });
+
         const newMtdFemale = newMtd.filter((m) => m.gender === "female").length;
         const newMtdMale = newMtd.filter((m) => m.gender === "male").length;
 
@@ -1141,13 +1145,13 @@ export default function DashboardPage() {
         )}
 
         {/* Recent + Charts layout */}
-        <div className="grid gap-6 lg:grid-cols-12 items-stretch">
+        <div className="grid gap-6 lg:grid-cols-12 items-start">
           {/* Recent Published */}
           <div
             ref={recentCardRef}
-            className="rounded-3xl border bg-white p-5 lg:col-span-5 h-full"
+            className="rounded-3xl border bg-white p-5 lg:col-span-4 self-start"
           >
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center justify-between gap-5">
               <div>
                 <div className="text-xl font-semibold">Recently Published</div>
               </div>
@@ -1168,7 +1172,9 @@ export default function DashboardPage() {
                   const rightValue =
                     r.item_type === "attendance"
                       ? `${r.attendance_count ?? 0} ppl`
-                      : formatMoneyFromCents(r.amount_cents ?? 0);
+                      : r.amount_cents === 0
+                        ? ""
+                        : (formatMoneyFromCents(r.amount_cents) ?? "");
 
                   return (
                     <div
@@ -1205,7 +1211,7 @@ export default function DashboardPage() {
 
           {/* Right: Charts */}
           <div
-            className="rounded-3xl border bg-white p-5 lg:col-span-7 h-full flex flex-col"
+            className="rounded-3xl border bg-white p-5 lg:col-span-8 h-full flex flex-col"
             style={{
               minHeight: Math.max(CHART_MIN_HEIGHT, rightCardMinH ?? 0),
             }}
@@ -1294,13 +1300,16 @@ export default function DashboardPage() {
                 <div className="mt-3 h-[320px] rounded-2xl border bg-slate-50 p-3">
                   <ResponsiveContainer width="100%" height={320}>
                     <BarChart data={financeTopBars}>
-  <CartesianGrid strokeDasharray="3 3" />
-  <XAxis dataKey="label" />
-  <YAxis />
-  <Tooltip />
-  <Bar dataKey="value" fill={incomeColor} radius={[10, 10, 0, 0]} />
-</BarChart>
-
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="label" />
+                      <YAxis />
+                      <Tooltip />
+                      <Bar
+                        dataKey="value"
+                        fill={incomeColor}
+                        radius={[10, 10, 0, 0]}
+                      />
+                    </BarChart>
                   </ResponsiveContainer>
                 </div>
               </>
@@ -1427,13 +1436,16 @@ export default function DashboardPage() {
                 <div className="mt-3 h-[320px] rounded-2xl border bg-slate-50 p-3">
                   <ResponsiveContainer width="100%" height={320}>
                     <BarChart data={peopleDemoBars}>
-  <CartesianGrid strokeDasharray="3 3" />
-  <XAxis dataKey="label" />
-  <YAxis />
-  <Tooltip />
-  <Bar dataKey="value" fill={incomeColor} radius={[10, 10, 0, 0]} />
-</BarChart>
-
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="label" />
+                      <YAxis />
+                      <Tooltip />
+                      <Bar
+                        dataKey="value"
+                        fill={incomeColor}
+                        radius={[10, 10, 0, 0]}
+                      />
+                    </BarChart>
                   </ResponsiveContainer>
                 </div>
               </>

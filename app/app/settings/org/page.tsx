@@ -95,39 +95,45 @@ export default function OrgSettingsPage() {
   }, [logoPath]);
 
   const isDirty = useMemo(() => {
-        if (!saved) return false;
+    if (!saved) return false;
 
-        const savedPrimaryHex = rgbTripletToHex(saved.primary_rgb) ?? "#2f5e85";
+    const savedPrimaryHex = rgbTripletToHex(saved.primary_rgb) ?? "#2f5e85";
 
-        const savedBannerBgHex = rgbTripletToHex(saved.report_banner_bg_rgb) ?? rgbTripletToHex(saved.primary_rgb) ?? "#2f5e85";
-        const savedBannerTextHex = rgbTripletToHex(saved.report_banner_text_rgb) ?? "#ffffff";
+    const savedBannerBgHex =
+      rgbTripletToHex(saved.report_banner_bg_rgb) ??
+      rgbTripletToHex(saved.primary_rgb) ??
+      "#2f5e85";
+    const savedBannerTextHex =
+      rgbTripletToHex(saved.report_banner_text_rgb) ?? "#ffffff";
 
-        return (
-            useDefaultLogo !== !!saved.use_default_logo ||
-            (useDefaultLogo ? false : (logoPath ?? null) !== (saved.logo_path ?? null)) ||
-            pendingFile !== null ||
-            primaryHex.toLowerCase() !== savedPrimaryHex.toLowerCase() ||
-            reportHeader !== (saved.report_header_text ?? "") ||
-            reportSubheader !== (saved.report_subheader_text ?? "") ||
-            bannerBgHex.toLowerCase() !== savedBannerBgHex.toLowerCase() ||
-            bannerTextHex.toLowerCase() !== savedBannerTextHex.toLowerCase()
-        );
-        }, [
-        saved,
-        useDefaultLogo,
-        logoPath,
-        pendingFile,
-        primaryHex,
-        reportHeader,
-        reportSubheader,
-        bannerBgHex,
-        bannerTextHex,
-        ]);
+    return (
+      useDefaultLogo !== !!saved.use_default_logo ||
+      (useDefaultLogo
+        ? false
+        : (logoPath ?? null) !== (saved.logo_path ?? null)) ||
+      pendingFile !== null ||
+      primaryHex.toLowerCase() !== savedPrimaryHex.toLowerCase() ||
+      reportHeader !== (saved.report_header_text ?? "") ||
+      reportSubheader !== (saved.report_subheader_text ?? "") ||
+      bannerBgHex.toLowerCase() !== savedBannerBgHex.toLowerCase() ||
+      bannerTextHex.toLowerCase() !== savedBannerTextHex.toLowerCase()
+    );
+  }, [
+    saved,
+    useDefaultLogo,
+    logoPath,
+    pendingFile,
+    primaryHex,
+    reportHeader,
+    reportSubheader,
+    bannerBgHex,
+    bannerTextHex,
+  ]);
 
-    useEffect(() => {
-        setUnsaved(isDirty);
-        return () => setUnsaved(false); // clear when leaving page / unmount
-        }, [isDirty]);
+  useEffect(() => {
+    setUnsaved(isDirty);
+    return () => setUnsaved(false); // clear when leaving page / unmount
+  }, [isDirty]);
 
   function showToast(text: string) {
     setToastText(text);
@@ -164,7 +170,7 @@ export default function OrgSettingsPage() {
       const { data: setRow, error: setErr } = await supabase
         .from("organization_settings")
         .select(
-          "logo_path, use_default_logo, primary_rgb, report_header_text, report_subheader_text, report_banner_bg_rgb, report_banner_text_rgb"
+          "logo_path, use_default_logo, primary_rgb, report_header_text, report_subheader_text, report_banner_bg_rgb, report_banner_text_rgb",
         )
         .eq("organization_id", orgId)
         .maybeSingle();
@@ -204,10 +210,10 @@ export default function OrgSettingsPage() {
       setPrimaryHex(hex ?? "#2f5e85");
 
       setBannerBgHex(
-        rgbTripletToHex(normalized.report_banner_bg_rgb) ?? hex ?? "#0f172a"
+        rgbTripletToHex(normalized.report_banner_bg_rgb) ?? hex ?? "#0f172a",
       );
       setBannerTextHex(
-        rgbTripletToHex(normalized.report_banner_text_rgb) ?? "#ffffff"
+        rgbTripletToHex(normalized.report_banner_text_rgb) ?? "#ffffff",
       );
 
       // Apply theme immediately based on stored setting (or keep defaults if null)
@@ -224,7 +230,7 @@ export default function OrgSettingsPage() {
     };
   }, [orgId]);
 
-  // live preview of primary color while editing 
+  // live preview of primary color while editing
   useEffect(() => {
     const triplet = hexToRgbTriplet(primaryHex);
     if (triplet) applyOrgTheme({ primary_rgb: triplet });
@@ -232,12 +238,11 @@ export default function OrgSettingsPage() {
 
   useEffect(() => {
     return () => {
-        // revert to saved on leaving page
-        applyOrgTheme({ primary_rgb: saved?.primary_rgb ?? null });
+      // revert to saved on leaving page
+      applyOrgTheme({ primary_rgb: saved?.primary_rgb ?? null });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [saved?.primary_rgb]);
-
+  }, [saved?.primary_rgb]);
 
   async function handlePickFile(file: File | null) {
     setPendingFile(null);
@@ -269,10 +274,11 @@ export default function OrgSettingsPage() {
       pendingFile.type === "image/png"
         ? "png"
         : pendingFile.type === "image/svg+xml"
-        ? "svg"
-        : "jpg";
+          ? "svg"
+          : "jpg";
 
-    const path = `org/${orgId}/logo.${ext}`;
+    const ts = Date.now();
+    const path = `org/${orgId}/logo-${ts}.${ext}`;
 
     const { error: upErr } = await supabase.storage
       .from("org-logos")
@@ -331,24 +337,26 @@ export default function OrgSettingsPage() {
         report_banner_text_rgb: bannerTextTriplet,
       };
 
-    const { error: upErr } = await supabase
-    .from("organization_settings")
-    .update({
-        logo_path: next.logo_path,
-        use_default_logo: next.use_default_logo,
-        primary_rgb: next.primary_rgb,
-        report_header_text: next.report_header_text,
-        report_subheader_text: next.report_subheader_text,
-        report_banner_bg_rgb: next.report_banner_bg_rgb,
-        report_banner_text_rgb: next.report_banner_text_rgb,
-    })
-    .eq("organization_id", orgId);
+      const { error: upErr } = await supabase
+        .from("organization_settings")
+        .update({
+          logo_path: next.logo_path,
+          use_default_logo: next.use_default_logo,
+          primary_rgb: next.primary_rgb,
+          report_header_text: next.report_header_text,
+          report_subheader_text: next.report_subheader_text,
+          report_banner_bg_rgb: next.report_banner_bg_rgb,
+          report_banner_text_rgb: next.report_banner_text_rgb,
+        })
+        .eq("organization_id", orgId);
 
       setSaved(next);
       setLogoPath(next.logo_path);
       setPendingFile(null);
 
       showToast("Saved");
+      window.dispatchEvent(new Event("org-settings-updated"));
+
       setSaving(false);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to save.";
@@ -382,11 +390,13 @@ export default function OrgSettingsPage() {
     setReportSubheader(saved.report_subheader_text ?? "");
 
     setBannerBgHex(rgbTripletToHex(saved.report_banner_bg_rgb) ?? "#0f172a");
-    setBannerTextHex(rgbTripletToHex(saved.report_banner_text_rgb) ?? "#ffffff");
+    setBannerTextHex(
+      rgbTripletToHex(saved.report_banner_text_rgb) ?? "#ffffff",
+    );
 
     // re-apply theme from saved
     applyOrgTheme({ primary_rgb: saved.primary_rgb });
-    }
+  }
 
   return (
     <>
@@ -414,13 +424,13 @@ export default function OrgSettingsPage() {
               {saving ? "Saving…" : "Save changes"}
             </button>
             <button
-            className="rounded-2xl border px-4 py-2 text-sm font-semibold hover:bg-slate-50"
-            onClick={() => {
+              className="rounded-2xl border px-4 py-2 text-sm font-semibold hover:bg-slate-50"
+              onClick={() => {
                 if (isDirty) resetToSaved();
                 router.push("/app/settings");
-            }}
+              }}
             >
-            Back to Settings
+              Back to Settings
             </button>
           </div>
         </div>
@@ -480,7 +490,7 @@ export default function OrgSettingsPage() {
                   <div>
                     <div className="text-lg font-semibold">Logo</div>
                     <div className="mt-1 text-sm text-slate-600">
-                      PNG, JPG/JPEG, or SVG. Max 100 KB.
+                      PNG, JPG/JPEG, or SVG. Max 150 KB.
                     </div>
                   </div>
                 </div>
@@ -578,39 +588,44 @@ export default function OrgSettingsPage() {
               </div>
 
               {/* Report header */}
-                <div className="px-5 py-4">
+              <div className="px-5 py-4">
                 <div className="text-lg font-semibold">Report header</div>
                 <div className="mt-1 text-sm text-slate-600">
-                    If header text is blank, reports can default to the organization name.
+                  If header text is blank, reports can default to the
+                  organization name.
                 </div>
 
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                    <div>
-                    <div className="text-xs font-semibold text-slate-600">Header text</div>
-                    <input
-                        value={reportHeader}
-                        onChange={(e) => setReportHeader(e.target.value)}
-                        disabled={!canEdit}
-                        placeholder={org?.name ?? "Organization name"}
-                        className="mt-1 w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                    />
+                  <div>
+                    <div className="text-xs font-semibold text-slate-600">
+                      Header text
                     </div>
-
-                    <div>
-                    <div className="text-xs font-semibold text-slate-600">Subheader (optional)</div>
                     <input
-                        value={reportSubheader}
-                        onChange={(e) => setReportSubheader(e.target.value)}
-                        disabled={!canEdit}
-                        placeholder="e.g. Financial report, prepared for leadership"
-                        className="mt-1 w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      value={reportHeader}
+                      onChange={(e) => setReportHeader(e.target.value)}
+                      disabled={!canEdit}
+                      placeholder={org?.name ?? "Organization name"}
+                      className="mt-1 w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                     />
-                    </div>
-                </div>
-                </div>
+                  </div>
 
-                {/* Report banner colors */}
-                <div className="px-5 py-4">
+                  <div>
+                    <div className="text-xs font-semibold text-slate-600">
+                      Subheader (optional)
+                    </div>
+                    <input
+                      value={reportSubheader}
+                      onChange={(e) => setReportSubheader(e.target.value)}
+                      disabled={!canEdit}
+                      placeholder="e.g. Financial report, prepared for leadership"
+                      className="mt-1 w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Report banner colors */}
+              {/* <div className="px-5 py-4">
                 <div className="text-lg font-semibold">Report banner colors</div>
                 <div className="mt-1 text-sm text-slate-600">
                     Controls the report header block background and text color.
@@ -641,7 +656,7 @@ export default function OrgSettingsPage() {
                     <div className="text-sm font-semibold text-slate-700">{bannerTextHex.toUpperCase()}</div>
                     </div>
 
-                    {/* Mini preview */}
+                    
                     <div
                     className="ml-auto rounded-2xl px-4 py-3 text-sm font-semibold"
                     style={{
@@ -655,7 +670,7 @@ export default function OrgSettingsPage() {
                     ) : null}
                     </div>
                 </div>
-                </div>
+                </div> */}
             </div>
 
             {!canEdit ? (

@@ -1,13 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
-import { getActiveOrgRole, getUserId, signOut, getActiveOrgId } from "@/lib/auth";
+import {
+  getActiveOrgRole,
+  getUserId,
+  signOut,
+  getActiveOrgId,
+} from "@/lib/auth";
 import Image from "next/image";
 import BrandLogo from "@/components/BrandLogo";
 import { applyOrgTheme } from "@/lib/theme/applyOrgTheme";
-
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -17,10 +21,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [orgName, setOrgName] = useState<string>("");
   const [logoPath, setLogoPath] = useState<string | null>(null);
   const [useDefaultLogo, setUseDefaultLogo] = useState(true);
- 
+
   const [meId, setMeId] = useState<string | null>(null);
   const [meEmail, setMeEmail] = useState<string | null>(null);
-  
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setMeId(data.session?.user?.id ?? null);
@@ -35,72 +39,71 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-
   const role = useMemo(() => {
     if (typeof window === "undefined") return null;
     return localStorage.getItem("active_org_role");
   }, [ready]);
-
 
   const navItems = useMemo(
     () => [
       { label: "Dashboard", href: "/app" },
       { label: "Income", href: "/app/income" },
       { label: "Expense", href: "/app/expense" },
-      { label: "Attendance", href: "/app/attendance" },    
+      { label: "Attendance", href: "/app/attendance" },
       { label: "People", href: "/app/people" },
       { label: "Categories", href: "/app/categories" },
       { label: "Reports", href: "/app/reports" },
       { label: "Settings", href: "/app/settings" },
     ],
-    []
+    [],
   );
 
-  useEffect(() => {
-    let alive = true;
+  const check = useCallback(async () => {
+    const { data } = await supabase.auth.getSession();
+    const orgId = getActiveOrgId();
 
-    async function check() {
-      const { data } = await supabase.auth.getSession();
-      const orgId = getActiveOrgId();
-
-      if (!data.session || !orgId) {
-        router.replace("/signin");
-        return;
-      }
-
-      const { data: org, error: orgErr } = await supabase
-        .from("organizations")
-        .select("name")
-        .eq("id", orgId)
-        .maybeSingle();
-
-      if (orgErr) console.log("orgErr", orgErr);
-
-      const { data: settings, error: setErr } = await supabase
-        .from("organization_settings")
-        .select(
-          "logo_path, use_default_logo, primary_rgb, primary_hover_rgb, accent_rgb"
-        )
-        .eq("organization_id", orgId)
-        .maybeSingle();
-
-      if (setErr) console.log("settingsErr", setErr);
-
-      if (!alive) return;
-
-      setOrgName(org?.name ?? "");
-      setLogoPath(settings?.logo_path ?? null);
-      setUseDefaultLogo(settings?.use_default_logo ?? true);
-
-      applyOrgTheme(settings ?? {});
-      setReady(true);
+    if (!data.session || !orgId) {
+      router.replace("/signin");
+      return;
     }
 
-    check();
-    return () => {
-      alive = false;
-    };
+    const { data: org, error: orgErr } = await supabase
+      .from("organizations")
+      .select("name")
+      .eq("id", orgId)
+      .maybeSingle();
+
+    if (orgErr) console.log("orgErr", orgErr);
+
+    const { data: settings, error: setErr } = await supabase
+      .from("organization_settings")
+      .select(
+        "logo_path, use_default_logo, primary_rgb, primary_hover_rgb, accent_rgb",
+      )
+      .eq("organization_id", orgId)
+      .maybeSingle();
+
+    if (setErr) console.log("settingsErr", setErr);
+
+    setOrgName(org?.name ?? "");
+    setLogoPath(settings?.logo_path ?? null);
+    setUseDefaultLogo(settings?.use_default_logo ?? true);
+
+    applyOrgTheme(settings ?? {});
+    setReady(true);
   }, [router]);
+
+  useEffect(() => {
+    (async () => {
+      await check();
+    })();
+  }, [check]);
+
+  useEffect(() => {
+    const onUpdate = () => check();
+    window.addEventListener("org-settings-updated", onUpdate);
+    return () => window.removeEventListener("org-settings-updated", onUpdate);
+  }, [check]);
 
   if (!ready) {
     return <div className="p-10 text-slate-700">Loading…</div>;
@@ -123,7 +126,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                         .data.publicUrl
                     }
                     alt={orgName}
-                    width={40}
+                    width={96}
                     height={40}
                     className="object-contain"
                   />

@@ -1118,29 +1118,57 @@ export default function FirstTimersPage() {
     }
   };
 
-  const setJoined = async (memberId: string, joined: boolean) => {
-    if (!isAdmin) {
-      showToast("Only admins can change joined status.");
+const setJoined = async (memberId: string, joined: boolean) => {
+  if (!isAdmin) {
+    showToast("Only admins can change joined status.");
+    return;
+  }
+
+  const next = joined ? "joined" : "new";
+  const nowIso = todayISODate(); 
+
+  // 1) visitor_details
+  const { error: vdErr } = await supabase.from("visitor_details").upsert(
+    {
+      member_id: memberId,
+      follow_up_status: next,
+      updated_at: nowIso,
+    },
+    { onConflict: "member_id" },
+  );
+  if (vdErr) {
+    showToast(vdErr.message);
+    return;
+  }
+
+  // 2) members.joined_at
+  if (joined) {
+    const { error: mErr } = await supabase
+      .from("members")
+      .update({ joined_at: nowIso, updated_at: nowIso })
+      .eq("id", memberId);
+
+    if (mErr) {
+      showToast(`Marked joined, but failed to set joined_at: ${mErr.message}`);
       return;
     }
+  } else {
+    // optional: clear it if you unmark joined
+    const { error: mErr } = await supabase
+      .from("members")
+      .update({ joined_at: null, updated_at: nowIso })
+      .eq("id", memberId);
 
-    const next = joined ? "joined" : "new";
-
-    const { error } = await supabase.from("visitor_details").upsert(
-      {
-        member_id: memberId,
-        follow_up_status: next,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "member_id" },
-    );
-
-    if (error) showToast(error.message);
-    else {
-      showToast(joined ? "Marked joined" : "Unmarked joined");
-      await load();
+    if (mErr) {
+      showToast(`Unmarked joined, but failed to clear joined_at: ${mErr.message}`);
+      return;
     }
-  };
+  }
+
+  showToast(joined ? "Marked joined" : "Unmarked joined");
+  await load();
+};
+
 
   const openNote = (r: VisitorRow) => {
     setNoteMemberId(r.id);
