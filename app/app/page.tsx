@@ -936,36 +936,59 @@ export default function DashboardPage() {
     onClick?: () => void;
     selected?: boolean;
     titleHint?: string;
-  }) => (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-3xl border p-5 text-left transition ${
-        selected ? "border-primary bg-white" : "bg-white hover:bg-slate-50"
-      }`}
-      title={titleHint}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-xs text-slate-500">{title}</div>
-        {rightControl ? rightControl : null}
-      </div>
+  }) => {
+    const [hovered, setHovered] = useState(false);
+    const showSplits = !!selected || hovered;
 
-      <div className="mt-2 flex items-end justify-between gap-3">
-        <div className="text-2xl font-semibold text-slate-900">
-          {loading ? "—" : big}
+    return (
+      <button
+        type="button"
+        title={titleHint}
+        onClick={onClick}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onFocus={() => setHovered(true)}
+        onBlur={() => setHovered(false)}
+        className={`relative rounded-3xl border p-5 text-left transition
+        ${selected ? "border-primary bg-white" : "bg-white hover:bg-slate-50"}
+        focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30
+      `}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-xs text-slate-500">{title}</div>
+
+          {rightControl ? (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              {rightControl}
+            </div>
+          ) : null}
         </div>
 
-        <div className="text-[11px] text-slate-600 flex gap-3">
-          <span>
-            <span className="font-semibold">Female</span>: {female}
-          </span>
-          <span>
-            <span className="font-semibold">Male</span>: {male}
-          </span>
+        <div className="mt-2 flex items-end justify-between gap-3">
+          <div className="text-2xl font-semibold text-slate-900">
+            {loading ? "—" : big}
+          </div>
+
+          <div
+            className={`shrink-0 text-[11px] text-slate-600 flex gap-3
+            transition-opacity duration-150
+            ${showSplits ? "opacity-100" : "opacity-0"}
+          `}
+          >
+            <span>
+              <span className="font-semibold">Female</span>: {female}
+            </span>
+            <span>
+              <span className="font-semibold">Male</span>: {male}
+            </span>
+          </div>
         </div>
-      </div>
-    </button>
-  );
+      </button>
+    );
+  };
 
   /** ========= Render ========= */
 
@@ -1077,7 +1100,7 @@ export default function DashboardPage() {
             />
 
             <PeopleKpiCard
-              title="New People (MTD)"
+              title="New People (This Month)"
               big={peopleKpi?.new_mtd_all ?? 0}
               female={peopleKpi?.new_mtd_female ?? 0}
               male={peopleKpi?.new_mtd_male ?? 0}
@@ -1085,7 +1108,7 @@ export default function DashboardPage() {
             />
 
             <PeopleKpiCard
-              title="Avg Attendance (MTD)"
+              title="Avg Attendance (This Month)"
               big={(peopleKpi?.avg_att_mtd_all ?? 0).toFixed(1)}
               female={(peopleKpi?.avg_att_mtd_female ?? 0).toFixed(1)}
               male={(peopleKpi?.avg_att_mtd_male ?? 0).toFixed(1)}
@@ -1108,7 +1131,7 @@ export default function DashboardPage() {
             />
 
             <PeopleKpiCard
-              title="Avg Attendance by Age Group (MTD)"
+              title="Avg Attendance by Age Group (This Month)"
               big={(peopleKpi?.avg_att_age_all ?? 0).toFixed(1)}
               female={(peopleKpi?.avg_att_age_female ?? 0).toFixed(1)}
               male={(peopleKpi?.avg_att_age_male ?? 0).toFixed(1)}
@@ -1149,7 +1172,7 @@ export default function DashboardPage() {
           {/* Recent Published */}
           <div
             ref={recentCardRef}
-            className="rounded-3xl border bg-white p-5 lg:col-span-4 self-start"
+            className="rounded-3xl  bg-white p-5 lg:col-span-4 self-start"
           >
             <div className="flex items-center justify-between gap-5">
               <div>
@@ -1211,7 +1234,7 @@ export default function DashboardPage() {
 
           {/* Right: Charts */}
           <div
-            className="rounded-3xl border bg-white p-5 lg:col-span-8 h-full flex flex-col"
+            className="rounded-3xl  bg-white p-5 lg:col-span-8 h-full flex flex-col"
             style={{
               minHeight: Math.max(CHART_MIN_HEIGHT, rightCardMinH ?? 0),
             }}

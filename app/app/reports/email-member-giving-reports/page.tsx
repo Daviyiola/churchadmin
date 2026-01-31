@@ -1,25 +1,25 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getAccessToken, getActiveOrgId } from "@/lib/auth";
 import { TipTap, type TipTapHandle } from "@/components/TipTap";
-import { useCallback } from "react";
 
 type TabKey = "compose" | "audience" | "preview" | "history";
 
 type Gender = "male" | "female";
 type AgeGroup = "1-12" | "13-17" | "18-35" | "36+";
-type MembershipStage = "visitor" | "member";
-type UploadMode = "inline" | "attachment";
-type PendingSendAction = "test" | "broadcast";
+type UploadMode = "inline" | "attachment"; // API allows both, but this page will only use "inline"
+type PendingSendAction = "report_send";
+
+type PlanKey = "free" | "basic" | "growth" | "enterprise";
 
 type UploadUiRow = {
   upload_id: string; // message_uploads.id
   filename: string;
   content_type: string;
   bytes: number;
-  mode: UploadMode;
+  mode: UploadMode; // always "inline" on this page
   inline_cid?: string;
   storage_path: string;
   bucket: string;
@@ -33,15 +33,7 @@ type MemberRow = {
   email: string;
   gender: Gender | null;
   age_group: AgeGroup | null;
-  membership_stage: string | null; // keep loose; we filter visitor/member only
-};
-
-type HistoryRow = {
-  id: string;
-  created_at: string;
-  subject: string;
-  total_recipients: number;
-  total_success: number;
+  membership_stage: string | null; // keep loose
 };
 
 type MemberDbRow = {
@@ -54,9 +46,26 @@ type MemberDbRow = {
   membership_stage: string | null;
 };
 
+type HistoryRow = {
+  id: string;
+  created_at: string;
+  subject: string;
+  total_recipients: number;
+  total_success: number;
+};
+
 type HistoryDetailRecipient = {
   email: string;
   success: boolean;
+};
+
+type HistoryDetailPayload = {
+  subject: string;
+  total_recipients: number;
+  total_success: number;
+  total_failure: number;
+  recipients: HistoryDetailRecipient[];
+  errors?: string[];
 };
 
 type UploadApiOk = {
@@ -72,8 +81,6 @@ type UploadApiOk = {
   signed_url: string;
 };
 
-type PlanKey = "free" | "basic" | "growth" | "enterprise";
-
 type LimitsPayload = {
   ok: true;
   plan: PlanKey;
@@ -83,45 +90,157 @@ type LimitsPayload = {
   month_left: number;
 };
 
-function isLimitsPayload(v: unknown): v is LimitsPayload {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
+type PaymentMethod = "cash" | "cheque" | "online";
+
+type ReportStartBody = {
+  organization_id: string;
+  subject: string;
+  body_html: string;
+  reply_to: string;
+  uploads: Array<{
+    upload_id: string;
+    upload_mode: "inline" | "attachment";
+    inline_cid?: string;
+  }>;
+  member_ids: string[];
+  start_date: string;
+  end_date: string;
+  service_ids?: string[];
+  category_ids?: string[];
+  payment_methods?: PaymentMethod[];
+  attach_summary?: boolean;
+  attach_detailed?: boolean;
+};
+
+type ReportStartOk = {
+  ok: true;
+  job_id: string;
+  campaign_id: string;
+  total: number;
+};
+
+type JobStatus = "queued" | "running" | "paused" | "done" | "error";
+
+type ReportPumpOk = {
+  ok: true;
+  status: JobStatus;
+  paused_reason?: string;
+  total: number;
+  sent_success: number;
+  sent_failure: number;
+  processed_now: number;
+  done: boolean;
+};
+
+type ReportStatusOk = {
+  ok: true;
+  job: {
+    id?: string;
+    status?: JobStatus;
+    paused_reason?: string | null;
+    total?: number;
+    sent_success?: number;
+    sent_failure?: number;
+  };
+  recent: Array<{
+    to_email?: string;
+    success?: boolean;
+    error?: string | null;
+    created_at?: string;
+  }>;
+  done: boolean;
+};
+
+type RecipientStatus =
+  | "pending"
+  | "processing"
+  | "success"
+  | "failure"
+  | "skipped";
+
+type RecentRow = {
+  idx: number;
+  to_email: string;
+  display_name: string | null;
+  status: RecipientStatus;
+  error: string | null;
+  sent_at: string | null;
+};
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
+function isRecipientStatus(v: unknown): v is RecipientStatus {
   return (
-    o.ok === true &&
-    (o.plan === "free" ||
-      o.plan === "basic" ||
-      o.plan === "growth" ||
-      o.plan === "enterprise") &&
-    typeof o.month_left === "number" &&
-    typeof o.month_used === "number" &&
-    typeof o.month_limit === "number" &&
-    typeof o.month_bucket === "string"
+    v === "pending" ||
+    v === "processing" ||
+    v === "success" ||
+    v === "failure" ||
+    v === "skipped"
+  );
+}
+
+function isStatusResponse(v: unknown): v is {
+  ok: true;
+  job: Record<string, unknown>;
+  recent: RecentRow[];
+  done: boolean;
+  remaining?: number;
+} {
+  if (!isObject(v)) return false;
+  if (v.ok !== true) return false;
+  if (!isObject(v.job)) return false;
+  if (!Array.isArray(v.recent)) return false;
+  if (typeof v.done !== "boolean") return false;
+
+  for (const r of v.recent) {
+    if (!isObject(r)) return false;
+    if (typeof r.idx !== "number") return false;
+    if (typeof r.to_email !== "string") return false;
+    if (!(typeof r.display_name === "string" || r.display_name === null))
+      return false;
+    if (!isRecipientStatus(r.status)) return false;
+    if (!(typeof r.error === "string" || r.error === null)) return false;
+    if (!(typeof r.sent_at === "string" || r.sent_at === null)) return false;
+  }
+
+  if (v.remaining !== undefined && typeof v.remaining !== "number")
+    return false;
+  return true;
+}
+
+function isLimitsPayload(v: unknown): v is LimitsPayload {
+  if (!isObject(v)) return false;
+  return (
+    v.ok === true &&
+    (v.plan === "free" ||
+      v.plan === "basic" ||
+      v.plan === "growth" ||
+      v.plan === "enterprise") &&
+    typeof v.month_left === "number" &&
+    typeof v.month_used === "number" &&
+    typeof v.month_limit === "number" &&
+    typeof v.month_bucket === "string"
   );
 }
 
 function isHistoryDetailPayload(v: unknown): v is HistoryDetailPayload {
-  if (typeof v !== "object" || v === null) return false;
-
-  const o = v as Record<string, unknown>;
+  if (!isObject(v)) return false;
 
   return (
-    typeof o.subject === "string" &&
-    typeof o.total_recipients === "number" &&
-    typeof o.total_success === "number" &&
-    typeof o.total_failure === "number" &&
-    Array.isArray(o.recipients) &&
-    o.recipients.every(
+    typeof v.subject === "string" &&
+    typeof v.total_recipients === "number" &&
+    typeof v.total_success === "number" &&
+    typeof v.total_failure === "number" &&
+    Array.isArray(v.recipients) &&
+    v.recipients.every(
       (r) =>
-        typeof r === "object" &&
-        r !== null &&
-        typeof (r as Record<string, unknown>).email === "string" &&
-        typeof (r as Record<string, unknown>).success === "boolean",
+        isObject(r) &&
+        typeof r.email === "string" &&
+        typeof r.success === "boolean",
     )
   );
-}
-
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null;
 }
 
 function isUploadApiOk(v: unknown): v is UploadApiOk {
@@ -142,26 +261,41 @@ function isUploadApiOk(v: unknown): v is UploadApiOk {
   );
 }
 
-function escapeHtml(s: string) {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+function isReportStartOk(v: unknown): v is ReportStartOk {
+  if (!isObject(v)) return false;
+  return (
+    v.ok === true &&
+    typeof v.job_id === "string" &&
+    typeof v.campaign_id === "string" &&
+    typeof v.total === "number"
+  );
 }
 
-function normalizePreviewHtml(html: string) {
-  // Turn truly empty paragraphs OR <p><br></p> into <p>&nbsp;</p>
-  // so they occupy vertical space in preview like the editor.
-  return html
-    .replace(/<p>\s*<\/p>/g, "<p>&nbsp;</p>")
-    .replace(/<p>\s*<br\s*\/?>\s*<\/p>/g, "<p>&nbsp;</p>");
+function isReportPumpOk(v: unknown): v is ReportPumpOk {
+  if (!isObject(v)) return false;
+  return (
+    v.ok === true &&
+    (v.status === "queued" ||
+      v.status === "running" ||
+      v.status === "paused" ||
+      v.status === "done" ||
+      v.status === "error") &&
+    typeof v.total === "number" &&
+    typeof v.sent_success === "number" &&
+    typeof v.sent_failure === "number" &&
+    typeof v.processed_now === "number" &&
+    typeof v.done === "boolean" &&
+    (v.paused_reason === undefined || typeof v.paused_reason === "string")
+  );
 }
 
-function stripOuterHtmlDoc(html: string) {
-  // TipTap returns fragments, but just in case:
-  return html.replace(/<\/?(html|head|body)[^>]*>/gi, "");
+function isReportStatusOk(v: unknown): v is ReportStatusOk {
+  if (!isObject(v)) return false;
+  if (v.ok !== true) return false;
+  if (!isObject(v.job)) return false;
+  if (!Array.isArray(v.recent)) return false;
+  if (typeof v.done !== "boolean") return false;
+  return true;
 }
 
 function wrapEmailHtml(innerHtml: string, opts?: { maxWidthPx?: number }) {
@@ -229,7 +363,8 @@ function clampEmailImages(html: string, maxWidthPx: number): string {
         return `<img${attrsWithWidth.replace(
           styleRe,
           (_styleMatch: string, styleValue: string): string => {
-            const extra = `width:100%;max-width:${maxWidthPx}px;height:auto;display:block;`;
+            const extra =
+              `width:100%;max-width:${maxWidthPx}px;height:auto;display:block;`;
 
             const nextStyle = `${styleValue};${extra}`.replace(/;;+/g, ";");
 
@@ -243,14 +378,25 @@ function clampEmailImages(html: string, maxWidthPx: number): string {
   );
 }
 
-type HistoryDetailPayload = {
-  subject: string;
-  total_recipients: number;
-  total_success: number;
-  total_failure: number;
-  recipients: HistoryDetailRecipient[];
-  errors?: string[];
-};
+
+function escapeHtml(s: string) {
+  return s
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function normalizePreviewHtml(html: string) {
+  return html
+    .replace(/<p>\s*<\/p>/g, "<p>&nbsp;</p>")
+    .replace(/<p>\s*<br\s*\/?>\s*<\/p>/g, "<p>&nbsp;</p>");
+}
+
+function stripOuterHtmlDoc(html: string) {
+  return html.replace(/<\/?(html|head|body)[^>]*>/gi, "");
+}
 
 function formatBytes(n: number) {
   if (!Number.isFinite(n) || n <= 0) return "0 B";
@@ -359,6 +505,11 @@ function CheckboxDropdown(props: {
   );
 }
 
+function clampYmd(v: string) {
+  // Keep user-typed values; just trim
+  return v.trim();
+}
+
 export default function CommunicationsPage() {
   const orgId = getActiveOrgId();
 
@@ -366,10 +517,9 @@ export default function CommunicationsPage() {
   const [orgName, setOrgName] = useState("Our Church");
 
   // Compose
-  // const [subject, setSubject] = useState("Hello from {churchName}");
-  const [subject, setSubject] = useState("Calvary Greetings!");
+  const [subject, setSubject] = useState("Your Giving Report");
 
-  // Uploads
+  // Uploads (inline images only)
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [uploads, setUploads] = useState<UploadUiRow[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -379,22 +529,36 @@ export default function CommunicationsPage() {
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
 
-  const [genderFilter, setGenderFilter] = useState<string[]>([]); // ["male","female"]
-  const [ageFilter, setAgeFilter] = useState<string[]>([]); // ["1-12",...]
-  const [stageFilter, setStageFilter] = useState<string[]>([]); // ["visitor","member"]
+  const [genderFilter, setGenderFilter] = useState<string[]>([]);
+  const [ageFilter, setAgeFilter] = useState<string[]>([]);
+  const [stageFilter, setStageFilter] = useState<string[]>(["member"]); // reports: default to members
 
   const [sendMap, setSendMap] = useState<Record<string, boolean>>({}); // memberId -> send?
 
-  // Preview sending
+  // Report filters (required date range)
+  const [startDate, setStartDate] = useState<string>("");
+  const [endDate, setEndDate] = useState<string>("");
+  const [serviceIdsCsv, setServiceIdsCsv] = useState<string>(""); // minimal control
+  const [categoryIdsCsv, setCategoryIdsCsv] = useState<string>(""); // minimal control
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
+  const [attachSummary, setAttachSummary] = useState(true);
+  const [attachDetailed, setAttachDetailed] = useState(true);
+
+  // Preview/job sending
   const [sending, setSending] = useState(false);
-  const [progressPct, setProgressPct] = useState(0);
-  const [sentOk, setSentOk] = useState(0);
-  const [sentFail, setSentFail] = useState(0);
   const [sendErr, setSendErr] = useState("");
 
-  // Test modal
-  const [testOpen, setTestOpen] = useState(false);
-  const [testEmail, setTestEmail] = useState("");
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [campaignId, setCampaignId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
+  const [pausedReason, setPausedReason] = useState<string | null>(null);
+  const [jobTotal, setJobTotal] = useState<number>(0);
+  const [sentOk, setSentOk] = useState<number>(0);
+  const [sentFail, setSentFail] = useState<number>(0);
+
+  const [recentRows, setRecentRows] = useState<RecentRow[]>([]);
+  const [remaining, setRemaining] = useState<number | null>(null);
+
   const [filterOpenKey, setFilterOpenKey] = useState<string | null>(null);
 
   // History
@@ -408,11 +572,11 @@ export default function CommunicationsPage() {
 
   const editorRef = useRef<TipTapHandle | null>(null);
 
-  const [replyToEmail, setReplyToEmail] = useState<string>(""); // single source of truth
-  const [logoUrl, setLogoUrl] = useState<string | null>(null); // optional
-
+  const [replyToEmail, setReplyToEmail] = useState<string>("");
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [bodyHtml, setBodyHtml] = useState<string>("");
 
+  // Confirm quota modal (reused)
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmLoading, setConfirmLoading] = useState(false);
   const [confirmErr, setConfirmErr] = useState("");
@@ -422,8 +586,17 @@ export default function CommunicationsPage() {
   const [confirmCount, setConfirmCount] = useState(0);
   const [confirmPlan, setConfirmPlan] = useState<PlanKey>("basic");
   const [confirmLeftBefore, setConfirmLeftBefore] = useState(0);
-
   const [insufficient, setInsufficient] = useState(false);
+
+  // Quota modal
+  const [limitsOpen, setLimitsOpen] = useState(false);
+  const [limitsLoading, setLimitsLoading] = useState(false);
+  const [limitsErr, setLimitsErr] = useState("");
+  const [limits, setLimits] = useState<LimitsPayload | null>(null);
+
+  // Non-image upload modal
+  const [nonImageOpen, setNonImageOpen] = useState(false);
+  const [nonImageName, setNonImageName] = useState<string>("");
 
   const [toast, setToast] = useState<string | null>(null);
   function showToast(msg: string) {
@@ -431,13 +604,8 @@ export default function CommunicationsPage() {
     window.setTimeout(() => setToast(null), 1600);
   }
 
-  // Preview (and also reuse for sending to avoid mismatch)
+  // Preview vars
   const vars = useMemo(() => ({ churchName: orgName }), [orgName]);
-
-  const [limitsOpen, setLimitsOpen] = useState(false);
-  const [limitsLoading, setLimitsLoading] = useState(false);
-  const [limitsErr, setLimitsErr] = useState("");
-  const [limits, setLimits] = useState<LimitsPayload | null>(null);
 
   const hasAnySelected = useMemo(
     () => Object.values(sendMap).some(Boolean),
@@ -461,6 +629,123 @@ export default function CommunicationsPage() {
     return normalizePreviewHtml(raw);
   }, [bodyHtml, vars]);
 
+  const totalUploadBytes = useMemo(
+    () => uploads.reduce((s, u) => s + (u.bytes || 0), 0),
+    [uploads],
+  );
+
+  const selectedMemberIds = useMemo(() => {
+    return Object.keys(sendMap).filter((id) => sendMap[id] === true);
+  }, [sendMap]);
+
+  const filteredMembers = useMemo(() => {
+    const q = memberQ.trim().toLowerCase();
+
+    return members.filter((m) => {
+      if (q) {
+        const name = `${m.first_name} ${m.last_name ?? ""}`.toLowerCase();
+        if (!name.includes(q) && !m.email.includes(q)) return false;
+      }
+
+      if (genderFilter.length) {
+        if (!m.gender || !genderFilter.includes(m.gender)) return false;
+      }
+      if (ageFilter.length) {
+        if (!m.age_group || !ageFilter.includes(m.age_group)) return false;
+      }
+      if (stageFilter.length) {
+        const st = (m.membership_stage ?? "").toLowerCase();
+        const ok =
+          (stageFilter.includes("member") && st === "member") ||
+          (stageFilter.includes("visitor") && st === "visitor");
+        if (!ok) return false;
+      }
+
+      return true;
+    });
+  }, [members, memberQ, genderFilter, ageFilter, stageFilter]);
+
+  const selectedRecipients = useMemo(() => {
+    const byId = new Map(members.map((m) => [m.id, m]));
+    return selectedMemberIds
+      .map((id) => byId.get(id))
+      .filter(Boolean)
+      .map((m) => (m as MemberRow).email);
+  }, [members, selectedMemberIds]);
+
+  const progressPct = useMemo(() => {
+    if (!jobTotal) return 0;
+    const done = sentOk + sentFail;
+    return Math.max(0, Math.min(100, Math.round((done / jobTotal) * 100)));
+  }, [jobTotal, sentOk, sentFail]);
+
+  const parsedServiceIds = useMemo(() => {
+    const raw = serviceIdsCsv
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return raw.length ? raw : undefined;
+  }, [serviceIdsCsv]);
+
+  const parsedCategoryIds = useMemo(() => {
+    const raw = categoryIdsCsv
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return raw.length ? raw : undefined;
+  }, [categoryIdsCsv]);
+
+  const editorDefaultTemplate = useMemo(() => {
+    return `
+    
+    <p>
+      Greetings, 
+    </p><br/>
+
+    <p>
+      On behalf of the leadership of our Church, thank you for your
+      continued faithfulness and generosity. Your support during the selected
+      period has played an important role in helping us carry out the mission
+      and work of the church. We are deeply grateful for your willingness to give. Through your
+      contributions, lives are being touched, needs are being met, and the
+      work of ministry continues both within our local community and beyond.
+    </p><br/>
+
+    <p>
+      Attached to this email, you will find your giving report PDF(s) for the
+      selected period. Please retain these documents for your personal records. 
+      If you have any questions or notice any discrepancies, feel free to reply
+      to this email and we will be happy to assist you.
+    </p><br/>
+
+    <p>
+      With sincere thanks and blessings,<br/>
+      <strong>${escapeHtml(orgName)}</strong>
+    </p>
+  `;
+  }, [orgName]);
+
+  /** -------- load org name -------- */
+  useEffect(() => {
+    if (!orgId) return;
+
+    (async () => {
+      const { data: org } = await supabase
+        .from("organizations")
+        .select("name")
+        .eq("id", orgId)
+        .maybeSingle();
+      if (org?.name) setOrgName(org.name);
+    })();
+  }, [orgId]);
+
+  /** -------- set starter email body when orgName known -------- */
+  useEffect(() => {
+    if (!orgName) return;
+    setBodyHtml((cur) => (cur.trim() ? cur : editorDefaultTemplate));
+  }, [orgName, editorDefaultTemplate]);
+
+  /** -------- members load -------- */
   const loadMembers = useCallback(async () => {
     if (!orgId) return;
     setMembersLoading(true);
@@ -503,55 +788,38 @@ export default function CommunicationsPage() {
     if (tab === "audience") loadMembers();
   }, [tab, loadMembers]);
 
-  useEffect(() => {
-    if (!orgName) return;
-
-    setBodyHtml(`
-    <p>
-      We’re glad you’re here. Here are a few updates and ways to stay connected.
-    </p>
-
-    <p><ol>
-      <li>Sunday Service - 10:00 AM</li>
-      <li>Midweek Prayer - Wednesday, 7:00 PM</li>
-      <li>Small Groups - Friday</li>
-    </ol></p>
-
-    <p>
-      Yours in Christ,</p>
-     <p> <strong>${escapeHtml(orgName)}</strong>
-    </p>
-  `);
-  }, [orgName]);
-
-  useEffect(() => {
-    if (!orgId) return;
-
-    (async () => {
-      const { data: org } = await supabase
-        .from("organizations")
-        .select("name")
-        .eq("id", orgId)
-        .maybeSingle();
-      if (org?.name) setOrgName(org.name);
-    })();
-  }, [orgId]);
-
-  const totalUploadBytes = useMemo(
-    () => uploads.reduce((s, u) => s + (u.bytes || 0), 0),
-    [uploads],
-  );
-
+  /** -------- uploads: inline images only -------- */
   async function handleUploadFiles(files: FileList | null) {
     if (!orgId) return;
     if (!files || files.length === 0) return;
 
-    // Guardrails
     const maxFiles = 10;
     const maxTotal = 20 * 1024 * 1024; // 20MB
     const selected = Array.from(files).slice(0, maxFiles);
-    const selectedBytes = selected.reduce((s, f) => s + f.size, 0);
 
+    // block non-image *before* upload (attachments are not allowed on this page)
+    const firstNonImage = selected.find((f) => {
+      // browser may provide empty type, so also check extension
+      const t = (f.type || "").toLowerCase();
+      if (t && t.startsWith("image/")) return false;
+      const name = f.name.toLowerCase();
+      return !(
+        name.endsWith(".png") ||
+        name.endsWith(".jpg") ||
+        name.endsWith(".jpeg") ||
+        name.endsWith(".webp") ||
+        name.endsWith(".gif")
+      );
+    });
+
+    if (firstNonImage) {
+      setNonImageName(firstNonImage.name);
+      setNonImageOpen(true);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    const selectedBytes = selected.reduce((s, f) => s + f.size, 0);
     if (selectedBytes + totalUploadBytes > maxTotal) {
       showToast("Too large (keep uploads under 20MB)");
       return;
@@ -559,7 +827,7 @@ export default function CommunicationsPage() {
 
     setUploading(true);
     try {
-      const token = await getAccessToken(); // string | null
+      const token = await getAccessToken();
 
       for (const file of selected) {
         const fd = new FormData();
@@ -588,9 +856,15 @@ export default function CommunicationsPage() {
 
         const { upload, signed_url } = json;
 
-        const inlineOk = isInlineableImage(upload.content_type);
-        const mode: UploadMode = inlineOk ? "inline" : "attachment";
-        const inline_cid = inlineOk ? makeCid() : undefined;
+        // Enforce inline-only (and must be image)
+        if (!isInlineableImage(upload.content_type)) {
+          // Should not happen because we blocked by File, but keep safe
+          setNonImageName(upload.filename);
+          setNonImageOpen(true);
+          continue;
+        }
+
+        const inline_cid = makeCid();
 
         setUploads((cur) => [
           ...cur,
@@ -601,21 +875,18 @@ export default function CommunicationsPage() {
             filename: upload.filename,
             content_type: upload.content_type,
             bytes: upload.bytes,
-            mode,
+            mode: "inline",
             inline_cid,
             preview_url: signed_url,
           },
         ]);
 
-        // Insert into TipTap at cursor
-        if (inlineOk) {
-          editorRef.current?.insertImage({
-            src: signed_url,
-            alt: upload.filename,
-            uploadId: upload.id,
-            align: "center",
-          });
-        }
+        editorRef.current?.insertImage({
+          src: signed_url,
+          alt: upload.filename,
+          uploadId: upload.id,
+          align: "center",
+        });
       }
 
       showToast("Uploaded ✓");
@@ -627,12 +898,20 @@ export default function CommunicationsPage() {
     }
   }
 
+  function removeUpload(upload_id: string) {
+    setUploads((cur) => cur.filter((u) => u.upload_id !== upload_id));
+    editorRef.current?.removeImagesByUploadId(upload_id);
+  }
+
+  /** -------- quota helpers -------- */
   async function fetchMonthlyLimits(
-    orgId: string,
+    organizationId: string,
     jwt: string,
   ): Promise<LimitsPayload> {
     const res = await fetch(
-      `/api/communications/limits?organization_id=${encodeURIComponent(orgId)}`,
+      `/api/communications/limits?organization_id=${encodeURIComponent(
+        organizationId,
+      )}`,
       { headers: { Authorization: `Bearer ${jwt}` } },
     );
 
@@ -646,11 +925,10 @@ export default function CommunicationsPage() {
 
     if (!res.ok) {
       const msg =
-        typeof parsed === "object" &&
-        parsed !== null &&
-        "error" in parsed &&
-        typeof (parsed as { error?: unknown }).error === "string"
-          ? (parsed as { error: string }).error
+        isObject(parsed) &&
+        typeof parsed.error === "string" &&
+        parsed.error.trim().length
+          ? parsed.error
           : "Failed to load limits";
       throw new Error(msg);
     }
@@ -672,16 +950,14 @@ export default function CommunicationsPage() {
       const jwt = sessionRes.session?.access_token;
       if (!jwt) throw new Error("Unauthorized");
 
-      const limits = await fetchMonthlyLimits(orgId, jwt);
+      const lim = await fetchMonthlyLimits(orgId, jwt);
 
       setConfirmAction(action);
       setConfirmCount(count);
-      setConfirmPlan(limits.plan);
-      setConfirmLeftBefore(limits.month_left);
+      setConfirmPlan(lim.plan);
+      setConfirmLeftBefore(lim.month_left);
 
-      if (limits.month_left < count) {
-        setInsufficient(true);
-      }
+      if (lim.month_left < count) setInsufficient(true);
     } catch (e) {
       setConfirmErr(e instanceof Error ? e.message : "Failed to check limits");
     } finally {
@@ -690,15 +966,13 @@ export default function CommunicationsPage() {
   }
 
   async function proceedSend() {
-    if (insufficient) return; // no-op
+    if (insufficient) return;
     if (!confirmAction) return;
 
     setConfirmOpen(false);
 
-    if (confirmAction === "test") {
-      await sendTestInternal();
-    } else {
-      await sendBroadcastInternal();
+    if (confirmAction === "report_send") {
+      await startReportJob();
     }
   }
 
@@ -714,33 +988,8 @@ export default function CommunicationsPage() {
       const jwt = sessionRes.session?.access_token;
       if (!jwt) throw new Error("Unauthorized");
 
-      const res = await fetch(
-        `/api/communications/limits?organization_id=${encodeURIComponent(orgId)}`,
-        { headers: { Authorization: `Bearer ${jwt}` } },
-      );
-
-      const text = await res.text();
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        throw new Error("Invalid response");
-      }
-
-      if (!res.ok) {
-        const msg =
-          typeof parsed === "object" &&
-          parsed !== null &&
-          "error" in parsed &&
-          typeof (parsed as { error?: unknown }).error === "string"
-            ? (parsed as { error: string }).error
-            : "Failed to load limits";
-        throw new Error(msg);
-      }
-
-      if (!isLimitsPayload(parsed)) throw new Error("Bad response");
-
-      setLimits(parsed);
+      const lim = await fetchMonthlyLimits(orgId, jwt);
+      setLimits(lim);
     } catch (e) {
       setLimitsErr(e instanceof Error ? e.message : "Failed to load limits");
     } finally {
@@ -748,244 +997,283 @@ export default function CommunicationsPage() {
     }
   }
 
-  function toggleUploadMode(upload_id: string) {
-    setUploads((cur) =>
-      cur.map((u) => {
-        if (u.upload_id !== upload_id) return u;
-        if (!isInlineableImage(u.content_type)) return u;
-
-        // attachment -> inline
-        if (u.mode === "attachment") {
-          const cid = u.inline_cid ?? makeCid();
-
-          if (u.preview_url) {
-            editorRef.current?.insertImage({
-              src: u.preview_url,
-              alt: u.filename,
-              uploadId: u.upload_id,
-              align: "center",
-            });
-          }
-
-          return { ...u, mode: "inline" as const, inline_cid: cid };
-        }
-
-        // inline -> attachment
-        editorRef.current?.removeImagesByUploadId(upload_id);
-        const { inline_cid: _drop, ...rest } = u;
-        return { ...rest, mode: "attachment" as const };
-      }),
-    );
-  }
-
-  function removeUpload(upload_id: string) {
-    setUploads((cur) => cur.filter((u) => u.upload_id !== upload_id));
-    editorRef.current?.removeImagesByUploadId(upload_id);
-  }
-
-  useEffect(() => {
-    if (tab === "audience") loadMembers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, orgId]);
-
-  const filteredMembers = useMemo(() => {
-    const q = memberQ.trim().toLowerCase();
-
-    return members.filter((m) => {
-      if (q) {
-        const name = `${m.first_name} ${m.last_name ?? ""}`.toLowerCase();
-        if (!name.includes(q) && !m.email.includes(q)) return false;
-      }
-
-      if (genderFilter.length) {
-        if (!m.gender || !genderFilter.includes(m.gender)) return false;
-      }
-      if (ageFilter.length) {
-        if (!m.age_group || !ageFilter.includes(m.age_group)) return false;
-      }
-      if (stageFilter.length) {
-        // only apply visitor/member filters; anything else excluded
-        const st = (m.membership_stage ?? "").toLowerCase();
-        const ok =
-          (stageFilter.includes("visitor") && st === "visitor") ||
-          (stageFilter.includes("member") && st === "member");
-        if (!ok) return false;
-      }
-
-      return true;
-    });
-  }, [members, memberQ, genderFilter, ageFilter, stageFilter]);
-
-  const selectedMemberIds = useMemo(() => {
-    return Object.keys(sendMap).filter((id) => sendMap[id] === true);
-  }, [sendMap]);
-
-  const selectedRecipients = useMemo(() => {
-    const byId = new Map(members.map((m) => [m.id, m]));
-    return selectedMemberIds
-      .map((id) => byId.get(id))
-      .filter(Boolean)
-      .map((m) => (m as MemberRow).email);
-  }, [members, selectedMemberIds]);
-
-  async function sendTestInternal() {
+  /** -------- report email job: start/pump/status -------- */
+  async function startReportJob() {
     setSendErr("");
     if (!orgId) return;
 
-    const em = testEmail.trim().toLowerCase();
-    if (!isValidEmail(em)) {
-      setSendErr("Provide a valid test email.");
-      return;
-    }
-
-    try {
-      const { data: sessionRes } = await supabase.auth.getSession();
-      const jwt = sessionRes.session?.access_token;
-      if (!jwt) throw new Error("Unauthorized");
-
-      const createRes = await fetch("/api/communications/campaign/create", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${jwt}`,
-        },
-        body: JSON.stringify({
-          organization_id: orgId,
-          subject: previewSubject,
-          body_html: previewHtml,
-          total_recipients: 1,
-        }),
-      });
-
-      const createJson = await createRes.json();
-      if (!createRes.ok)
-        throw new Error(createJson?.error ?? "Failed to create test campaign");
-
-      const campaignId = String(createJson.campaign_id);
-
-      const res = await fetch("/api/communications/send-one", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${jwt}`,
-        },
-        body: JSON.stringify({
-          organization_id: orgId,
-          campaign_id: campaignId,
-          to_email: em,
-          reply_to: previewReplyTo,
-        }),
-      });
-
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error ?? "Failed to send test");
-
-      showToast("Test sent ✓");
-      setTestOpen(false);
-      setTestEmail("");
-      await loadHistory(); // optional
-    } catch (e) {
-      setSendErr(e instanceof Error ? e.message : "Failed to send test");
-    }
-  }
-
-  async function sendBroadcastInternal() {
-    setSendErr("");
-    if (!orgId) return;
-
-    const tos = selectedRecipients;
-    if (tos.length === 0) {
+    const memberIds = selectedMemberIds;
+    if (memberIds.length === 0) {
       setSendErr("Select at least one recipient in Audience.");
       return;
     }
 
-    // reset progress
+    const subj = previewSubject;
+    const w = 600;
+    const bod = previewHtml.trim();
+    const safe = clampEmailImages(bod, w);
+
+    if (!subj) {
+      setSendErr("Subject required");
+      return;
+    }
+    if (!bod) {
+      setSendErr("Body required");
+      return;
+    }
+
+    const sd = clampYmd(startDate);
+    const ed = clampYmd(endDate);
+    if (!sd || !ed) {
+      setSendErr("Start date and end date are required.");
+      return;
+    }
+
+    // reset job state
     setSending(true);
-    setProgressPct(0);
+    setJobId(null);
+    setCampaignId(null);
+    setJobStatus("queued");
+    setPausedReason(null);
+    setJobTotal(memberIds.length);
     setSentOk(0);
     setSentFail(0);
+    setRecentRows([]);
 
     try {
-      const subj = previewSubject;
-      const w = 600;
-      const bod = previewHtml.trim();
-      const safe = clampEmailImages(bod, w);
-
-      if (!subj) throw new Error("Subject required");
-      if (!bod) throw new Error("Body required");
-
       const { data: sessionRes } = await supabase.auth.getSession();
       const jwt = sessionRes.session?.access_token;
       if (!jwt) throw new Error("Unauthorized");
 
-      // Create a campaign (for History)
-      const createRes = await fetch("/api/communications/campaign/create", {
+      const body: ReportStartBody = {
+        organization_id: orgId,
+        subject: subj,
+        body_html: wrapEmailHtml(safe, { maxWidthPx: w }),
+        reply_to: previewReplyTo,
+        uploads: uploads
+          .filter((u) => u.mode === "inline" && !!u.inline_cid)
+          .map((u) => ({
+            upload_id: u.upload_id,
+            upload_mode: "inline",
+            inline_cid: u.inline_cid,
+          })),
+        member_ids: memberIds,
+        start_date: sd,
+        end_date: ed,
+        service_ids: parsedServiceIds,
+        category_ids: parsedCategoryIds,
+        payment_methods: paymentMethods.length ? paymentMethods : undefined,
+        attach_summary: attachSummary,
+        attach_detailed: attachDetailed,
+      };
+
+      const res = await fetch("/api/reports/email-member-giving/start", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${jwt}`,
         },
-        body: JSON.stringify({
-          organization_id: orgId,
-          subject: previewSubject,
-          body_html: wrapEmailHtml(safe, { maxWidthPx: w }),
-          uploads: uploads.map((u) => ({
-            upload_id: u.upload_id,
-            upload_mode: u.mode,
-            inline_cid: u.mode === "inline" ? u.inline_cid : undefined,
-          })),
-          total_recipients: tos.length,
-        }),
+        body: JSON.stringify(body),
       });
 
-      const createJson = await createRes.json().catch(() => null);
-      if (!createRes.ok)
-        throw new Error(
-          String(createJson?.error ?? "Failed to start campaign"),
-        );
-      const campaignId = String(createJson.campaign_id);
+      const json: unknown = await res.json().catch(() => null);
 
-      // Loop send one-by-one so we can show progress
-      let ok = 0;
-      let fail = 0;
-
-      for (let i = 0; i < tos.length; i++) {
-        const to = tos[i];
-
-        const res = await fetch("/api/communications/send-one", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${jwt}`,
-          },
-          body: JSON.stringify({
-            organization_id: orgId,
-            mode: "broadcast",
-            campaign_id: campaignId,
-            to_email: to,
-          }),
-        });
-
-        const json = await res.json().catch(() => null);
-        if (res.ok && json?.ok) ok++;
-        else fail++;
-
-        setSentOk(ok);
-        setSentFail(fail);
-        setProgressPct(Math.round(((i + 1) / tos.length) * 100));
+      if (!res.ok) {
+        const msg =
+          isObject(json) && typeof json.error === "string"
+            ? json.error
+            : "Failed to start report job";
+        throw new Error(msg);
       }
 
-      showToast(`Broadcast done ✓ (${ok} ok, ${fail} failed)`);
-      // refresh history
-      await loadHistory();
-      setTab("history");
+      if (!isReportStartOk(json)) {
+        throw new Error(
+          "Failed to start report job: unexpected response shape",
+        );
+      }
+
+      setJobId(json.job_id);
+      setCampaignId(json.campaign_id);
+      setJobTotal(json.total);
+      setJobStatus("running");
+
+      // kick an immediate pump so user sees movement quickly
+      await pumpOnce(json.job_id);
     } catch (e) {
-      setSendErr(e instanceof Error ? e.message : "Broadcast failed");
-    } finally {
+      setSendErr(e instanceof Error ? e.message : "Failed to start sending");
       setSending(false);
+      setJobStatus("error");
     }
   }
 
+  async function pumpOnce(job_id: string) {
+    if (!orgId) return;
+
+    const { data: sessionRes } = await supabase.auth.getSession();
+    const jwt = sessionRes.session?.access_token;
+    if (!jwt) throw new Error("Unauthorized");
+
+    const res = await fetch("/api/reports/email-member-giving/pump", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${jwt}`,
+      },
+      body: JSON.stringify({
+        organization_id: orgId,
+        job_id,
+        batch_size: 25,
+      }),
+    });
+
+    const json: unknown = await res.json().catch(() => null);
+
+    if (!res.ok) {
+      const msg =
+        isObject(json) && typeof json.error === "string"
+          ? json.error
+          : "Pump failed";
+      throw new Error(msg);
+    }
+
+    if (!isReportPumpOk(json)) {
+      throw new Error("Pump failed: unexpected response shape");
+    }
+
+    setJobStatus(json.status);
+    setPausedReason(json.paused_reason ?? null);
+    setJobTotal(json.total);
+    setSentOk(json.sent_success);
+    setSentFail(json.sent_failure);
+
+    // refresh status/recent after pump (cheap + keeps UI fresh)
+    await refreshStatus(job_id);
+  }
+
+  const jobStatusRef = useRef<JobStatus | null>(null);
+  const jobIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    jobStatusRef.current = jobStatus;
+  }, [jobStatus]);
+  useEffect(() => {
+    jobIdRef.current = jobId;
+  }, [jobId]);
+
+  async function refreshStatus(job_id: string) {
+    if (!orgId) return;
+
+    const { data: sessionRes } = await supabase.auth.getSession();
+    const jwt = sessionRes.session?.access_token;
+    if (!jwt) throw new Error("Unauthorized");
+
+    const res = await fetch(
+      `/api/reports/email-member-giving/status?organization_id=${encodeURIComponent(
+        orgId,
+      )}&job_id=${encodeURIComponent(job_id)}`,
+      { headers: { Authorization: `Bearer ${jwt}` } },
+    );
+    const json: unknown = await res.json().catch(() => null);
+
+    if (!res.ok) {
+      const msg =
+        isObject(json) && typeof json.error === "string"
+          ? json.error
+          : "Status failed";
+      throw new Error(msg);
+    }
+
+    if (!isStatusResponse(json)) return;
+
+    if (typeof json.job.status === "string")
+      setJobStatus(json.job.status as JobStatus);
+    if (typeof json.job.paused_reason === "string")
+      setPausedReason(json.job.paused_reason);
+    else if (json.job.paused_reason === null) setPausedReason(null);
+
+    if (typeof json.job.total === "number") setJobTotal(json.job.total);
+    if (typeof json.job.sent_success === "number")
+      setSentOk(json.job.sent_success);
+    if (typeof json.job.sent_failure === "number")
+      setSentFail(json.job.sent_failure);
+
+    setRecentRows(json.recent);
+    setRemaining(typeof json.remaining === "number" ? json.remaining : null);
+
+    if (json.done) setJobStatus("done");
+  }
+
+  // auto-pump loop while running
+  useEffect(() => {
+    if (!orgId || !sending || !jobId) return;
+
+    let alive = true;
+    let timer: number | null = null;
+
+    async function tick() {
+      try {
+        if (!alive) return;
+
+        const st = jobStatusRef.current;
+        const id = jobIdRef.current;
+
+        if (!id) return;
+        if (st === "paused" || st === "done" || st === "error") return;
+
+        await pumpOnce(id);
+      } catch (e) {
+        setSendErr(e instanceof Error ? e.message : "Sending error");
+        setJobStatus("error");
+      } finally {
+        if (!alive) return;
+
+        const st = jobStatusRef.current;
+        const shouldContinue =
+          st !== "paused" && st !== "done" && st !== "error";
+        if (shouldContinue) timer = window.setTimeout(tick, 1400);
+      }
+    }
+
+    timer = window.setTimeout(tick, 900);
+    return () => {
+      alive = false;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [orgId, sending, jobId]);
+
+  // when job finishes, wrap up and push to history tab
+  useEffect(() => {
+    if (!sending) return;
+    if (!jobId) return;
+
+    const done = jobStatus === "done";
+    if (!done) return;
+
+    (async () => {
+      setSending(false);
+      showToast(`Done ✓ (${sentOk} ok, ${sentFail} failed)`);
+
+      // Refresh history and jump there
+      await loadHistory();
+      setTab("history");
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobStatus, sending, jobId]);
+
+  async function resumeJob() {
+    if (!jobId) return;
+    setSendErr("");
+    setPausedReason(null);
+    setJobStatus("running");
+    try {
+      await pumpOnce(jobId);
+    } catch (e) {
+      setSendErr(e instanceof Error ? e.message : "Failed to resume");
+      setJobStatus("error");
+    }
+  }
+
+  /** -------- history (reused) -------- */
   async function loadHistory() {
     if (!orgId) return;
     setHistoryErr("");
@@ -996,7 +1284,9 @@ export default function CommunicationsPage() {
       if (!jwt) throw new Error("Unauthorized");
 
       const res = await fetch(
-        `/api/communications/history/list?organization_id=${encodeURIComponent(orgId)}`,
+        `/api/communications/history/list?organization_id=${encodeURIComponent(
+          orgId,
+        )}`,
         { headers: { Authorization: `Bearer ${jwt}` } },
       );
 
@@ -1049,13 +1339,8 @@ export default function CommunicationsPage() {
       }
 
       if (!res.ok) {
-        if (
-          typeof parsed === "object" &&
-          parsed !== null &&
-          "error" in parsed &&
-          typeof (parsed as { error?: unknown }).error === "string"
-        ) {
-          throw new Error((parsed as { error: string }).error);
+        if (isObject(parsed) && typeof parsed.error === "string") {
+          throw new Error(parsed.error);
         }
         throw new Error("Failed to load detail");
       }
@@ -1076,9 +1361,12 @@ export default function CommunicationsPage() {
       {/* Header + tab stubs */}
       <div className="border-b">
         <div className="px-6 py-4 mt-7">
-          <div className="text-xl font-semibold">Email Communications</div>
+          <div className="text-xl font-semibold">
+            Email Member Giving Reports
+          </div>
           <div className="text-sm text-slate-600">
-            Announcements and broadcasts with images + attachments.
+            Send giving report PDFs to selected members. Inline images in the
+            email body are supported.
           </div>
 
           <div className="mt-4 inline-flex rounded-2xl border bg-slate-50 p-1">
@@ -1103,6 +1391,28 @@ export default function CommunicationsPage() {
               </button>
             ))}
           </div>
+
+          {/* tiny job badge (optional, minimal) */}
+          {jobId ? (
+            <div className="mt-3 text-xs text-slate-500">
+              Job: <span className="font-semibold">{jobId.slice(0, 8)}</span>
+              {campaignId ? (
+                <>
+                  {" "}
+                  • Campaign:{" "}
+                  <span className="font-semibold">
+                    {campaignId.slice(0, 8)}
+                  </span>
+                </>
+              ) : null}
+              {jobStatus ? (
+                <>
+                  {" "}
+                  • Status: <span className="font-semibold">{jobStatus}</span>
+                </>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -1116,8 +1426,123 @@ export default function CommunicationsPage() {
             </div>
 
             <div className="px-6 py-6 space-y-5">
+              {/* Report Filters */}
+              <div className="rounded-2xl border bg-slate-50 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold">Report filters</div>
+                    <div className="text-xs text-slate-600 mt-1">
+                      Date range is required. blank.
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <label className="inline-flex items-center gap-2 text-xs cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={attachSummary}
+                        onChange={(e) => setAttachSummary(e.target.checked)}
+                      />
+                      <span>Attach Summary report (PDF)</span>
+                    </label>
+
+                    <label className="inline-flex items-center gap-2 text-xs cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={attachDetailed}
+                        onChange={(e) => setAttachDetailed(e.target.checked)}
+                      />
+                      <span>Attach Detailed report (PDF)</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <div className="mb-1 text-xs font-semibold text-slate-600">
+                      Start date *
+                    </div>
+                    <input
+                      type="date"
+                      className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      value={startDate}
+                      onChange={(e) => setStartDate(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <div className="mb-1 text-xs font-semibold text-slate-600">
+                      End date *
+                    </div>
+                    <input
+                      type="date"
+                      className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      value={endDate}
+                      onChange={(e) => setEndDate(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                {/* <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <div className="mb-1 text-xs font-semibold text-slate-600">
+                      Service IDs (optional)
+                    </div>
+                    <input
+                      className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      placeholder="comma-separated UUIDs"
+                      value={serviceIdsCsv}
+                      onChange={(e) => setServiceIdsCsv(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <div className="mb-1 text-xs font-semibold text-slate-600">
+                      Category IDs (optional)
+                    </div>
+                    <input
+                      className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      placeholder="comma-separated UUIDs"
+                      value={categoryIdsCsv}
+                      onChange={(e) => setCategoryIdsCsv(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <CheckboxDropdown
+                    myKey="pay"
+                    openKey={filterOpenKey}
+                    setOpenKey={setFilterOpenKey}
+                    label="Payment methods"
+                    items={[
+                      { key: "cash", label: "Cash" },
+                      { key: "cheque", label: "Cheque" },
+                      { key: "online", label: "Online" },
+                    ]}
+                    selected={paymentMethods}
+                    onChange={(next) =>
+                      setPaymentMethods(next as PaymentMethod[])
+                    }
+                  />
+
+                  {paymentMethods.length ? (
+                    <div className="text-xs text-slate-600">
+                      Selected:{" "}
+                      <span className="font-semibold">
+                        {paymentMethods.join(", ")}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-slate-500">
+                      No payment method filter
+                    </div>
+                  )}
+                </div> */}
+              </div>
+
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">
+                <div className="mb-1 text-lg font-semibold text-slate-600">
                   Subject *
                 </div>
                 <input
@@ -1128,7 +1553,7 @@ export default function CommunicationsPage() {
               </div>
 
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">
+                <div className="mb-1 text-lg font-semibold text-slate-600">
                   Body *
                 </div>
 
@@ -1136,8 +1561,6 @@ export default function CommunicationsPage() {
                   ref={editorRef}
                   valueHtml={bodyHtml}
                   onChangeHtml={setBodyHtml}
-                  // minHeight={200}
-                  // maxHeight={500}
                 />
               </div>
 
@@ -1145,10 +1568,10 @@ export default function CommunicationsPage() {
               <div className="rounded-2xl border bg-slate-50 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="text-sm font-semibold">Images & files</div>
+                    <div className="text-sm font-semibold">Inline images</div>
                     <div className="text-xs text-slate-600 mt-1">
-                      Inline or attachment images supported · Place cursor to
-                      insert inline image · Max ≤ 20 MB
+                      Only images can be uploaded here (PNG/JPG/WebP/GIF) · Max
+                      ≤ 20 MB
                     </div>
                   </div>
 
@@ -1157,6 +1580,7 @@ export default function CommunicationsPage() {
                       ref={fileInputRef}
                       type="file"
                       multiple
+                      accept="image/*"
                       className="hidden"
                       onChange={(e) => handleUploadFiles(e.target.files)}
                     />
@@ -1176,59 +1600,32 @@ export default function CommunicationsPage() {
 
                 {uploads.length ? (
                   <div className="mt-4 space-y-2">
-                    {uploads.map((u) => {
-                      const img = isInlineableImage(u.content_type);
-                      return (
-                        <div
-                          key={u.upload_id}
-                          className="flex items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3"
-                        >
-                          <div className="min-w-0">
-                            <div className="text-sm font-semibold truncate">
-                              {u.filename}
-                            </div>
-                            <div className="text-xs text-slate-600">
-                              {u.content_type} • {formatBytes(u.bytes)}
-                              {u.mode === "inline" && u.inline_cid
-                                ? ` • cid:${u.inline_cid}`
-                                : ""}
-                            </div>
+                    {uploads.map((u) => (
+                      <div
+                        key={u.upload_id}
+                        className="flex items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold truncate">
+                            {u.filename}
                           </div>
-
-                          <div className="flex items-center gap-2 shrink-0">
-                            {img ? (
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs text-slate-600">
-                                  {u.mode === "inline"
-                                    ? "Inline Image"
-                                    : "Attachment"}
-                                </span>
-
-                                <button
-                                  className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
-                                  onClick={() => toggleUploadMode(u.upload_id)}
-                                >
-                                  {u.mode === "inline"
-                                    ? "Switch to Attachment"
-                                    : "Switch to Inline"}
-                                </button>
-                              </div>
-                            ) : (
-                              <span className="text-xs text-slate-500">
-                                Attachment
-                              </span>
-                            )}
-
-                            <button
-                              className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
-                              onClick={() => removeUpload(u.upload_id)}
-                            >
-                              Remove
-                            </button>
+                          <div className="text-xs text-slate-600">
+                            {u.content_type} • {formatBytes(u.bytes)}
+                            {u.inline_cid ? ` • cid:${u.inline_cid}` : ""}
                           </div>
                         </div>
-                      );
-                    })}
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-xs text-slate-500">Inline</span>
+                          <button
+                            className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
+                            onClick={() => removeUpload(u.upload_id)}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
 
                     <div className="text-xs text-slate-600 mt-2">
                       Total uploads:{" "}
@@ -1239,7 +1636,7 @@ export default function CommunicationsPage() {
                   </div>
                 ) : (
                   <div className="mt-4 text-xs text-slate-600">
-                    No uploads yet.
+                    No images yet.
                   </div>
                 )}
               </div>
@@ -1287,7 +1684,7 @@ export default function CommunicationsPage() {
                       } else {
                         setGenderFilter([]);
                         setAgeFilter([]);
-                        setStageFilter([]);
+                        setStageFilter(["member"]); // keep reports default
                         setFilterOpenKey(null);
                         setSendMap({});
                       }
@@ -1324,6 +1721,7 @@ export default function CommunicationsPage() {
                     onChange={setAgeFilter}
                   />
 
+                  {/* kept for UI continuity; default is member */}
                   <CheckboxDropdown
                     myKey="stage"
                     openKey={filterOpenKey}
@@ -1376,7 +1774,7 @@ export default function CommunicationsPage() {
                 <div className="divide-y">
                   {filteredMembers.map((m) => {
                     const name = `${m.first_name} ${m.last_name ?? ""}`.trim();
-                    const send = sendMap[m.id] === true; // default false
+                    const send = sendMap[m.id] === true;
 
                     return (
                       <div
@@ -1398,7 +1796,7 @@ export default function CommunicationsPage() {
                                 setSendMap((cur) => ({ ...cur, [m.id]: !send }))
                               }
                             />
-                             <span>{send ? "Will send" : "Skip"}</span>
+                            <span>{send ? "Will send" : "Skip"}</span>
                           </label>
                         </div>
                       </div>
@@ -1425,7 +1823,7 @@ export default function CommunicationsPage() {
             <div className="border-b px-6 py-4">
               <div className="text-sm font-semibold">Preview & Send</div>
               <div className="text-xs text-slate-600">
-                Test send or broadcast to selected audience.
+                Sends are job-based with progress tracking.
               </div>
             </div>
 
@@ -1450,11 +1848,17 @@ export default function CommunicationsPage() {
                 </div>
               </div>
 
-              {/* Progress bar */}
-              {sending ? (
+              {/* Progress + pause state */}
+              {sending || jobId ? (
                 <div className="rounded-2xl border p-4">
                   <div className="flex justify-between text-xs text-slate-600">
-                    <span>Sending…</span>
+                    <span>
+                      {jobStatus === "paused"
+                        ? "Paused"
+                        : jobStatus === "done"
+                          ? "Done"
+                          : "Sending…"}
+                    </span>
                     <span>{progressPct}%</span>
                   </div>
                   <div className="mt-2 h-2 w-full rounded-full bg-slate-100 overflow-hidden">
@@ -1463,10 +1867,98 @@ export default function CommunicationsPage() {
                       style={{ width: `${progressPct}%` }}
                     />
                   </div>
+
                   <div className="mt-3 text-xs text-slate-600">
                     Success: <span className="font-semibold">{sentOk}</span> •
-                    Failed: <span className="font-semibold">{sentFail}</span>
+                    Failed: <span className="font-semibold">{sentFail}</span> •
+                    Total: <span className="font-semibold">{jobTotal}</span>
                   </div>
+
+                  {jobStatus === "paused" ? (
+                    <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                      <div className="font-semibold">Sending paused</div>
+                      <div className="mt-1 text-xs text-amber-800">
+                        {pausedReason ?? "Quota or burst limit hit."}
+                      </div>
+                      <div className="mt-3 flex justify-end">
+                        <button
+                          className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                          onClick={resumeJob}
+                        >
+                          Resume
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {recentRows.length ? (
+                    <div className="mt-4 rounded-2xl border overflow-hidden">
+                      <div className="bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600 flex items-center justify-between gap-3">
+                        <span>Recent activity</span>
+
+                        {/* Optional: show remaining if you store it from /status */}
+                        {typeof remaining === "number" ? (
+                          <span className="text-[11px] font-semibold text-slate-500">
+                            Remaining: {remaining}
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <div className="max-h-[180px] overflow-auto divide-y">
+                        {recentRows.slice(0, 12).map((r, idx) => {
+                          const status = r.status ?? "pending";
+
+                          const pill =
+                            status === "success" ? (
+                              <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">
+                                Success
+                              </span>
+                            ) : status === "failure" ? (
+                              <span className="inline-flex rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] text-red-700">
+                                Failed
+                              </span>
+                            ) : status === "skipped" ? (
+                              <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800">
+                                Skipped
+                              </span>
+                            ) : status === "processing" ? (
+                              <span className="inline-flex rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700">
+                                Sending…
+                              </span>
+                            ) : (
+                              <span className="inline-flex rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-600">
+                                Pending
+                              </span>
+                            );
+
+                          const showError =
+                            (status === "failure" || status === "skipped") &&
+                            !!r.error;
+
+                          return (
+                            <div
+                              key={`${r.to_email ?? "row"}-${idx}`}
+                              className="px-4 py-2 text-xs flex items-center justify-between gap-3"
+                            >
+                              <div className="min-w-0 truncate text-slate-700">
+                                {r.to_email ?? "—"}
+                              </div>
+
+                              <div className="shrink-0">{pill}</div>
+
+                              {showError ? (
+                                <div
+                                  className="mt-1 text-[11px] text-red-700 truncate"
+                                  title={r.error ?? ""}
+                                >
+                                  {r.error}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -1488,7 +1980,7 @@ export default function CommunicationsPage() {
                       </div>
 
                       <div className="text-slate-700">
-                        Uploads:{" "}
+                        Inline images:{" "}
                         <span className="font-semibold text-slate-900">
                           {uploads.length}
                         </span>
@@ -1512,16 +2004,40 @@ export default function CommunicationsPage() {
                       <div className="text-sm">{previewReplyTo}</div>
                     </div>
                   </div>
+
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <div className="text-xs text-slate-600">Report range</div>
+                      <div className="text-sm">
+                        <span className="font-semibold">
+                          {startDate || "—"} → {endDate || "—"}
+                        </span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-600">
+                        PDF attachments
+                      </div>
+                      <div className="text-sm">
+                        <span className="font-semibold">
+                          {attachSummary ? "Summary" : ""}
+                          {attachSummary && attachDetailed ? " + " : ""}
+                          {attachDetailed ? "Detailed" : ""}
+                          {!attachSummary && !attachDetailed ? "None" : ""}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="px-6 py-6">
-                  {/* optional logo area */}
                   {logoUrl ? (
                     <div className="mb-4">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={logoUrl} alt="logo" className="h-10 w-auto" />
                     </div>
                   ) : null}
+
                   <style jsx global>{`
                     .emailPreview {
                       max-width: 600px;
@@ -1568,13 +2084,6 @@ export default function CommunicationsPage() {
 
                 <div className="flex gap-2">
                   <button
-                    className="rounded-2xl border px-5 py-2 text-sm hover:bg-slate-50"
-                    onClick={() => requestSend("test", 1)}
-                  >
-                    Send test
-                  </button>
-
-                  <button
                     className={`rounded-2xl px-5 py-2 text-sm font-semibold text-white ${
                       sending
                         ? "bg-slate-300"
@@ -1582,10 +2091,10 @@ export default function CommunicationsPage() {
                     }`}
                     disabled={sending}
                     onClick={() =>
-                      requestSend("broadcast", selectedRecipients.length)
+                      requestSend("report_send", selectedMemberIds.length)
                     }
                   >
-                    Send broadcast
+                    Send reports
                   </button>
                 </div>
               </div>
@@ -1599,7 +2108,7 @@ export default function CommunicationsPage() {
             <div className="border-b px-6 py-4">
               <div className="text-sm font-semibold">History</div>
               <div className="text-xs text-slate-600">
-                Broadcast runs and results.
+                Previous campaigns and results.
               </div>
 
               <div className="mt-4">
@@ -1662,55 +2171,44 @@ export default function CommunicationsPage() {
         ) : null}
       </div>
 
-      {/* Test modal */}
-      {testOpen ? (
+      {/* Non-image upload modal */}
+      {nonImageOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
-          onClick={() => setTestOpen(false)}
+          onClick={() => setNonImageOpen(false)}
         >
           <div
             className="w-full max-w-lg rounded-3xl bg-white shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="border-b px-6 py-4">
-              <div className="text-sm font-semibold">Send test email</div>
+              <div className="text-sm font-semibold">
+                Only images allowed here
+              </div>
               <div className="text-xs text-slate-600">
-                Does not affect History totals.
+                This page can only upload inline images for the email body.
               </div>
             </div>
 
             <div className="px-6 py-6 space-y-3">
-              <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">
-                  Email *
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <div className="font-semibold">Unsupported file</div>
+                <div className="mt-1 text-xs text-amber-800">
+                  <span className="font-semibold">
+                    {nonImageName || "That file"}
+                  </span>{" "}
+                  isn&apos;t an image. If you need to attach files, please use
+                  Email Broadcast mode instead.
                 </div>
-                <input
-                  className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                  value={testEmail}
-                  onChange={(e) => setTestEmail(e.target.value)}
-                  placeholder="you@example.com"
-                />
               </div>
-
-              {sendErr ? (
-                <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                  {sendErr}
-                </div>
-              ) : null}
             </div>
-            <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
-              <button
-                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
-                onClick={() => setTestOpen(false)}
-              >
-                Cancel
-              </button>
 
+            <div className="flex items-center justify-end gap-3 border-t px-6 py-4">
               <button
                 className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-                onClick={proceedSend}
+                onClick={() => setNonImageOpen(false)}
               >
-                Send test
+                Got it
               </button>
             </div>
           </div>
@@ -1775,8 +2273,8 @@ export default function CommunicationsPage() {
 
                   {insufficient ? (
                     <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                      Sorry, you don&apos;t have enough emails left to send this{" "}
-                      {confirmAction === "broadcast" ? "broadcast" : "test"}.
+                      Sorry, you don&apos;t have enough emails left to send
+                      these reports.
                       <div className="mt-2 text-xs text-amber-800">
                         Upgrade to a larger plan or wait until next month.
                       </div>
@@ -1993,7 +2491,6 @@ export default function CommunicationsPage() {
                 </div>
               </div>
 
-              {/* Optional: show last error messages if your API returns them */}
               {historyDetail?.errors?.length ? (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
                   <div className="font-semibold mb-1">Some errors</div>

@@ -407,6 +407,11 @@ export const TipTap = forwardRef<TipTapHandle, Props>(function TipTap(
       `}</style>
 
       <style jsx global>{`
+        .ProseMirror {
+          max-width: 600px;
+          margin: 0 auto;
+        }
+
         .ProseMirror ul {
           list-style-type: disc !important;
           padding-left: 1.5rem !important;

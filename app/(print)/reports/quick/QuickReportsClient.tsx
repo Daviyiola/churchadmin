@@ -202,6 +202,13 @@ const expenseSort = rawExpenseSort === "category" ? "category" : "date";
         text-overflow: ellipsis;   /* truncate long headers/cells */
         }
 
+        .td-wrap {
+          white-space: normal;
+          overflow: visible;
+          text-overflow: clip;
+          word-break: break-word;
+        }
+
         @media print {
         .print-hidden { display: none !important; }
         body { background: white !important; }
@@ -440,24 +447,24 @@ function ExpenseTable({ data }: { data: ExpenseReport }) {
                 {r.expense_date}
               </td>
               <td
-                className="border border-black px-2 py-1 td-cell"
+                className="border border-black px-2 py-1 td-wrap"
                 title={r.description}
               >
                 {r.description}
               </td>
               <td
-                className="border border-black px-2 py-1 td-cell"
+                className="border border-black px-2 py-1 td-wrap"
                 title={r.vendor}
               >
                 {r.vendor}
               </td>
               <td
-                className="border border-black px-2 py-1 td-cell"
+                className="border border-black px-2 py-1 td-wrap"
                 title={r.category_name}
               >
                 {r.category_name}
               </td>
-              <td className="border border-black px-2 py-1 text-right td-cell">
+              <td className="border border-black px-2 py-1 text-right td-wrap">
                 {money(r.amount)}
               </td>
             </tr>

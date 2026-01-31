@@ -1095,7 +1095,7 @@ export default function IncomePage() {
                     <div className="min-w-[1100px]">
                       <div className="grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100 rounded-t-3xl">
                         <div className="col-span-3">Member</div>
-                        <div className="col-span-1">Category</div>
+                        <div className="col-span-2">Category</div>
                         <div className="col-span-2 ">Amount</div>
                         <div className="col-span-1">Method</div>
                         <div className="col-span-1">Cheque #</div>                        
@@ -1111,12 +1111,12 @@ export default function IncomePage() {
                           {items.map((it) => (
                             <div
                               key={it.id}
-                              className="grid grid-cols-12 items-center px-5 py-4 text-sm"
+                              className="grid grid-cols-12 items-start px-5 py-4 text-sm"
                             >
-                              <div className="col-span-3 font-semibold">
+                              <div className="col-span-3 min-w-0 font-semibold whitespace-normal break-words">
                                 {memberNameById.get(it.member_id) ?? "—"}
                               </div>
-                              <div className="col-span-1 text-slate-700">
+                              <div className="col-span-2 min-w-0 text-slate-700 break-words">
                                 {incomeCatNameById.get(it.income_category_id) ??
                                   "—"}
                               </div>
@@ -1126,7 +1126,7 @@ export default function IncomePage() {
                               <div className="col-span-1 text-slate-700">
                                 {it.payment_method}
                               </div>
-                              <div className="col-span-1 text-slate-700">
+                              <div className="col-span-1 min-w-0 text-slate-700 break-words">
                                 {it.payment_method === "cheque"
                                   ? it.cheque_number ?? "—"
                                   : "—"}

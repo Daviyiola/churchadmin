@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@sparticuz/chromium": "^143.0.4",
     "@supabase/auth-helpers-nextjs": "^0.15.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.90.1",
@@ -22,6 +23,7 @@
     "@tiptap/react": "^3.17.1",
     "@tiptap/starter-kit": "^3.17.1",
     "next": "16.1.1",
+    "puppeteer-core": "^24.36.1",
     "qrcode": "^1.5.4",
     "qrcode.react": "^4.2.0",
     "react": "19.2.3",
@@ -38,6 +40,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
     "playwright": "^1.57.0",
+    "puppeteer": "^24.36.1",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
