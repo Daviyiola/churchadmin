@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -132,7 +132,7 @@ function asExpenseImportRowArray(input: unknown): ExpenseImportRow[] {
           r.payment_method === "cheque" ||
           r.payment_method === "online"
             ? (r.payment_method as PaymentMethod)
-            : "cash",
+            : "online",
         cheque_number:
           typeof r.cheque_number === "string" ? r.cheque_number : null,
         amount_cents:
@@ -229,7 +229,7 @@ function asPaymentMethod(raw: string): PaymentMethod {
   const v = (raw ?? "").trim().toLowerCase();
   if (v === "cheque" || v === "check" || v === "cheq") return "cheque";
   if (v === "online" || v === "card" || v === "transfer") return "online";
-  return "cash"; // default
+  return "online"; // default
 }
 
 function fmtDate(isoOrDate: string) {
@@ -267,12 +267,6 @@ function parseMoneyToCents(raw: string): number | null {
   const num = Number(cleaned);
   if (!Number.isFinite(num)) return null;
   return Math.round(num * 100);
-}
-
-function firstDayOfMonthISO(d: Date) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  return `${yyyy}-${mm}-01`;
 }
 
 function todayISO() {
@@ -365,7 +359,7 @@ export default function ExpenseDraftPage() {
 
   const [expenseDate, setExpenseDate] = useState<string>("");
   const [expenseCategoryId, setExpenseCategoryId] = useState<string>("");
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("online");
   const [chequeNumber, setChequeNumber] = useState<string>("");
   const [amount, setAmount] = useState<string>("");
   const [description, setDescription] = useState<string>("");
@@ -438,6 +432,8 @@ export default function ExpenseDraftPage() {
     return map;
   }, [expenseCats]);
 
+  const isUpload = importStep === "upload";
+
   const [savingImport, setSavingImport] = useState(false);
   const [appendingImport, setAppendingImport] = useState(false);
 
@@ -455,11 +451,7 @@ export default function ExpenseDraftPage() {
     setQuickExpenseCatOpen(true);
   }
 
-  function openQuickAddExpenseCategory() {
-    setQecName("");
-    setQecErr("");
-    setQuickExpenseCatOpen(true);
-  }
+  const botXRef = useRef<HTMLDivElement | null>(null);
 
   async function saveQuickExpenseCategory() {
     if (!orgId) return;
@@ -510,21 +502,34 @@ export default function ExpenseDraftPage() {
     setQuickExpenseCatOpen(false);
     showToast("Expense category added");
   }
-  async function abandonImportJob() {
+  const abandonImportJob = useCallback(async (): Promise<boolean> => {
+    // If there is something worth warning about, confirm.
     if (importJob && importRows.length > 0) {
-      const ok = confirm(
+      const ok = window.confirm(
         "Discard this import? All uploaded rows will be lost.",
       );
-      if (!ok) return;
+      if (!ok) return false; // user cancelled
     }
 
-    if (!importJob) return;
+    if (!importJob) {
+      setImportRows([]);
+      setImportStep("upload");
+      setImportDirty(false);
+      setImportSavedAt("");
+      setImportFilter("all");
+      return true;
+    }
 
-    await supabase
+    const { error } = await supabase
       .from("import_jobs")
       .delete()
       .eq("id", importJob.id)
       .eq("org_id", importJob.org_id);
+
+    if (error) {
+      console.error(error);
+      return false;
+    }
 
     setImportJob(null);
     setImportRows([]);
@@ -532,7 +537,8 @@ export default function ExpenseDraftPage() {
     setImportDirty(false);
     setImportSavedAt("");
     setImportFilter("all");
-  }
+    return true;
+  }, [importJob, importRows.length, supabase]);
 
   async function createExpenseImportJob(
     batchId: string,
@@ -557,10 +563,6 @@ export default function ExpenseDraftPage() {
 
     if (error) throw new Error(error.message);
     return data as ImportJob;
-  }
-
-  function addErr(errors: string[], msg: string): string[] {
-    return errors.includes(msg) ? errors : [...errors, msg];
   }
 
   function validateExpenseRowLocal(r: ExpenseImportRow): ExpenseImportRow {
@@ -654,18 +656,17 @@ export default function ExpenseDraftPage() {
         const catId =
           expenseCatIdByName.get(String(rawCat).trim().toLowerCase()) ?? null;
 
-        const cents = parseMoneyToCents(String(rawAmount));
-        // reject negatives hard (route to adjustment flow)
-        const amount_cents = cents === null ? null : cents <= 0 ? null : cents;
+        const centsRaw = parseMoneyToCents(String(rawAmount));
+        const centsAbs = centsRaw === null ? null : Math.abs(centsRaw);
+        const amount_cents =
+          centsAbs === null ? null : centsAbs === 0 ? null : centsAbs;
 
         const payment_method = asPaymentMethod(String(rawMethod));
         const cheque_number =
           payment_method === "cheque" ? String(rawCheque).trim() || null : null;
 
         const dateParsed = parseDateMaybe(String(rawDate));
-        // If they provided some date but it didn't parse -> flag error by setting null + extra error
         const userProvidedDate = String(rawDate ?? "").trim().length > 0;
-        const expense_date = dateParsed;
 
         let rowObj: ExpenseImportRow = {
           id: crypto.randomUUID(),
@@ -673,35 +674,24 @@ export default function ExpenseDraftPage() {
           org_id: job.org_id,
           status: "needs_review",
           row_index: r,
-          expense_date: expense_date ?? null,
+          expense_date: dateParsed ?? null,
           expense_category_id: catId,
           description: String(rawDesc ?? "").trim(),
           vendor: String(rawVendor ?? "").trim() || null,
           payment_method,
           cheque_number,
-          amount_cents: amount_cents,
+          amount_cents,
           errors: [],
           _dirty: false,
         };
 
         rowObj = validateExpenseRowLocal(rowObj);
 
-        // Add invalid date error if needed
         if (userProvidedDate && !dateParsed) {
           rowObj = {
             ...rowObj,
             status: "needs_review",
             errors: [...rowObj.errors, "Invalid date"],
-          };
-        }
-
-        // If negative or 0 detected, set explicit message
-        if (cents !== null && cents <= 0) {
-          rowObj = {
-            ...rowObj,
-            status: "blocked",
-            amount_cents: null,
-            errors: [...rowObj.errors, "Amount must be > 0 (no negatives)"],
           };
         }
 
@@ -970,6 +960,12 @@ export default function ExpenseDraftPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBatchId]);
 
+  const closeImportModal = useCallback(async () => {
+    const abandoned = await abandonImportJob();
+    if (!abandoned) return; // user cancelled or delete failed
+    setImportOpen(false);
+  }, [abandonImportJob]);
+
   // ====== Batch create/delete ======
   const openCreateBatch = () => {
     setErr("");
@@ -1048,7 +1044,7 @@ export default function ExpenseDraftPage() {
       firstCat ? (expenseCatLabelById.get(firstCat) ?? "") : "",
     );
 
-    setPaymentMethod("cash");
+    setPaymentMethod("online");
     setChequeNumber("");
     setAmount("");
     setDescription("");
@@ -1944,20 +1940,20 @@ export default function ExpenseDraftPage() {
           onClick={() => {
             // backdrop click closes
             void (async () => {
-              await abandonImportJob();
-              setImportOpen(false);
+              void closeImportModal();
             })();
           }}
         >
-          <div className="h-[100dvh] w-full p-4 py-8 flex items-start justify-center">
+          <div className="h-[100dvh] w-full p-4 flex items-center justify-center">
             <div
-              className="
-          w-full max-w-6xl
-          h-[calc(100dvh-4rem)]
-          rounded-3xl bg-white shadow-xl
-          flex flex-col
-          overflow-hidden
-        "
+              className={[
+                "w-full max-w-6xl rounded-3xl bg-white shadow-xl",
+                "flex flex-col overflow-hidden",
+                // Upload step: don't force full height (removes useless white space)
+                isUpload
+                  ? "h-auto max-h-[calc(100dvh-4rem)]"
+                  : "h-[calc(100dvh-4rem)]",
+              ].join(" ")}
               onClick={(e) => e.stopPropagation()}
             >
               {/* ================= Header (fixed) ================= */}
@@ -1976,8 +1972,7 @@ export default function ExpenseDraftPage() {
                   type="button"
                   disabled={importBusy}
                   onClick={async () => {
-                    await abandonImportJob();
-                    setImportOpen(false);
+                    void closeImportModal();
                   }}
                   className={`rounded-full p-1.5 ${
                     importBusy
@@ -1992,7 +1987,14 @@ export default function ExpenseDraftPage() {
               </div>
 
               {/* ================= Body (VERTICAL SCROLLER) ================= */}
-              <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6">
+              <div
+                className={[
+                  "px-6 py-6",
+                  isUpload
+                    ? "flex-none overflow-visible"
+                    : "flex-1 min-h-0 overflow-y-auto",
+                ].join(" ")}
+              >
                 {importErr ? (
                   <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                     {importErr}
@@ -2002,10 +2004,12 @@ export default function ExpenseDraftPage() {
                 {importStep === "upload" ? (
                   <div className="grid gap-6 lg:grid-cols-12">
                     {/* Left: Upload */}
-                    <div className="lg:col-span-5 rounded-3xl border bg-slate-50 p-5">
+                    {/* Left: Upload */}
+                    <div className="lg:col-span-5 rounded-3xl border bg-slate-50 p-5 flex flex-col">
                       <div className="text-sm font-semibold">
                         Step 1 — Upload CSV
                       </div>
+
                       <div className="mt-1 text-xs text-slate-600">
                         Required headers:{" "}
                         <span className="font-semibold">
@@ -2014,12 +2018,32 @@ export default function ExpenseDraftPage() {
                         . Optional: date, vendor, method, cheque_number.
                       </div>
 
-                      <div className="mt-4">
-                        <label className="block text-xs font-semibold text-slate-600 mb-2">
-                          CSV file
-                        </label>
+                      <div className="mt-4 text-xs text-slate-500">
+                        Notes:
+                        <ul className="list-disc pl-5 mt-1 space-y-1">
+                          <li>
+                            <span className="font-semibold">method</span>{" "}
+                            defaults to{" "}
+                            <span className="font-semibold">online</span> if
+                            missing/unknown.
+                          </li>
+                          <li>Negative amounts are made positive</li>
+                          <li>
+                            Category must match an existing expense category
+                            name.
+                          </li>
+                        </ul>
+                      </div>
 
+                      {/* Push chooser to the bottom */}
+                      <div className="mt-auto pt-5">
+                        <div className="text-xs font-semibold text-slate-600 mb-2">
+                          CSV file
+                        </div>
+
+                        {/* Hidden native input */}
                         <input
+                          id="expense-import-csv"
                           type="file"
                           accept=".csv,text/csv"
                           disabled={
@@ -2033,25 +2057,35 @@ export default function ExpenseDraftPage() {
                             void onPickCsvFile(f);
                             e.currentTarget.value = "";
                           }}
-                          className="block w-full rounded-2xl border bg-white px-4 py-2 text-sm"
+                          className="hidden"
                         />
 
-                        <div className="mt-3 text-xs text-slate-500">
-                          Notes:
-                          <ul className="list-disc pl-5 mt-1 space-y-1">
-                            <li>
-                              <span className="font-semibold">method</span>{" "}
-                              defaults to{" "}
-                              <span className="font-semibold">cash</span> if
-                              missing/unknown.
-                            </li>
-                            <li>Negative amounts are blocked (v1).</li>
-                            <li>
-                              Category must match an existing expense category
-                              name.
-                            </li>
-                          </ul>
-                        </div>
+                        {/* Button-like trigger */}
+                        <label
+                          htmlFor="expense-import-csv"
+                          className={[
+                            "group inline-flex w-full cursor-pointer items-center justify-center gap-2",
+                            "rounded-2xl border bg-white px-4 py-3 text-sm font-semibold",
+                            "transition active:scale-[0.99]",
+                            "hover:bg-slate-50 hover:border-slate-300",
+                            "focus-within:ring-2 focus-within:ring-primary/30",
+                            importBusy ||
+                            !selectedBatch ||
+                            selectedBatch.status !== "draft"
+                              ? "pointer-events-none opacity-50"
+                              : "",
+                          ].join(" ")}
+                          title={
+                            importBusy
+                              ? "Please wait…"
+                              : !selectedBatch ||
+                                  selectedBatch.status !== "draft"
+                                ? "Select a draft batch to import into"
+                                : "Choose a CSV file"
+                          }
+                        >
+                          <span>Choose CSV file</span>
+                        </label>
                       </div>
                     </div>
 
@@ -2286,11 +2320,16 @@ export default function ExpenseDraftPage() {
                     </div>
 
                     {/* ================= Review table ================= */}
+                    {/* ================= Review table ================= */}
                     <div className="mt-4 rounded-3xl border bg-white overflow-hidden">
-                      {/* horizontal scroll container */}
-                      <div className="overflow-x-auto">
+                      {/* Horizontal scroll lives here (single scrollbar) */}
+                      <div
+                        ref={botXRef}
+                        className="overflow-x-auto overflow-y-visible"
+                      >
                         <div className="min-w-[1200px]">
-                          <div className="grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100">
+                          {/* Sticky header (sticks while modal BODY scrolls) */}
+                          <div className="sticky top-0 z-20 grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100">
                             <div className="col-span-1">Row</div>
                             <div className="col-span-2">Date</div>
                             <div className="col-span-2">Category</div>
@@ -2323,17 +2362,19 @@ export default function ExpenseDraftPage() {
                                     key={r.id}
                                     className="grid grid-cols-12 items-start gap-2 px-5 py-4 text-sm"
                                   >
+                                    {/* Row + status */}
                                     <div className="col-span-1 text-slate-600">
                                       {r.row_index}
                                       <div className="mt-1">
                                         <span
-                                          className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] ${
+                                          className={[
+                                            "inline-flex rounded-full border px-2 py-0.5 text-[11px]",
                                             r.status === "ready"
                                               ? "bg-emerald-50 text-emerald-700"
                                               : r.status === "blocked"
                                                 ? "bg-red-50 text-red-700"
-                                                : "bg-amber-50 text-amber-800"
-                                          }`}
+                                                : "bg-amber-50 text-amber-800",
+                                          ].join(" ")}
                                         >
                                           {r.status}
                                         </span>
@@ -2500,8 +2541,7 @@ export default function ExpenseDraftPage() {
                     importBusy ? "opacity-50 pointer-events-none" : ""
                   }`}
                   onClick={async () => {
-                    await abandonImportJob();
-                    setImportOpen(false);
+                    void closeImportModal();
                   }}
                 >
                   Close

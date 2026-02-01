@@ -13,7 +13,7 @@ import type {
   ScheduleRole,
   ScheduleStatus,
 } from "@/lib/schedule/types";
-
+import { supabase } from "@/lib/supabaseClient";
 type UiError = { message: string } | null;
 
 type Entry = AdminMonthResponse["entries"][number];
@@ -41,6 +41,19 @@ function addMonths(yyyyMm: string, delta: number) {
   const dt = new Date(y, mo, 1);
   dt.setMonth(dt.getMonth() + delta);
   return monthFromDate(dt);
+}
+
+function isPostgresUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: string }).code === "23505"
+  );
+}
+
+function normalizeCategoryName(s: string) {
+  return s.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 function parseYYYYMM(month: string): { y: number; m0: number } | null {
@@ -129,6 +142,25 @@ function wordsLen(s: string) {
   return s.trim().split(/\s+/).filter(Boolean).length;
 }
 
+function coerceBool(v: unknown, fallback: boolean): boolean {
+  if (typeof v === "boolean") return v;
+
+  if (typeof v === "number") {
+    if (v === 1) return true;
+    if (v === 0) return false;
+    return fallback;
+  }
+
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    if (s === "true" || s === "1" || s === "yes") return true;
+    if (s === "false" || s === "0" || s === "no") return false;
+    return fallback;
+  }
+
+  return fallback;
+}
+
 /**
  * Collapse rule:
  * - if >3 names OR too many total words -> show "Pending (N)" etc.
@@ -159,6 +191,7 @@ export default function AdminSchedulePage() {
 
   // Day modal
   const [modal, setModal] = useState<DayModalState>({ open: false });
+  const [showAddRow, setShowAddRow] = useState(false);
 
   // Remember last view inside the day modal (do NOT reset on open/close)
   const [dayView, setDayView] = useState<DayView>("pending");
@@ -174,45 +207,142 @@ export default function AdminSchedulePage() {
   const [deptCats, setDeptCats] = useState<CategoryLite[]>([]);
   const [catErr, setCatErr] = useState<string>("");
 
-  const [serviceId, setServiceId] = useState<string>("");
-  const [serviceQuery, setServiceQuery] = useState<string>("");
-  const [serviceOpen, setServiceOpen] = useState<boolean>(false);
-
   const [deptId, setDeptId] = useState<string>("");
   const [deptQuery, setDeptQuery] = useState<string>("");
   const [deptOpen, setDeptOpen] = useState<boolean>(false);
 
   const serviceIdByLabel = useMemo(() => {
     const m = new Map<string, string>();
-    for (const c of serviceCats) m.set(c.name.trim().toLowerCase(), c.id);
+    for (const c of serviceCats) m.set(normalizeCategoryName(c.name), c.id);
     return m;
   }, [serviceCats]);
 
+  // service picker used for the add-row header area
+  const [serviceId, setServiceId] = useState<string>("");
+  const [serviceQuery, setServiceQuery] = useState<string>("");
+  const [serviceOpen, setServiceOpen] = useState(false);
+
   const deptIdByLabel = useMemo(() => {
     const m = new Map<string, string>();
-    for (const c of deptCats) m.set(c.name.trim().toLowerCase(), c.id);
+    for (const c of deptCats) m.set(normalizeCategoryName(c.name), c.id);
     return m;
   }, [deptCats]);
 
-  // ✅ Replace these with your real endpoints (you said these already work)
-  async function fetchServices(
-    _orgId: string,
-    _jwt: string,
-  ): Promise<CategoryLite[]> {
-    return [];
+  const canAdd = addName.trim().length > 0 && !!serviceId;
+
+  async function fetchServices(_orgId: string, _jwt: string) {
+    const { data, error } = await supabase
+      .from("categories")
+      .select("id,name")
+      .eq("org_id", _orgId)
+      .eq("status", "active")
+      .eq("type", "services")
+      .order("name", { ascending: true });
+
+    if (error) throw new Error(error.message);
+
+    return (data ?? []).map((r) => ({
+      id: String(r.id),
+      name: String(r.name ?? ""),
+    }));
   }
-  async function fetchDepartments(
-    _orgId: string,
-    _jwt: string,
-  ): Promise<CategoryLite[]> {
-    return [];
+
+  async function fetchDepartments(_orgId: string, _jwt: string) {
+    const { data, error } = await supabase
+      .from("categories")
+      .select("id,name")
+      .eq("org_id", _orgId)
+      .eq("status", "active")
+      .eq("type", "department")
+      .order("name", { ascending: true });
+
+    if (error) throw new Error(error.message);
+
+    return (data ?? []).map((r) => ({
+      id: String(r.id),
+      name: String(r.name ?? ""),
+    }));
   }
+
+  useEffect(() => {
+    if (!modal.open) return;
+
+    const scrollY = window.scrollY;
+
+    // Freeze the page visually
+    document.body.style.position = "fixed";
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.left = "0";
+    document.body.style.right = "0";
+    document.body.style.width = "100%";
+
+    return () => {
+      // Unfreeze and restore scroll position
+      const top = document.body.style.top;
+      document.body.style.position = "";
+      document.body.style.top = "";
+      document.body.style.left = "";
+      document.body.style.right = "";
+      document.body.style.width = "";
+
+      const y = top ? Math.abs(parseInt(top, 10)) : scrollY;
+      window.scrollTo(0, y);
+    };
+  }, [modal.open]);
+
   async function quickAddCategory(
-    _kind: "service" | "department",
+    kind: "services" | "department",
     name: string,
   ): Promise<CategoryLite> {
-    // Replace with your endpoint. Must return { id, name }
-    return { id: crypto.randomUUID(), name };
+    if (!orgId) throw new Error("Missing orgId");
+
+    const cleanName = name.trim();
+    if (!cleanName) throw new Error("Name is required.");
+
+    const { data: sessionRes } = await supabase.auth.getSession();
+    const userId = sessionRes.session?.user?.id;
+    if (!userId) throw new Error("You must be signed in.");
+
+    // Soft pre-check (avoid dupes + return existing)
+    const { data: exists, error: existsErr } = await supabase
+      .from("categories")
+      .select("id,name")
+      .eq("org_id", orgId)
+      .eq("type", kind)
+      .ilike("name", cleanName)
+      .maybeSingle();
+
+    if (existsErr) throw new Error(existsErr.message);
+
+    if (exists?.id) {
+      return { id: String(exists.id), name: String(exists.name ?? cleanName) };
+    }
+
+    const { data: inserted, error } = await supabase
+      .from("categories")
+      .insert({
+        org_id: orgId,
+        name: cleanName,
+        type: kind,
+        status: "active",
+        created_by: userId,
+      })
+      .select("id,name")
+      .maybeSingle();
+
+    if (error) {
+      if (isPostgresUniqueViolation(error)) {
+        throw new Error(`A ${kind} named "${cleanName}" already exists.`);
+      }
+      throw new Error(error.message);
+    }
+
+    if (!inserted?.id) throw new Error("Insert failed.");
+
+    return {
+      id: String(inserted.id),
+      name: String(inserted.name ?? cleanName),
+    };
   }
 
   useEffect(() => {
@@ -245,8 +375,6 @@ export default function AdminSchedulePage() {
   useEffect(() => {
     if (!orgId || !jwt) return;
 
-    void refresh(month);
-
     (async () => {
       try {
         setCatErr("");
@@ -262,14 +390,19 @@ export default function AdminSchedulePage() {
         setDeptCats([]);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgId, jwt]);
+
+  useEffect(() => {
+    if (!orgId || !jwt) return;
+    void refresh(month);
   }, [orgId, jwt, month]);
 
   const entries = data?.entries ?? [];
   const byDate = useMemo(() => groupByDate(entries), [entries]);
   const { cells } = useMemo(() => buildMonthGridWithMuted(month), [month]);
 
-  const draftOpen = data?.month.draft_open ?? true;
+  const rawDraftOpen: unknown = data?.month?.draft_open;
+  const draftOpen = coerceBool(rawDraftOpen, true);
 
   const modalDate = modal.open ? modal.date : null;
   const modalEntries = useMemo(
@@ -297,12 +430,14 @@ export default function AdminSchedulePage() {
 
   function closeModal() {
     setModal({ open: false });
+
+    setShowAddRow(false);
+
     setAddMode("approved");
     setAddName("");
     setAddNotes("");
     setAddRole("member");
 
-    // keep pickers sticky or reset? resetting keeps it clean
     setServiceId("");
     setServiceQuery("");
     setDeptId("");
@@ -345,7 +480,7 @@ export default function AdminSchedulePage() {
     // quick add if typed but not selected
     if (!svcId && serviceQuery.trim()) {
       try {
-        const created = await quickAddCategory("service", serviceQuery.trim());
+        const created = await quickAddCategory("services", serviceQuery.trim());
         setServiceCats((cur) => [...cur, created].sort(byAlpha));
         svcId = created.id;
         setServiceId(created.id);
@@ -384,7 +519,7 @@ export default function AdminSchedulePage() {
           role: addRole,
           name: nm,
           notes: addNotes.trim() ? addNotes.trim() : null,
-          status: addMode === "pending" ? "pending" : "approved",
+          status: "pending",
         },
         jwt,
       );
@@ -474,92 +609,19 @@ export default function AdminSchedulePage() {
     <>
       {/* Top bar */}
       <div className="border-b">
-        <div className="flex items-center justify-between px-6 py-4">
+        <div className="flex items-center justify-between px-6 py-4 mt-6">
           <div>
-            <div className="text-xl font-semibold">Service Schedule</div>
-            <div className="text-sm text-slate-600">{fmtMonthTitle(month)}</div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {/* Month nav */}
-            <div className="inline-flex items-center rounded-2xl border bg-white p-1">
-              <button
-                type="button"
-                className="rounded-2xl px-3 py-2 text-sm hover:bg-slate-50"
-                onClick={() => setMonth((m) => addMonths(m, -1))}
-                title="Previous month"
-              >
-                ←
-              </button>
-              <button
-                type="button"
-                className="rounded-2xl px-4 py-2 text-sm font-semibold hover:bg-slate-50"
-                onClick={() => setMonth(monthFromDate(new Date()))}
-                title="Jump to current month"
-              >
-                Current month
-              </button>
-              <button
-                type="button"
-                className="rounded-2xl px-3 py-2 text-sm hover:bg-slate-50"
-                onClick={() => setMonth((m) => addMonths(m, 1))}
-                title="Next month"
-              >
-                →
-              </button>
-            </div>
-
-            <button
-              type="button"
-              onClick={async () => {
-                if (!orgId || !jwt) return;
-                try {
-                  const res = await fetch(
-                    `/api/schedule/admin/public-link?org_id=${encodeURIComponent(orgId)}`,
-                    { headers: { Authorization: `Bearer ${jwt}` } },
-                  );
-                  if (!res.ok) throw new Error("Request failed");
-                  const json: PublicLinkResponse =
-                    (await res.json()) as PublicLinkResponse;
-                  if (!json.publicUrl) throw new Error("Missing publicUrl");
-                  await navigator.clipboard.writeText(json.publicUrl);
-                } catch {
-                  setErr({ message: "Failed to copy public link." });
-                }
-              }}
-              className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
-            >
-              Copy public link
-            </button>
-
-            {/* Draft signups toggle */}
-            <div className="inline-flex items-center gap-2 rounded-2xl border bg-white px-4 py-2">
-              <div className="text-sm font-semibold text-slate-800">
-                Draft signups
-              </div>
-              <button
-                type="button"
-                onClick={() => toggleDraft(!draftOpen)}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
-                  draftOpen ? "bg-emerald-600" : "bg-slate-300"
-                }`}
-                title={
-                  draftOpen ? "Draft signups: Open" : "Draft signups: Closed"
-                }
-              >
-                <span
-                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-                    draftOpen ? "translate-x-5" : "translate-x-1"
-                  }`}
-                />
-              </button>
-            </div>
+            <div className="text-xl font-semibold">Workers Schedule</div>
+            <div className="text-sm text-slate-600">Click any day to review signups, approve/reject, or add assignments.</div>
           </div>
         </div>
 
-        {/* Controls row */}
         <div className="px-6 pb-5">
-          <div className="mt-1 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          {/* Helper text ABOVE */}
+
+          {/* Tabs LEFT + Actions RIGHT in same row */}
+          <div className="mt-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            {/* Tabs */}
             <div className="inline-flex rounded-2xl border bg-slate-50 p-1">
               <button
                 type="button"
@@ -585,9 +647,108 @@ export default function AdminSchedulePage() {
               </button>
             </div>
 
-            <div className="text-sm text-slate-600">
-              Click any day to review signups, approve/reject, or add
-              assignments.
+            {/* Actions (month nav + copy link + draft toggle) */}
+            <div className="flex flex-wrap items-center gap-2">
+              
+              <div className="inline-flex items-center rounded-2xl border bg-white p-1">
+                <button
+                  type="button"
+                  onClick={() => setMonth((m) => addMonths(m, -1))}
+                  aria-label="Previous month"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl
+               text-slate-600 hover:bg-slate-50
+               focus-visible:ring-2 focus-visible:ring-primary/30"
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    className="h-4 w-4"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M12.79 15.3a1 1 0 01-1.42 0l-5-5a1 1 0 010-1.42l5-5a1 1 0 111.42 1.42L8.91 10l3.88 3.88a1 1 0 010 1.42z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setMonth(monthFromDate(new Date()))}
+                  className="mx-1 rounded-xl px-4 py-2 text-sm font-semibold
+               hover:bg-slate-50
+               focus-visible:ring-2 focus-visible:ring-primary/30"
+                  title="Jump to current month"
+                >
+                  {fmtMonthTitle(month)}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setMonth((m) => addMonths(m, 1))}
+                  aria-label="Next month"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl
+               text-slate-600 hover:bg-slate-50
+               focus-visible:ring-2 focus-visible:ring-primary/30"
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    className="h-4 w-4"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M7.21 4.7a1 1 0 011.42 0l5 5a1 1 0 010 1.42l-5 5a1 1 0 11-1.42-1.42L11.09 10 7.21 6.12a1 1 0 010-1.42z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!orgId || !jwt) return;
+                  try {
+                    const res = await fetch(
+                      `/api/schedule/admin/public-link?org_id=${encodeURIComponent(orgId)}`,
+                      { headers: { Authorization: `Bearer ${jwt}` } },
+                    );
+                    if (!res.ok) throw new Error("Request failed");
+                    const json: PublicLinkResponse =
+                      (await res.json()) as PublicLinkResponse;
+                    if (!json.publicUrl) throw new Error("Missing publicUrl");
+                    await navigator.clipboard.writeText(json.publicUrl);
+                  } catch {
+                    setErr({ message: "Failed to copy public link." });
+                  }
+                }}
+                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+              >
+                Copy public link
+              </button>
+
+              <div className="inline-flex items-center gap-2 rounded-2xl border bg-white px-4 py-2">
+                <div className="text-sm font-semibold text-slate-800">
+                  Allow signups
+                </div>
+                <button
+                  type="button"
+                  onClick={() => toggleDraft(!draftOpen)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
+                    draftOpen ? "bg-emerald-600" : "bg-slate-300"
+                  }`}
+                  title={
+                    draftOpen ? "Draft signups: Open" : "Draft signups: Closed"
+                  }
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+                      draftOpen ? "translate-x-5" : "translate-x-1"
+                    }`}
+                  />
+                </button>
+              </div>
             </div>
           </div>
 
@@ -684,19 +845,13 @@ export default function AdminSchedulePage() {
                           openDay(c.iso);
                         }}
                         className={[
-                          // layout
-                          "aspect-square min-h-[140px] border-t p-3 text-left transition",
+                          "aspect-square min-h-[140px] border-t p-3 text-left transition flex flex-col",
                           isLastCol ? "" : "border-r",
 
-                          // in-month
-                          !isEmpty ? "bg-white hover:bg-slate-50" : "",
-
-                          // out-of-month: “disappear”
                           isEmpty
-                            ? "bg-transparent border-transparent pointer-events-none select-none"
-                            : "cursor-pointer",
+                            ? "bg-slate-50/40 border-slate-100 text-slate-300 cursor-default pointer-events-none select-none"
+                            : "bg-white hover:bg-slate-50 cursor-pointer",
 
-                          // accessibility (only for real days)
                           !isEmpty
                             ? "focus-visible:ring-2 focus-visible:ring-primary/30"
                             : "focus:outline-none",
@@ -707,40 +862,44 @@ export default function AdminSchedulePage() {
                       >
                         {isEmpty ? null : (
                           <>
-                            <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-start justify-between">
+                              {/* Date – top left */}
                               <div className="inline-flex min-w-[26px] items-center justify-center rounded-md border bg-white px-2 py-1 text-xs font-semibold text-slate-800">
                                 {c.day}
                               </div>
 
+                              {/* Counts – top right */}
                               <div className="flex items-center gap-1">
                                 {pending.length > 0 ? (
                                   <span className="rounded-full border bg-white px-2 py-0.5 text-[11px] text-slate-700">
-                                    Pending {pending.length}
+                                    P:{pending.length}
                                   </span>
                                 ) : null}
                                 {approved.length > 0 ? (
                                   <span className="rounded-full border bg-white px-2 py-0.5 text-[11px] text-slate-700">
-                                    Approved {approved.length}
+                                    A:{approved.length}
                                   </span>
                                 ) : null}
                               </div>
                             </div>
 
-                            <div className="mt-3 space-y-2">
+                           <div className="mt-4 flex-1 space-y-2 min-h-0">
+
                               {showApprovedInline ? (
                                 approved.length ? (
-                                  <div className="rounded-xl border bg-white px-3 py-2 text-xs text-slate-700">
+                                  <div className="rounded-xl border bg-amber px-3 py-7 text-xs text-slate-700">
                                     <div className="font-semibold text-slate-800">
                                       Approved
                                     </div>
-                                    <div className="mt-1 truncate text-slate-600">
+                                    <div className="mt-1 text-slate-600 whitespace-normal leading-snug line-clamp-3">
+
                                       {collapseApproved
                                         ? `Approved (${approved.length})`
                                         : preview(approvedNames)}
                                     </div>
                                   </div>
                                 ) : (
-                                  <div className="rounded-xl border bg-white px-3 py-2 text-xs text-slate-500">
+                                  <div className="rounded-xl border bg-white px-3 py-7 text-xs text-slate-500">
                                     <div className="font-semibold text-slate-700">
                                       Approved
                                     </div>
@@ -751,16 +910,17 @@ export default function AdminSchedulePage() {
 
                               {showPendingInline ? (
                                 pending.length ? (
-                                  <div className="rounded-xl border bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                                  <div className="rounded-xl border bg-amber-50 px-3 py-7 text-xs text-amber-900">
                                     <div className="font-semibold">Pending</div>
-                                    <div className="mt-1 truncate">
+                                   <div className="mt-1 text-slate-600 whitespace-normal leading-snug line-clamp-3">
+
                                       {collapsePending
                                         ? `Pending (${pending.length})`
                                         : preview(pendingNames)}
                                     </div>
                                   </div>
                                 ) : (
-                                  <div className="rounded-xl border bg-white px-3 py-2 text-xs text-slate-500">
+                                  <div className="rounded-xl border bg-white px-3 py-7 text-xs text-slate-500">
                                     <div className="font-semibold text-slate-700">
                                       Pending
                                     </div>
@@ -784,515 +944,533 @@ export default function AdminSchedulePage() {
       {/* Day Modal */}
       {modal.open ? (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 md:items-center"
-          onClick={closeModal}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          // onClick={closeModal}
         >
           <div
-            className="w-full max-w-4xl rounded-3xl bg-white shadow-xl"
+            className="w-full max-w-4xl max-h-[90vh] rounded-3xl bg-white shadow-xl flex flex-col overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b px-6 py-4">
+            {/* Sticky header */}
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white px-6 py-4">
               <div>
                 <div className="text-sm font-semibold">Day schedule</div>
                 <div className="text-xs text-slate-600">{modal.date}</div>
               </div>
 
-              <button
-                type="button"
-                onClick={closeModal}
-                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddRow((v) => !v)}
+                  className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                >
+                  {showAddRow ? "Hide add" : "Add assignment"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={closeModal}
+                  className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                >
+                  Close
+                </button>
+              </div>
             </div>
 
-            <div className="px-6 py-5 space-y-5">
-              <div className="flex items-center justify-between gap-3">
-                <div className="inline-flex rounded-2xl border bg-slate-50 p-1">
-                  <button
-                    type="button"
-                    className={`rounded-2xl px-4 py-2 text-sm ${
-                      dayView === "pending"
-                        ? "bg-white border shadow-sm"
-                        : "text-slate-600 hover:bg-white"
-                    }`}
-                    onClick={() => setDayView("pending")}
-                  >
-                    Pending ({modalPending.length})
-                  </button>
-                  <button
-                    type="button"
-                    className={`rounded-2xl px-4 py-2 text-sm ${
-                      dayView === "approved"
-                        ? "bg-white border shadow-sm"
-                        : "text-slate-600 hover:bg-white"
-                    }`}
-                    onClick={() => setDayView("approved")}
-                  >
-                    Approved ({modalApproved.length})
-                  </button>
+            {/* Scroll body */}
+            <div className="flex-1 overflow-y-auto overscroll-contain">
+              <div className="px-6 py-6 space-y-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="inline-flex rounded-2xl border bg-slate-50 p-1">
+                    <button
+                      type="button"
+                      className={`rounded-2xl px-4 py-2 text-sm ${
+                        dayView === "pending"
+                          ? "bg-white border shadow-sm"
+                          : "text-slate-600 hover:bg-white"
+                      }`}
+                      onClick={() => setDayView("pending")}
+                    >
+                      Pending ({modalPending.length})
+                    </button>
+                    <button
+                      type="button"
+                      className={`rounded-2xl px-4 py-2 text-sm ${
+                        dayView === "approved"
+                          ? "bg-white border shadow-sm"
+                          : "text-slate-600 hover:bg-white"
+                      }`}
+                      onClick={() => setDayView("approved")}
+                    >
+                      Approved ({modalApproved.length})
+                    </button>
+                  </div>
+
+                  {modalRejected.length ? (
+                    <div className="text-xs text-slate-500">
+                      Rejected:{" "}
+                      <span className="font-semibold">
+                        {modalRejected.length}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
 
+                {/* Inline Add Row (replaces the big "Add new" card) */}
+                {showAddRow ? (
+                  <div className="rounded-3xl border bg-white overflow-visible">
+                    {/* Header */}
+                    <div className="border-b bg-slate-50 px-5 py-4">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-800">
+                            Add assignment
+                          </div>
+                          <div className="text-xs text-slate-600">
+                            Admin additions are saved as approved.
+                          </div>
+                        </div>
+
+                        {/* Right controls: Service + Cancel/Add */}
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+                          {/* Service picker (moved up here) */}
+                          <div className="relative sm:w-[260px]">
+                            <input
+                              className="w-full rounded-2xl border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                              value={serviceQuery}
+                              onFocus={() => setServiceOpen(true)}
+                              onBlur={() =>
+                                window.setTimeout(
+                                  () => setServiceOpen(false),
+                                  120,
+                                )
+                              }
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setServiceQuery(v);
+                                const id = serviceIdByLabel.get(
+                                  normalizeCategoryName(v),
+                                );
+                                setServiceId(id ?? "");
+                                setServiceOpen(true);
+                              }}
+                              placeholder="Service"
+                            />
+
+                            {serviceOpen ? (
+                              <div className="absolute z-[80] mt-2 w-full overflow-hidden rounded-2xl border bg-white shadow-lg max-h-56 overflow-auto">
+                                {filteredServices.length === 0 ? (
+                                  <div className="px-4 py-3 text-sm text-slate-600">
+                                    No matches.
+                                  </div>
+                                ) : (
+                                  filteredServices.map((c) => (
+                                    <button
+                                      type="button"
+                                      key={c.id}
+                                      className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={() => {
+                                        setServiceId(c.id);
+                                        setServiceQuery(c.name);
+                                        setServiceOpen(false);
+                                      }}
+                                    >
+                                      {c.name}
+                                    </button>
+                                  ))
+                                )}
+
+                                {showAddServiceRow ? (
+                                  <div className="border-t">
+                                    <button
+                                      type="button"
+                                      className="block w-full px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-slate-50"
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={async () => {
+                                        const clean = serviceQuery.trim();
+                                        if (!clean) return;
+                                        try {
+                                          const created =
+                                            await quickAddCategory(
+                                              "services",
+                                              clean,
+                                            );
+                                          setServiceCats((cur) =>
+                                            [...cur, created].sort(byAlpha),
+                                          );
+                                          setServiceId(created.id);
+                                          setServiceQuery(created.name);
+                                          setServiceOpen(false);
+                                        } catch (e) {
+                                          setErr({
+                                            message:
+                                              e instanceof Error
+                                                ? e.message
+                                                : "Failed to add service",
+                                          });
+                                        }
+                                      }}
+                                    >
+                                      + Add service
+                                      {serviceQuery.trim()
+                                        ? `: “${serviceQuery.trim()}”`
+                                        : ""}
+                                    </button>
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setShowAddRow(false)}
+                              className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                            >
+                              Cancel
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={addEntry}
+                              disabled={!canAdd}
+                              className={`rounded-2xl px-5 py-2 text-sm font-semibold text-white ${
+                                canAdd
+                                  ? "bg-primary hover:bg-primary/85"
+                                  : "bg-slate-300"
+                              }`}
+                            >
+                              Add
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-12 gap-x-3 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100">
+                      <div className="col-span-3">Name *</div>
+                      <div className="col-span-3">Department</div>
+                      <div className="col-span-2">Role</div>
+                      <div className="col-span-4">Notes</div>
+                    </div>
+
+                    {/* Input row */}
+                    <div className="grid grid-cols-12 gap-x-3 px-5 py-4">
+                      {/* Name */}
+                      <div className="col-span-3 pr-3 min-w-0">
+                        <input
+                          className="block w-full min-w-0 rounded-2xl  px-3 py-2 text-sm
+                 outline-none focus:ring-2 focus:ring-primary/30"
+                          value={addName}
+                          onChange={(e) => setAddName(e.target.value)}
+                          placeholder="e.g., John A."
+                        />
+                      </div>
+
+                      {/* Department */}
+                      <div className="col-span-3 relative pr-3 min-w-0">
+                        <input
+                          className="block w-full min-w-0 rounded-2xl  px-3 py-2 text-sm
+                 outline-none focus:ring-2 focus:ring-primary/30"
+                          value={deptQuery}
+                          onFocus={() => setDeptOpen(true)}
+                          onBlur={() =>
+                            window.setTimeout(() => setDeptOpen(false), 120)
+                          }
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setDeptQuery(v);
+                            const id = deptIdByLabel.get(
+                              normalizeCategoryName(v),
+                            );
+                            setDeptId(id ?? "");
+                            setDeptOpen(true);
+                          }}
+                          placeholder="eg. Choir"
+                        />
+
+                        {deptOpen ? (
+                          <div className="absolute z-50 mt-2 w-full overflow-hidden rounded-2xl border bg-white shadow-lg max-h-56 overflow-auto">
+                            {filteredDepts.length === 0 ? (
+                              <div className="px-4 py-3 text-sm text-slate-600">
+                                No matches.
+                              </div>
+                            ) : (
+                              filteredDepts.map((c) => (
+                                <button
+                                  type="button"
+                                  key={c.id}
+                                  className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={() => {
+                                    setDeptId(c.id);
+                                    setDeptQuery(c.name);
+                                    setDeptOpen(false);
+                                  }}
+                                >
+                                  {c.name}
+                                </button>
+                              ))
+                            )}
+
+                            {showAddDeptRow ? (
+                              <div className="border-t">
+                                <button
+                                  type="button"
+                                  className="block w-full px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-slate-50"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={async () => {
+                                    const clean = deptQuery.trim();
+                                    if (!clean) return;
+                                    try {
+                                      const created = await quickAddCategory(
+                                        "department",
+                                        clean,
+                                      );
+                                      setDeptCats((cur) =>
+                                        [...cur, created].sort(byAlpha),
+                                      );
+                                      setDeptId(created.id);
+                                      setDeptQuery(created.name);
+                                      setDeptOpen(false);
+                                    } catch (e) {
+                                      setErr({
+                                        message:
+                                          e instanceof Error
+                                            ? e.message
+                                            : "Failed to add department",
+                                      });
+                                    }
+                                  }}
+                                >
+                                  + Add department
+                                  {deptQuery.trim()
+                                    ? `: “${deptQuery.trim()}”`
+                                    : ""}
+                                </button>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      {/* Role */}
+                      <div className="col-span-2 pr-3 min-w-0">
+                        <select
+                          className="block w-full min-w-0 rounded-2xl  px-3 py-2 text-sm
+                 outline-none focus:ring-2 focus:ring-primary/30"
+                          value={addRole}
+                          onChange={(e) =>
+                            setAddRole(e.target.value as ScheduleRole)
+                          }
+                        >
+                          <option value="lead">Lead</option>
+                          <option value="asst">Asst</option>
+                          <option value="member">Member</option>
+                        </select>
+                      </div>
+
+                      {/* Notes */}
+                      <div className="col-span-4 min-w-0">
+                        <input
+                          className="block w-full min-w-0 rounded-2xl  px-3 py-2 text-sm
+                 outline-none focus:ring-2 focus:ring-primary/30"
+                          value={addNotes}
+                          onChange={(e) => setAddNotes(e.target.value)}
+                          placeholder="Notes (optional)"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Pending / Approved lists */}
+                {dayView === "pending" ? (
+                  <div className="rounded-3xl border bg-white overflow-hidden">
+                    <div className="border-b bg-slate-50 px-5 py-4">
+                      <div className="text-sm font-semibold text-slate-800">
+                        Pending signups
+                      </div>
+                      <div className="text-xs text-slate-600">
+                        Approve or reject individual signups.
+                      </div>
+                    </div>
+
+                    {pendingGroups.length === 0 ? (
+                      <div className="p-6 text-sm text-slate-600">
+                        No pending entries.
+                      </div>
+                    ) : (
+                      <div className="divide-y">
+                        {pendingGroups.map((g) => (
+                          <details key={g.key} open className="group">
+                            <summary className="cursor-pointer list-none px-5 py-4 bg-primary text-white hover:bg-primary/90">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="text-sm font-semibold text-white">
+                                  {g.key}
+                                </div>
+                                <div className="text-xs text-white">
+                                  {g.rows.length}{" "}
+                                  {g.rows.length === 1 ? "signup" : "signups"}
+                                </div>
+                              </div>
+                            </summary>
+
+                            <div className="border-t bg-white">
+                              <div className="grid grid-cols-12 border-b bg-primary/10 px-5 py-3 text-xs font-semibold text-black/95">
+                                <div className="col-span-4">Name</div>
+                                <div className="col-span-2">Role</div>
+                                <div className="col-span-4">Notes</div>
+                                <div className="col-span-2 text-right">
+                                  Actions
+                                </div>
+                              </div>
+
+                              <div className="divide-y">
+                                {g.rows.map((e) => (
+                                  <div
+                                    key={e.id}
+                                    className="grid grid-cols-12 items-center px-5 py-3 text-sm bg-white hover:bg-slate-50/60"
+                                  >
+                                    <div className="col-span-4 font-semibold text-slate-900">
+                                      {e.name}
+                                    </div>
+                                    <div className="col-span-2 text-slate-700">
+                                      {roleLabel(e.role)}
+                                    </div>
+                                    <div className="col-span-4 text-slate-700">
+                                      {e.notes ? (
+                                        e.notes
+                                      ) : (
+                                        <span className="text-slate-400">
+                                          —
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="col-span-2 flex justify-end gap-2">
+                                      <button
+                                        type="button"
+                                        className="rounded-xl bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                                        onClick={() =>
+                                          setEntryStatus(e.id, "approved")
+                                        }
+                                      >
+                                        Approve
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="rounded-xl bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500"
+                                        onClick={() =>
+                                          setEntryStatus(e.id, "rejected")
+                                        }
+                                      >
+                                        Reject
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </details>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-3xl border bg-white overflow-hidden">
+                    <div className="border-b bg-slate-50 px-5 py-4">
+                      <div className="text-sm font-semibold text-slate-800">
+                        Approved assignments
+                      </div>
+                      <div className="text-xs text-slate-600">
+                        These are the final assignments for the day.
+                      </div>
+                    </div>
+
+                    {approvedGroups.length === 0 ? (
+                      <div className="p-6 text-sm text-slate-600">
+                        No approved entries.
+                      </div>
+                    ) : (
+                      <div className="divide-y">
+                        {approvedGroups.map((g) => (
+                          <details key={g.key} open className="group">
+                            <summary className="cursor-pointer list-none px-5 py-4 bg-primary">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="text-sm font-semibold text-white">
+                                  {g.key}
+                                </div>
+                                <div className="text-xs text-white">
+                                  {g.rows.length}{" "}
+                                  {g.rows.length === 1
+                                    ? "assignment"
+                                    : "assignments"}
+                                </div>
+                              </div>
+                            </summary>
+
+                            <div className="border-t bg-white">
+                              <div className="grid grid-cols-12 border-b bg-primary/15 px-5 py-3 text-xs font-semibold text-black">
+                                <div className="col-span-5">Name</div>
+                                <div className="col-span-2">Role</div>
+                                <div className="col-span-5">Notes</div>
+                              </div>
+
+                              <div className="divide-y">
+                                {g.rows.map((e) => (
+                                  <div
+                                    key={e.id}
+                                    className="grid grid-cols-12 items-center px-5 py-3 text-sm bg-white hover:bg-slate-50/60"
+                                  >
+                                    <div className="col-span-5 font-semibold text-slate-900">
+                                      {e.name}
+                                    </div>
+                                    <div className="col-span-2 text-slate-700">
+                                      {roleLabel(e.role)}
+                                    </div>
+                                    <div className="col-span-5 text-slate-700">
+                                      {e.notes ? (
+                                        e.notes
+                                      ) : (
+                                        <span className="text-slate-400">
+                                          —
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </details>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Rejected */}
                 {modalRejected.length ? (
-                  <div className="text-xs text-slate-500">
-                    Rejected:{" "}
-                    <span className="font-semibold">
-                      {modalRejected.length}
-                    </span>
+                  <div className="rounded-3xl border bg-slate-50 p-5">
+                    <div className="text-xs font-semibold text-slate-600">
+                      Rejected
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      {modalRejected.slice(0, 10).map((e) => (
+                        <div key={e.id} className="text-sm text-slate-700">
+                          {roleLabel(e.role)}: {e.name}
+                        </div>
+                      ))}
+                      {modalRejected.length > 10 ? (
+                        <div className="text-xs text-slate-500">
+                          +{modalRejected.length - 10} more
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 ) : null}
               </div>
-
-              {/* Pending / Approved lists */}
-              {dayView === "pending" ? (
-                <div className="rounded-3xl border bg-white overflow-hidden">
-                  <div className="border-b bg-slate-50 px-5 py-4">
-                    <div className="text-sm font-semibold text-slate-800">
-                      Pending signups
-                    </div>
-                    <div className="text-xs text-slate-600">
-                      Approve or reject individual signups.
-                    </div>
-                  </div>
-
-                  {pendingGroups.length === 0 ? (
-                    <div className="p-6 text-sm text-slate-600">
-                      No pending entries.
-                    </div>
-                  ) : (
-                    <div className="divide-y">
-                      {pendingGroups.map((g) => (
-                        <details key={g.key} open className="group">
-                          <summary className="cursor-pointer list-none px-5 py-4 hover:bg-slate-50">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="text-sm font-semibold text-slate-800">
-                                {g.key}
-                              </div>
-                              <div className="text-xs text-slate-600">
-                                {g.rows.length}{" "}
-                                {g.rows.length === 1 ? "signup" : "signups"}
-                              </div>
-                            </div>
-                          </summary>
-
-                          <div className="border-t bg-white">
-                            <div className="grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100">
-                              <div className="col-span-4">Name</div>
-                              <div className="col-span-2">Role</div>
-                              <div className="col-span-4">Notes</div>
-                              <div className="col-span-2 text-right">
-                                Actions
-                              </div>
-                            </div>
-
-                            <div className="divide-y">
-                              {g.rows.map((e) => (
-                                <div
-                                  key={e.id}
-                                  className="grid grid-cols-12 items-center px-5 py-3 text-sm"
-                                >
-                                  <div className="col-span-4 font-semibold text-slate-900">
-                                    {e.name}
-                                  </div>
-                                  <div className="col-span-2 text-slate-700">
-                                    {roleLabel(e.role)}
-                                  </div>
-                                  <div className="col-span-4 text-slate-700">
-                                    {e.notes ? (
-                                      e.notes
-                                    ) : (
-                                      <span className="text-slate-400">—</span>
-                                    )}
-                                  </div>
-                                  <div className="col-span-2 flex justify-end gap-2">
-                                    <button
-                                      type="button"
-                                      className="rounded-xl bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
-                                      onClick={() =>
-                                        setEntryStatus(e.id, "approved")
-                                      }
-                                    >
-                                      Approve
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="rounded-xl bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500"
-                                      onClick={() =>
-                                        setEntryStatus(e.id, "rejected")
-                                      }
-                                    >
-                                      Reject
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </details>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="rounded-3xl border bg-white overflow-hidden">
-                  <div className="border-b bg-slate-50 px-5 py-4">
-                    <div className="text-sm font-semibold text-slate-800">
-                      Approved assignments
-                    </div>
-                    <div className="text-xs text-slate-600">
-                      These are the final assignments for the day.
-                    </div>
-                  </div>
-
-                  {approvedGroups.length === 0 ? (
-                    <div className="p-6 text-sm text-slate-600">
-                      No approved entries.
-                    </div>
-                  ) : (
-                    <div className="divide-y">
-                      {approvedGroups.map((g) => (
-                        <details key={g.key} open className="group">
-                          <summary className="cursor-pointer list-none px-5 py-4 hover:bg-slate-50">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="text-sm font-semibold text-slate-800">
-                                {g.key}
-                              </div>
-                              <div className="text-xs text-slate-600">
-                                {g.rows.length}{" "}
-                                {g.rows.length === 1
-                                  ? "assignment"
-                                  : "assignments"}
-                              </div>
-                            </div>
-                          </summary>
-
-                          <div className="border-t bg-white">
-                            <div className="grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100">
-                              <div className="col-span-5">Name</div>
-                              <div className="col-span-2">Role</div>
-                              <div className="col-span-5">Notes</div>
-                            </div>
-
-                            <div className="divide-y">
-                              {g.rows.map((e) => (
-                                <div
-                                  key={e.id}
-                                  className="grid grid-cols-12 items-center px-5 py-3 text-sm"
-                                >
-                                  <div className="col-span-5 font-semibold text-slate-900">
-                                    {e.name}
-                                  </div>
-                                  <div className="col-span-2 text-slate-700">
-                                    {roleLabel(e.role)}
-                                  </div>
-                                  <div className="col-span-5 text-slate-700">
-                                    {e.notes ? (
-                                      e.notes
-                                    ) : (
-                                      <span className="text-slate-400">—</span>
-                                    )}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </details>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Manual Add */}
-              <div className="rounded-3xl border bg-white overflow-hidden">
-                <div className="border-b bg-slate-50 px-5 py-4">
-                  <div className="text-sm font-semibold text-slate-800">
-                    Add new
-                  </div>
-                  <div className="text-xs text-slate-600">
-                    Date is inferred from the selected cell.
-                  </div>
-                </div>
-
-                <div className="px-5 py-5 space-y-4">
-                  <div className="grid gap-3 md:grid-cols-3">
-                    <label className="text-sm">
-                      <div className="mb-1 text-xs font-semibold text-slate-600">
-                        Add as
-                      </div>
-                      <select
-                        className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                        value={addMode}
-                        onChange={(e) =>
-                          setAddMode(
-                            e.target.value === "pending"
-                              ? "pending"
-                              : "approved",
-                          )
-                        }
-                      >
-                        <option value="approved">Approved</option>
-                        <option value="pending">Pending</option>
-                      </select>
-                    </label>
-
-                    <label className="text-sm">
-                      <div className="mb-1 text-xs font-semibold text-slate-600">
-                        Role
-                      </div>
-                      <select
-                        className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                        value={addRole}
-                        onChange={(e) =>
-                          setAddRole(e.target.value as ScheduleRole)
-                        }
-                      >
-                        <option value="lead">Lead</option>
-                        <option value="asst">Asst</option>
-                        <option value="member">Member</option>
-                      </select>
-                    </label>
-
-                    <label className="text-sm">
-                      <div className="mb-1 text-xs font-semibold text-slate-600">
-                        Name *
-                      </div>
-                      <input
-                        className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                        value={addName}
-                        onChange={(e) => setAddName(e.target.value)}
-                        placeholder="e.g., John A."
-                      />
-                    </label>
-                  </div>
-
-                  <div className="grid gap-3 md:grid-cols-2">
-                    {/* Service */}
-                    <div className="relative">
-                      <div className="mb-1 text-xs font-semibold text-slate-600">
-                        Service (optional)
-                      </div>
-                      <input
-                        className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                        value={serviceQuery}
-                        onFocus={() => setServiceOpen(true)}
-                        onBlur={() =>
-                          window.setTimeout(() => setServiceOpen(false), 120)
-                        }
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          setServiceQuery(v);
-                          const id = serviceIdByLabel.get(
-                            v.trim().toLowerCase(),
-                          );
-                          setServiceId(id ?? "");
-                          setServiceOpen(true);
-                        }}
-                        placeholder="Type a service…"
-                      />
-
-                      {serviceOpen ? (
-                        <div className="absolute z-50 mt-2 w-full overflow-hidden rounded-2xl border bg-white shadow-lg max-h-56 overflow-auto">
-                          {filteredServices.length === 0 ? (
-                            <div className="px-4 py-3 text-sm text-slate-600">
-                              No matches.
-                            </div>
-                          ) : (
-                            filteredServices.map((c) => (
-                              <button
-                                type="button"
-                                key={c.id}
-                                className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
-                                onMouseDown={(e) => e.preventDefault()}
-                                onClick={() => {
-                                  setServiceId(c.id);
-                                  setServiceQuery(c.name);
-                                  setServiceOpen(false);
-                                }}
-                              >
-                                {c.name}
-                              </button>
-                            ))
-                          )}
-
-                          {showAddServiceRow ? (
-                            <div className="border-t">
-                              <button
-                                type="button"
-                                className="block w-full px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-slate-50"
-                                onMouseDown={(e) => e.preventDefault()}
-                                onClick={async () => {
-                                  const clean = serviceQuery.trim();
-                                  if (!clean) return;
-                                  try {
-                                    const created = await quickAddCategory(
-                                      "service",
-                                      clean,
-                                    );
-                                    setServiceCats((cur) =>
-                                      [...cur, created].sort(byAlpha),
-                                    );
-                                    setServiceId(created.id);
-                                    setServiceQuery(created.name);
-                                    setServiceOpen(false);
-                                  } catch (e) {
-                                    setErr({
-                                      message:
-                                        e instanceof Error
-                                          ? e.message
-                                          : "Failed to add service",
-                                    });
-                                  }
-                                }}
-                              >
-                                + Add service
-                                {serviceQuery.trim()
-                                  ? `: “${serviceQuery.trim()}”`
-                                  : ""}
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-
-                    {/* Department */}
-                    <div className="relative">
-                      <div className="mb-1 text-xs font-semibold text-slate-600">
-                        Department (optional)
-                      </div>
-                      <input
-                        className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                        value={deptQuery}
-                        onFocus={() => setDeptOpen(true)}
-                        onBlur={() =>
-                          window.setTimeout(() => setDeptOpen(false), 120)
-                        }
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          setDeptQuery(v);
-                          const id = deptIdByLabel.get(v.trim().toLowerCase());
-                          setDeptId(id ?? "");
-                          setDeptOpen(true);
-                        }}
-                        placeholder="Type a department…"
-                      />
-
-                      {deptOpen ? (
-                        <div className="absolute z-50 mt-2 w-full overflow-hidden rounded-2xl border bg-white shadow-lg max-h-56 overflow-auto">
-                          {filteredDepts.length === 0 ? (
-                            <div className="px-4 py-3 text-sm text-slate-600">
-                              No matches.
-                            </div>
-                          ) : (
-                            filteredDepts.map((c) => (
-                              <button
-                                type="button"
-                                key={c.id}
-                                className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
-                                onMouseDown={(e) => e.preventDefault()}
-                                onClick={() => {
-                                  setDeptId(c.id);
-                                  setDeptQuery(c.name);
-                                  setDeptOpen(false);
-                                }}
-                              >
-                                {c.name}
-                              </button>
-                            ))
-                          )}
-
-                          {showAddDeptRow ? (
-                            <div className="border-t">
-                              <button
-                                type="button"
-                                className="block w-full px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-slate-50"
-                                onMouseDown={(e) => e.preventDefault()}
-                                onClick={async () => {
-                                  const clean = deptQuery.trim();
-                                  if (!clean) return;
-                                  try {
-                                    const created = await quickAddCategory(
-                                      "department",
-                                      clean,
-                                    );
-                                    setDeptCats((cur) =>
-                                      [...cur, created].sort(byAlpha),
-                                    );
-                                    setDeptId(created.id);
-                                    setDeptQuery(created.name);
-                                    setDeptOpen(false);
-                                  } catch (e) {
-                                    setErr({
-                                      message:
-                                        e instanceof Error
-                                          ? e.message
-                                          : "Failed to add department",
-                                    });
-                                  }
-                                }}
-                              >
-                                + Add department
-                                {deptQuery.trim()
-                                  ? `: “${deptQuery.trim()}”`
-                                  : ""}
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-1 text-xs font-semibold text-slate-600">
-                      Notes (optional)
-                    </div>
-                    <input
-                      className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                      value={addNotes}
-                      onChange={(e) => setAddNotes(e.target.value)}
-                      placeholder="e.g., Door 5"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-end gap-2 pt-2">
-                    <button
-                      type="button"
-                      onClick={addEntry}
-                      disabled={addName.trim().length === 0}
-                      className={`rounded-2xl px-5 py-2 text-sm font-semibold text-white ${
-                        addName.trim().length
-                          ? "bg-primary hover:bg-primary/85"
-                          : "bg-slate-300"
-                      }`}
-                    >
-                      Add
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Rejected */}
-              {modalRejected.length ? (
-                <div className="rounded-3xl border bg-slate-50 p-5">
-                  <div className="text-xs font-semibold text-slate-600">
-                    Rejected
-                  </div>
-                  <div className="mt-2 space-y-1">
-                    {modalRejected.slice(0, 10).map((e) => (
-                      <div key={e.id} className="text-sm text-slate-700">
-                        {roleLabel(e.role)}: {e.name}
-                      </div>
-                    ))}
-                    {modalRejected.length > 10 ? (
-                      <div className="text-xs text-slate-500">
-                        +{modalRejected.length - 10} more
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
             </div>
           </div>
         </div>
