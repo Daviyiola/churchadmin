@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 
-type CategoryType = "income" | "expense" | "services";
+type CategoryType = "income" | "expense" | "services" | "department";
 type CategoryStatus = "active" | "archived";
 
 type CategoryRow = {
@@ -44,7 +44,8 @@ function fmtDate(iso: string) {
 function typeLabel(t: CategoryType) {
   if (t === "income") return "Income";
   if (t === "expense") return "Expense";
-  return "Services";
+  if (t === "services") return "Services";
+  return "Department";
 }
 
 function normalizeName(s: string) {
@@ -56,23 +57,35 @@ function Pill({
   tone = "slate",
 }: {
   children: React.ReactNode;
-  tone?: "slate" | "green" | "amber";
+  tone?: "slate" | "green" | "amber" | "blue" | "red";
 }) {
   const cls =
     tone === "green"
       ? "border-green-200 bg-green-50 text-green-700"
       : tone === "amber"
         ? "border-amber-200 bg-amber-50 text-amber-700"
-        : "border-slate-200 bg-slate-50 text-slate-700";
+        : tone === "blue"
+          ? "border-blue-200 bg-blue-50 text-blue-700"
+          : tone === "red"
+            ? "border-red-50 bg-red-50 text-red-700"
+            : "border-slate-200 bg-slate-50 text-slate-700";
 
   return (
-    <span
-      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${cls}`}
-    >
+    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${cls}`}>
       {children}
     </span>
   );
 }
+
+function pillToneForType(
+  t: CategoryType,
+): "slate" | "green" | "amber" | "blue" | "red" {
+  if (t === "income") return "green";
+  if (t === "expense") return "amber";
+  if (t === "department") return "red";
+  return "slate"; // services
+}
+
 
 function isPostgresUniqueViolation(err: unknown): boolean {
   return (
@@ -122,13 +135,15 @@ export default function CategoriesPage() {
       income: 0,
       expense: 0,
       services: 0,
+      department: 0,
     };
 
     for (const c of base) {
       res.total += 1;
       if (c.type === "income") res.income += 1;
       else if (c.type === "expense") res.expense += 1;
-      else res.services += 1;
+      else if (c.type === "services") res.services += 1;
+      else res.department += 1;
     }
 
     return res;
@@ -255,16 +270,13 @@ export default function CategoriesPage() {
       .update({
         name: cleanName,
         type: catType,
-        // updated_at is handled by trigger, but ok to leave it out
       })
       .eq("id", editId);
 
     if (error) {
       if (isPostgresUniqueViolation(error)) {
         setFormErr(
-          `A ${typeLabel(
-            catType,
-          )} category named "${cleanName}" already exists.`,
+          `A ${typeLabel(catType)} category named "${cleanName}" already exists.`,
         );
       } else {
         setFormErr(error.message);
@@ -344,9 +356,7 @@ export default function CategoriesPage() {
     if (error) {
       if (isPostgresUniqueViolation(error)) {
         setFormErr(
-          `A ${typeLabel(
-            catType,
-          )} category named "${cleanName}" already exists.`,
+          `A ${typeLabel(catType)} category named "${cleanName}" already exists.`,
         );
       } else {
         setFormErr(error.message);
@@ -384,7 +394,7 @@ export default function CategoriesPage() {
           <div>
             <div className="text-xl font-semibold">Categories</div>
             <div className="text-sm text-slate-600">
-              Income • Expense • Services categories
+              Income • Expense • Services • Department categories
             </div>
           </div>
 
@@ -425,27 +435,6 @@ export default function CategoriesPage() {
             </div>
 
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-              {/* <select
-                className="w-full sm:w-44 rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                value={typeFilter}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (
-                    v === "" ||
-                    v === "income" ||
-                    v === "expense" ||
-                    v === "services"
-                  ) {
-                    setTypeFilter(v);
-                  }
-                }}
-              >
-                <option value="">All types</option>
-                <option value="income">Income</option>
-                <option value="expense">Expense</option>
-                <option value="services">Services</option>
-              </select> */}
-
               <input
                 className="w-full sm:w-80 rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 placeholder="Search categories…"
@@ -467,8 +456,7 @@ export default function CategoriesPage() {
       <div className="p-6">
         <div className="rounded-3xl border bg-white overflow-hidden">
           <div className="overflow-x-auto">
-            {/* responsive horizontal scroll container */}
-            <div className="min-w-[900px]">
+            <div className="min-w-[980px]">
               {/* KPI row */}
               <div className="border-b bg-white px-5 py-6">
                 <div className="flex items-center justify-between gap-3">
@@ -488,7 +476,7 @@ export default function CategoriesPage() {
                   )}
                 </div>
 
-                <div className="mt-2 grid gap-7 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="mt-2 grid gap-7 sm:grid-cols-2 lg:grid-cols-5">
                   {/* Total */}
                   <button
                     type="button"
@@ -574,6 +562,29 @@ export default function CategoriesPage() {
                       {kpis.services}
                     </div>
                   </button>
+
+                  {/* Department */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setTypeFilter((cur) =>
+                        cur === "department" ? "" : "department",
+                      )
+                    }
+                    className={`rounded-2xl border px-4 py-3 text-left transition ${
+                      typeFilter === "department"
+                        ? "bg-primary/15 border-primary"
+                        : "bg-white hover:bg-slate-50"
+                    }`}
+                    title="Filter to Department"
+                  >
+                    <div className="text-xs font-semibold text-slate-600">
+                      Department
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">
+                      {kpis.department}
+                    </div>
+                  </button>
                 </div>
 
                 <div className="mt-3 text-xs text-slate-500">
@@ -628,7 +639,9 @@ export default function CategoriesPage() {
                       </div>
 
                       <div className="col-span-2">
-                        <Pill tone="slate">{typeLabel(c.type)}</Pill>
+                        <Pill tone={pillToneForType(c.type)}>
+                          {typeLabel(c.type)}
+                        </Pill>
                       </div>
 
                       <div className="col-span-3 text-slate-700">
@@ -685,7 +698,7 @@ export default function CategoriesPage() {
         </div>
       </div>
 
-      {/* Create modal */}
+      {/* Create/Edit modal */}
       {open ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-2xl rounded-3xl bg-white shadow-xl">
@@ -696,9 +709,7 @@ export default function CategoriesPage() {
               <div className="text-xs text-slate-600">
                 {mode === "create"
                   ? "Anyone can add a category."
-                  : isAdmin
-                    ? "Admin-only edit."
-                    : "Admin-only edit."}
+                  : "Admin-only edit."}
               </div>
             </div>
 
@@ -714,7 +725,7 @@ export default function CategoriesPage() {
                     setName(e.target.value);
                     setFormErr("");
                   }}
-                  placeholder="e.g., Tithe, Offering, Rent, Sunday Service…"
+                  placeholder="e.g., Tithe, Offering, Rent, Sunday Service, Choir…"
                   autoFocus
                 />
               </div>
@@ -727,14 +738,28 @@ export default function CategoriesPage() {
                   className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                   value={catType}
                   onChange={(e) => {
-                    setCatType(e.target.value as CategoryType);
-                    setFormErr("");
+                    const v = e.target.value;
+                    if (
+                      v === "income" ||
+                      v === "expense" ||
+                      v === "services" ||
+                      v === "department"
+                    ) {
+                      setCatType(v);
+                      setFormErr("");
+                    }
                   }}
                 >
                   <option value="income">Income</option>
                   <option value="expense">Expense</option>
                   <option value="services">Services</option>
+                  <option value="department">Department</option>
                 </select>
+
+                <div className="mt-2 text-xs text-slate-500">
+                  Tip: Use <span className="font-semibold">Department</span> for
+                  things like Choir, Ushers, Media, Children’s Church, etc.
+                </div>
               </div>
 
               {formErr ? (

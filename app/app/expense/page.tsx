@@ -1937,16 +1937,31 @@ export default function ExpenseDraftPage() {
         </div>
       ) : null}
 
-      {/* Import CSV modal */}
+      {/* ===================== Import CSV modal (FULL, scroll-proof) ===================== */}
       {importOpen ? (
-        <div className="fixed inset-0 z-[70] bg-black/30">
-          <div className="h-full w-full p-4 py-8 flex items-start justify-center">
+        <div
+          className="fixed inset-0 z-[70] bg-black/30"
+          onClick={() => {
+            // backdrop click closes
+            void (async () => {
+              await abandonImportJob();
+              setImportOpen(false);
+            })();
+          }}
+        >
+          <div className="h-[100dvh] w-full p-4 py-8 flex items-start justify-center">
             <div
-              className="w-full max-w-6xl h-[calc(100vh-4rem)] rounded-3xl bg-white shadow-xl flex flex-col overflow-hidden"
+              className="
+          w-full max-w-6xl
+          h-[calc(100dvh-4rem)]
+          rounded-3xl bg-white shadow-xl
+          flex flex-col
+          overflow-hidden
+        "
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Header */}
-              <div className="border-b px-6 py-4 flex items-start justify-between gap-4">
+              {/* ================= Header (fixed) ================= */}
+              <div className="shrink-0 border-b px-6 py-4 flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <div className="text-sm font-semibold">
                     Import Expenses (CSV)
@@ -1976,8 +1991,8 @@ export default function ExpenseDraftPage() {
                 </button>
               </div>
 
-              {/* Body */}
-              <div className="px-6 py-6 flex-1 min-h-0 overflow-y-auto">
+              {/* ================= Body (VERTICAL SCROLLER) ================= */}
+              <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6">
                 {importErr ? (
                   <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                     {importErr}
@@ -1986,6 +2001,7 @@ export default function ExpenseDraftPage() {
 
                 {importStep === "upload" ? (
                   <div className="grid gap-6 lg:grid-cols-12">
+                    {/* Left: Upload */}
                     <div className="lg:col-span-5 rounded-3xl border bg-slate-50 p-5">
                       <div className="text-sm font-semibold">
                         Step 1 — Upload CSV
@@ -2015,7 +2031,6 @@ export default function ExpenseDraftPage() {
                             const f = e.target.files?.[0] ?? null;
                             if (!f) return;
                             void onPickCsvFile(f);
-                            // clear input so selecting same file again triggers change
                             e.currentTarget.value = "";
                           }}
                           className="block w-full rounded-2xl border bg-white px-4 py-2 text-sm"
@@ -2040,12 +2055,15 @@ export default function ExpenseDraftPage() {
                       </div>
                     </div>
 
+                    {/* Right: Template + instructions */}
                     <div className="lg:col-span-7 rounded-3xl border p-5">
                       <div className="text-sm font-semibold">
                         CSV Template Example
                       </div>
-                      <div className="mt-2 rounded-2xl border bg-white p-4 text-xs text-slate-700 overflow-auto">
-                        <div className="mt-2 rounded-2xl border bg-white overflow-hidden">
+
+                      {/* Horizontal scroller for the template table */}
+                      <div className="mt-2 rounded-2xl border bg-white p-4 overflow-x-auto">
+                        <div className="min-w-[900px] rounded-2xl border bg-white overflow-hidden">
                           <table className="w-full text-xs border-collapse">
                             <thead className="bg-slate-100">
                               <tr>
@@ -2139,12 +2157,13 @@ export default function ExpenseDraftPage() {
                   </div>
                 ) : (
                   <>
-                    {/* Review toolbar */}
+                    {/* ================= Review toolbar ================= */}
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold">
                           Step 2 — Review
                         </span>
+
                         {importSavedAt ? (
                           <span className="text-xs text-slate-500">
                             Saved at{" "}
@@ -2153,6 +2172,7 @@ export default function ExpenseDraftPage() {
                             </span>
                           </span>
                         ) : null}
+
                         {importDirty ? (
                           <span className="text-xs rounded-full border bg-amber-50 px-2 py-1 text-amber-800">
                             Unsaved changes
@@ -2164,7 +2184,7 @@ export default function ExpenseDraftPage() {
                         )}
                       </div>
 
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <select
                           className="rounded-2xl border px-3 py-2 text-sm"
                           value={importFilter}
@@ -2232,7 +2252,7 @@ export default function ExpenseDraftPage() {
                       </div>
                     </div>
 
-                    {/* Summary */}
+                    {/* ================= Summary cards ================= */}
                     <div className="mt-4 grid gap-3 sm:grid-cols-3">
                       <div className="rounded-2xl border bg-slate-50 px-4 py-3">
                         <div className="text-xs text-slate-600">Total rows</div>
@@ -2265,8 +2285,9 @@ export default function ExpenseDraftPage() {
                       </div>
                     </div>
 
-                    {/* Review table */}
+                    {/* ================= Review table ================= */}
                     <div className="mt-4 rounded-3xl border bg-white overflow-hidden">
+                      {/* horizontal scroll container */}
                       <div className="overflow-x-auto">
                         <div className="min-w-[1200px]">
                           <div className="grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100">
@@ -2358,7 +2379,7 @@ export default function ExpenseDraftPage() {
                                       </select>
                                     </div>
 
-                                    {/* Description */}
+                                    {/* Description + vendor */}
                                     <div className="col-span-3">
                                       <input
                                         className="w-full rounded-xl border px-3 py-2 text-sm"
@@ -2408,7 +2429,7 @@ export default function ExpenseDraftPage() {
                                       />
                                     </div>
 
-                                    {/* Method */}
+                                    {/* Method + cheque */}
                                     <div className="col-span-1">
                                       <select
                                         className="w-full rounded-xl border px-3 py-2 text-sm"
@@ -2471,10 +2492,13 @@ export default function ExpenseDraftPage() {
                 )}
               </div>
 
-              {/* Footer */}
-              <div className="border-t px-6 py-4 flex items-center justify-between gap-3">
+              {/* ================= Footer (fixed) ================= */}
+              <div className="shrink-0 border-t px-6 py-4 flex items-center justify-between gap-3">
                 <button
                   disabled={importBusy}
+                  className={`rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50 ${
+                    importBusy ? "opacity-50 pointer-events-none" : ""
+                  }`}
                   onClick={async () => {
                     await abandonImportJob();
                     setImportOpen(false);
@@ -2496,7 +2520,7 @@ export default function ExpenseDraftPage() {
                 )}
               </div>
             </div>
-          </div>{" "}
+          </div>
         </div>
       ) : null}
     </>

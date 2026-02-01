@@ -129,7 +129,6 @@ export default function IncomePage() {
 
   const [role, setRole] = useState<Role | null>(null);
   const isFinance = role === "finance" || role === "admin" || role === "owner";
-  const isAdmin = role === "admin" || role === "owner";
 
   const [quickIncomeCatOpen, setQuickIncomeCatOpen] = useState(false);
   const [qicName, setQicName] = useState("");
@@ -178,18 +177,6 @@ export default function IncomePage() {
   const [publishing, setPublishing] = useState(false);
   const amountRef = useRef<HTMLInputElement | null>(null);
 
-  // adjustment modal (admin only, negative only)
-  const [adjOpen, setAdjOpen] = useState(false);
-  const [adjMemberId, setAdjMemberId] = useState<string>("");
-  const [adjIncomeCategoryId, setAdjIncomeCategoryId] = useState<string>("");
-  const [adjPaymentMethod, setAdjPaymentMethod] =
-    useState<PaymentMethod>("cash");
-  const [adjChequeNumber, setAdjChequeNumber] = useState<string>("");
-  const [adjAmount, setAdjAmount] = useState<string>("");
-  const [adjNote, setAdjNote] = useState<string>("");
-  const [adjErr, setAdjErr] = useState("");
-  const [postingAdj, setPostingAdj] = useState(false);
-
   const [quickMemberOpen, setQuickMemberOpen] = useState(false);
   const [qmFirst, setQmFirst] = useState("");
   const [qmLast, setQmLast] = useState("");
@@ -201,7 +188,6 @@ export default function IncomePage() {
   const [qmErr, setQmErr] = useState("");
 
   const [memberQuery, setMemberQuery] = useState(""); // what user types
-  const [adjMemberQuery, setAdjMemberQuery] = useState(""); // for adjustment modal
 
   const clearedOnFocusRef = useRef(false);
   const clearedIncomeCatOnFocusRef = useRef(false);
@@ -793,81 +779,6 @@ export default function IncomePage() {
     showToast("Published");
   };
 
-  // ====== Negative Adjustment (Admin only) ======
-  const openAdjustment = () => {
-    if (!selectedBatch || selectedBatch.status !== "published") {
-      setErr("Adjustments require a published batch.");
-      return;
-    }
-    if (!isAdmin) {
-      setErr("Admin only.");
-      return;
-    }
-    const firstId = members[0]?.id ?? "";
-    setAdjMemberId(firstId);
-    setAdjMemberQuery(firstId ? memberLabelById.get(firstId) ?? "" : "");
-    setAdjIncomeCategoryId(incomeCats[0]?.id ?? "");
-    setAdjPaymentMethod("cash");
-    setAdjChequeNumber("");
-    setAdjAmount("");
-    setAdjNote("");
-    setAdjErr("");
-    setAdjOpen(true);
-  };
-
-  const postAdjustment = async () => {
-    if (!selectedBatch) return;
-    if (!isAdmin) {
-      setAdjErr("Admin only.");
-      return;
-    }
-
-    if (!adjMemberId) {
-      setAdjErr("Member is required.");
-      return;
-    }
-    if (!adjIncomeCategoryId) {
-      setAdjErr("Income category is required.");
-      return;
-    }
-    if (adjPaymentMethod === "cheque" && adjChequeNumber.trim().length === 0) {
-      setAdjErr("Cheque number is required for cheque.");
-      return;
-    }
-
-    const rawCents = parseMoneyToCents(adjAmount);
-    if (rawCents === null || rawCents === 0) {
-      setAdjErr("Amount must be greater than zero.");
-      return;
-    }
-
-    const absCents = Math.abs(rawCents);
-
-    setPostingAdj(true);
-    setAdjErr("");
-
-    const { error } = await supabase.rpc("add_income_negative_adjustment", {
-      p_batch_id: selectedBatch.id,
-      p_member_id: adjMemberId,
-      p_income_category_id: adjIncomeCategoryId,
-      p_payment_method: adjPaymentMethod,
-      p_cheque_number:
-        adjPaymentMethod === "cheque" ? adjChequeNumber.trim() : null,
-      p_amount_cents: absCents, // RPC will force negative
-      p_note: adjNote || null,
-    });
-
-    if (error) {
-      setAdjErr(error.message);
-      setPostingAdj(false);
-      return;
-    }
-
-    setPostingAdj(false);
-    setAdjOpen(false);
-    showToast("Negative adjustment posted");
-  };
-
   if (!orgId) {
     return (
       <div className="p-6 text-slate-700">No active organization selected.</div>
@@ -1056,22 +967,7 @@ export default function IncomePage() {
                       </>
                     ) : (
                       <>
-                        <button
-                          className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                            !isAdmin
-                              ? "bg-slate-300"
-                              : "bg-primary hover:bg-primary/85"
-                          }`}
-                          disabled={!isAdmin}
-                          onClick={openAdjustment}
-                          title={
-                            !isAdmin
-                              ? "Admin only"
-                              : "Post a negative adjustment"
-                          }
-                        >
-                          Negative adjustment (−)
-                        </button>
+
                         <button
                           className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
                           onClick={openCreateBatch}
@@ -1739,192 +1635,7 @@ export default function IncomePage() {
         </div>
       ) : null}
 
-      {/* Negative adjustment modal (admin only) */}
-      {adjOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-          <div className="w-full max-w-3xl rounded-3xl bg-white shadow-xl">
-            <div className="border-b px-6 py-4">
-              <div className="text-sm font-semibold">Negative adjustment</div>
-              <div className="text-xs text-slate-600">
-                Posts a correcting entry. Published entries can’t be edited.
-                Admin only.
-              </div>
-            </div>
-
-            <div className="px-6 py-6 space-y-4">
-              <div className="rounded-2xl border bg-primary/10 border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                This will post a <span className="font-semibold">negative</span>{" "}
-                amount to correct an earlier mistake. If you need to add missing
-                income, create a new draft batch instead.
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">
-                    Member *
-                  </div>
-                  <div>
-                    <input
-                      list="members-datalist-adj"
-                      className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                      value={adjMemberQuery}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setAdjMemberQuery(v);
-                        setAdjErr("");
-
-                        const id = memberIdByLabel.get(v.trim().toLowerCase());
-                        if (id) setAdjMemberId(id);
-                        else setAdjMemberId("");
-                      }}
-                      placeholder="Type a name…"
-                    />
-
-                    <datalist id="members-datalist-adj">
-                      {members.map((m) => (
-                        <option
-                          key={m.id}
-                          value={`${m.first_name} ${m.last_name}`}
-                        />
-                      ))}
-                    </datalist>
-
-                    {!adjMemberId && adjMemberQuery.trim().length > 0 ? (
-                      <div className="mt-1 text-xs text-amber-700">
-                        Select a valid member from suggestions.
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">
-                    Income category *
-                  </div>
-                  <select
-                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                    value={adjIncomeCategoryId}
-                    onChange={(e) => {
-                      setAdjIncomeCategoryId(e.target.value);
-                      setAdjErr("");
-                    }}
-                  >
-                    <option value="">Select…</option>
-                    {incomeCats.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">
-                    Method *
-                  </div>
-                  <select
-                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                    value={adjPaymentMethod}
-                    onChange={(e) => {
-                      setAdjPaymentMethod(e.target.value as PaymentMethod);
-                      setAdjErr("");
-                    }}
-                  >
-                    <option value="cash">Cash</option>
-                    <option value="cheque">Cheque</option>
-                    <option value="online">Online</option>
-                  </select>
-                </div>
-
-                <div className="sm:col-span-2">
-                  <div className="mb-1 text-xs font-semibold text-slate-600">
-                    Cheque number {adjPaymentMethod === "cheque" ? "*" : ""}
-                  </div>
-                  <input
-                    className={`w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 ${
-                      adjPaymentMethod !== "cheque"
-                        ? "bg-slate-50 text-slate-500"
-                        : ""
-                    }`}
-                    value={adjChequeNumber}
-                    onChange={(e) => {
-                      setAdjChequeNumber(e.target.value);
-                      setAdjErr("");
-                    }}
-                    disabled={adjPaymentMethod !== "cheque"}
-                    placeholder={
-                      adjPaymentMethod === "cheque" ? "e.g., 103849" : "—"
-                    }
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">
-                  Amount (will be negative) *
-                </div>
-                <div className="flex">
-                  <div className="flex items-center rounded-l-2xl border border-r-0 bg-slate-50 px-4 text-sm font-semibold text-slate-700">
-                    −$
-                  </div>
-                  <input
-                    className="w-full rounded-r-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                    value={adjAmount}
-                    onChange={(e) => {
-                      setAdjAmount(e.target.value);
-                      setAdjErr("");
-                    }}
-                    placeholder="e.g., 90.00"
-                  />
-                </div>
-                <div className="mt-1 text-xs text-slate-500">
-                  We take the absolute value and store it as a negative
-                  correction (typing “-90” is okay).
-                </div>
-              </div>
-
-              <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">
-                  Reason / Note (optional)
-                </div>
-                <input
-                  className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                  value={adjNote}
-                  onChange={(e) => setAdjNote(e.target.value)}
-                  placeholder="e.g., Corrected mis-typed amount"
-                />
-              </div>
-
-              {adjErr ? (
-                <div className="rounded-2xl border bg-primary/10 border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                  {adjErr}
-                </div>
-              ) : null}
-            </div>
-
-            <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
-              <button
-                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
-                onClick={() => setAdjOpen(false)}
-              >
-                Cancel
-              </button>
-
-              <button
-                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                  postingAdj ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
-                }`}
-                disabled={postingAdj}
-                onClick={postAdjustment}
-              >
-                {postingAdj ? "Posting…" : "Post negative adjustment"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+     
     </>
   );
 }

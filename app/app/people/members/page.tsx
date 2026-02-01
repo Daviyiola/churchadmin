@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 
@@ -28,12 +28,16 @@ type MemberRow = {
   address: string | null;
   notes: string | null;
 
-  // ✅ new fields
   baptized: boolean | null;
-  baptism_date: string | null; // YYYY-MM-DD
+  baptism_date: string | null;
   born_again: boolean | null;
-  born_again_date: string | null; // YYYY-MM-DD
+  born_again_date: string | null;
+
+  // ✅ Department
+  department_category_id: string | null;
 };
+
+type DeptCat = { id: string; name: string };
 
 type DupCandidate = {
   id: string;
@@ -50,7 +54,9 @@ function isYesNo(v: string): v is YesNo {
 }
 
 function isAgeGroup(v: string): v is AgeGroup | "" {
-  return v === "" || v === "1-12" || v === "13-17" || v === "18-35" || v === "36+";
+  return (
+    v === "" || v === "1-12" || v === "13-17" || v === "18-35" || v === "36+"
+  );
 }
 
 async function isAdminForActiveOrg(orgId: string): Promise<boolean> {
@@ -76,7 +82,7 @@ function normalizeName(s: string) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ")
-    .replace(/[^\p{L}\p{N}\s'-]/gu, ""); // keeps letters/numbers/spaces/'/-
+    .replace(/[^\p{L}\p{N}\s'-]/gu, "");
 }
 
 function normalizeEmail(s: string | null) {
@@ -84,7 +90,7 @@ function normalizeEmail(s: string | null) {
 }
 
 function normalizePhone(s: string | null) {
-  return (s ?? "").replace(/\D/g, ""); // digits only
+  return (s ?? "").replace(/\D/g, "");
 }
 
 function sameNameOrSwapped(
@@ -98,7 +104,8 @@ function sameNameOrSwapped(
   const bf = normalizeName(bFirst);
   const bl = normalizeName(bLast);
 
-  const hasAll = af.length > 0 && al.length > 0 && bf.length > 0 && bl.length > 0;
+  const hasAll =
+    af.length > 0 && al.length > 0 && bf.length > 0 && bl.length > 0;
 
   const direct = hasAll && af === bf && al === bl;
   const swapped = hasAll && af === bl && al === bf;
@@ -128,8 +135,6 @@ function toStringOrNull(v: unknown): string | null {
 function computeAgeFromDobOnDate(dobStr: string, onDate = new Date()) {
   const d = new Date(dobStr);
   if (Number.isNaN(d.getTime())) return null;
-
-  // DOB in the future = invalid
   if (d.getTime() > onDate.getTime()) return null;
 
   let age = onDate.getFullYear() - d.getFullYear();
@@ -145,7 +150,10 @@ function ageGroupForAge(age: number): AgeGroup {
   return "36+";
 }
 
-function computeSegment(g: "male" | "female" | "", ag: AgeGroup | ""): "" | Segment {
+function computeSegment(
+  g: "male" | "female" | "",
+  ag: AgeGroup | "",
+): "" | Segment {
   if (!g || !ag) return "";
   const under18 = ag === "1-12" || ag === "13-17";
   if (under18) return g === "male" ? "boys" : "girls";
@@ -157,7 +165,11 @@ function isValidPastOrTodayDate(dateStr: string) {
   if (Number.isNaN(d.getTime())) return false;
   const today = new Date();
   const d0 = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const t0 = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+  ).getTime();
   return d0 <= t0;
 }
 
@@ -176,7 +188,7 @@ function formatCandidate(c: DupCandidate) {
 /**
  * Duplicate strategy:
  * - Strong matches (block): same email OR same phone OR (same name or swapped name) + same DOB
- * - Weak matches (warn/confirm): same name OR swapped name (Mary Johnson vs Johnson Mary)
+ * - Weak matches (warn/confirm): same name OR swapped name
  */
 async function findDuplicates(params: {
   orgId: string;
@@ -193,10 +205,6 @@ async function findDuplicates(params: {
   const ph = normalizePhone(params.phone);
   const dob = (params.dob ?? "").trim();
 
-  // Pull a small candidate set from the org that might match by either side of the name.
-  // This catches:
-  //  - Mary Johnson (fn=Mary ln=Johnson)
-  //  - Johnson Mary (fn=Johnson ln=Mary)
   const { data, error } = await supabase
     .from("members")
     .select("id,first_name,last_name,email,phone,dob,status")
@@ -212,7 +220,13 @@ async function findDuplicates(params: {
     )
     .limit(50);
 
-  if (error) return { strong: [] as DupCandidate[], weak: [] as DupCandidate[], error: error.message };
+  if (error) {
+    return {
+      strong: [] as DupCandidate[],
+      weak: [] as DupCandidate[],
+      error: error.message,
+    };
+  }
 
   const candidates = (data ?? []) as DupCandidate[];
 
@@ -231,20 +245,19 @@ async function findDuplicates(params: {
     const emailMatch = em.length > 0 && cEmail.length > 0 && em === cEmail;
     const phoneMatch = ph.length > 0 && cPhone.length > 0 && ph === cPhone;
     const nameDobMatch =
-      (nameCmp.direct || nameCmp.swapped) && dob.length > 0 && cDob.length > 0 && dob === cDob;
+      (nameCmp.direct || nameCmp.swapped) &&
+      dob.length > 0 &&
+      cDob.length > 0 &&
+      dob === cDob;
 
     if (emailMatch || phoneMatch || nameDobMatch) {
       strong.push(c);
       continue;
     }
 
-    // Weak: same name or swapped name (Mary Johnson vs Johnson Mary)
-    if (nameCmp.direct || nameCmp.swapped) {
-      weak.push(c);
-    }
+    if (nameCmp.direct || nameCmp.swapped) weak.push(c);
   }
 
-  // De-dupe by id in case the OR query returned overlaps
   const uniq = (arr: DupCandidate[]) => {
     const seen = new Set<string>();
     const out: DupCandidate[] = [];
@@ -256,7 +269,24 @@ async function findDuplicates(params: {
     return out;
   };
 
-  return { strong: uniq(strong), weak: uniq(weak), error: null };
+  return {
+    strong: uniq(strong),
+    weak: uniq(weak),
+    error: null as string | null,
+  };
+}
+
+function normalizeCategoryName(s: string) {
+  return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function isPostgresUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: string }).code === "23505"
+  );
 }
 
 export default function MembersPage() {
@@ -265,10 +295,20 @@ export default function MembersPage() {
   const [tab, setTab] = useState<"active" | "archived">("active");
   const [q, setQ] = useState("");
   const [ageGroupFilter, setAgeGroupFilter] = useState<AgeGroup | null>(null);
+
   const [rows, setRows] = useState<MemberRow[]>([]);
   const [loading, setLoading] = useState(true);
-
   const [isAdmin, setIsAdmin] = useState(false);
+
+  // Departments (typeahead + quick add)
+  const [deptCats, setDeptCats] = useState<DeptCat[]>([]);
+  const [deptErr, setDeptErr] = useState<string>("");
+
+  const deptIdByLabel = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of deptCats) m.set(c.name.trim().toLowerCase(), c.id);
+    return m;
+  }, [deptCats]);
 
   // modal state
   const [open, setOpen] = useState(false);
@@ -281,6 +321,7 @@ export default function MembersPage() {
   const [phone, setPhone] = useState("");
   const [joinedAt, setJoinedAt] = useState<string>("");
   const [notes, setNotes] = useState("");
+  const [address, setAddress] = useState<string>("");
 
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string>("");
@@ -288,25 +329,32 @@ export default function MembersPage() {
   const [gender, setGender] = useState<"male" | "female" | "">("");
   const [dob, setDob] = useState<string>("");
   const [ageGroup, setAgeGroup] = useState<AgeGroup | "">("");
-  const [address, setAddress] = useState<string>("");
 
-  // ✅ new fields (form state)
   const [baptized, setBaptized] = useState<YesNo>("");
   const [baptismDate, setBaptismDate] = useState<string>("");
   const [bornAgain, setBornAgain] = useState<YesNo>("");
   const [bornAgainDate, setBornAgainDate] = useState<string>("");
 
+  // Department picker
+  const [departmentId, setDepartmentId] = useState<string>("");
+  const [deptQuery, setDeptQuery] = useState<string>("");
+  const [deptSuggestOpen, setDeptSuggestOpen] = useState(false);
+  const clearedDeptOnFocusRef = useRef(false);
+
+  // quick add department modal
+  const [quickDeptOpen, setQuickDeptOpen] = useState(false);
+  const [qdName, setQdName] = useState("");
+  const [qdErr, setQdErr] = useState("");
+  const [qdSaving, setQdSaving] = useState(false);
+
   // DOB drives age group when present
   const hasDob = dob.trim().length > 0;
   const dobAge = hasDob ? computeAgeFromDobOnDate(dob) : null;
 
-  const effectiveAgeGroup = (hasDob
-    ? dobAge !== null
-      ? ageGroupForAge(dobAge)
-      : ""
-    : ageGroup) as AgeGroup | "";
+  const effectiveAgeGroup = (
+    hasDob ? (dobAge !== null ? ageGroupForAge(dobAge) : "") : ageGroup
+  ) as AgeGroup | "";
 
-  // Required:
   const requiredOk =
     firstName.trim().length > 0 &&
     lastName.trim().length > 0 &&
@@ -328,6 +376,12 @@ export default function MembersPage() {
     segment !== "" &&
     (mode === "create" || (mode === "edit" ? isAdmin : true));
 
+  const deptNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const d of deptCats) m.set(d.id, d.name);
+    return m;
+  }, [deptCats]);
+
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return rows;
@@ -335,9 +389,17 @@ export default function MembersPage() {
       const name = `${m.first_name} ${m.last_name}`.toLowerCase();
       const em = (m.email || "").toLowerCase();
       const ph = (m.phone || "").toLowerCase();
-      return name.includes(needle) || em.includes(needle) || ph.includes(needle);
+      const dept = m.department_category_id
+        ? (deptNameById.get(m.department_category_id) || "").toLowerCase()
+        : "";
+      return (
+        name.includes(needle) ||
+        em.includes(needle) ||
+        ph.includes(needle) ||
+        dept.includes(needle)
+      );
     });
-  }, [q, rows]);
+  }, [q, rows, deptNameById]);
 
   const kpis = useMemo(() => {
     const base = filtered;
@@ -360,7 +422,7 @@ export default function MembersPage() {
       if (m.age_group === "1-12") inc("kids", m.gender);
       else if (m.age_group === "13-17") inc("teens", m.gender);
       else if (m.age_group === "18-35") inc("young", m.gender);
-      else if (m.age_group === "36+") inc("adults", m.gender);
+      else inc("adults", m.gender);
     }
 
     return res;
@@ -371,6 +433,21 @@ export default function MembersPage() {
     return filtered.filter((m) => m.age_group === ageGroupFilter);
   }, [filtered, ageGroupFilter]);
 
+  const filteredDeptCats = useMemo(() => {
+    const needle = deptQuery.trim().toLowerCase();
+    if (!needle) return deptCats.slice(0, 50);
+    return deptCats
+      .filter((c) => c.name.toLowerCase().includes(needle))
+      .slice(0, 50);
+  }, [deptCats, deptQuery]);
+
+  const showAddDeptRow = useMemo(() => {
+    const clean = deptQuery.trim();
+    if (!clean) return false;
+    const key = clean.toLowerCase();
+    return !deptIdByLabel.has(key);
+  }, [deptQuery, deptIdByLabel]);
+
   const resetForm = () => {
     setFirstName("");
     setLastName("");
@@ -378,17 +455,24 @@ export default function MembersPage() {
     setPhone("");
     setJoinedAt("");
     setNotes("");
+    setAddress("");
     setErr("");
     setEditId(null);
+
     setGender("");
     setDob("");
     setAgeGroup("");
-    setAddress("");
 
     setBaptized("");
     setBaptismDate("");
     setBornAgain("");
     setBornAgainDate("");
+
+    setDepartmentId("");
+    setDeptQuery("");
+    setDeptSuggestOpen(false);
+
+    setDeptErr("");
   };
 
   const openCreate = () => {
@@ -401,6 +485,7 @@ export default function MembersPage() {
     resetForm();
     setMode("edit");
     setEditId(m.id);
+
     setFirstName(m.first_name);
     setLastName(m.last_name);
     setEmail(m.email || "");
@@ -414,8 +499,17 @@ export default function MembersPage() {
 
     setBaptized(m.baptized === true ? "yes" : m.baptized === false ? "no" : "");
     setBaptismDate(m.baptism_date || "");
-    setBornAgain(m.born_again === true ? "yes" : m.born_again === false ? "no" : "");
+    setBornAgain(
+      m.born_again === true ? "yes" : m.born_again === false ? "no" : "",
+    );
     setBornAgainDate(m.born_again_date || "");
+
+    setDepartmentId(m.department_category_id || "");
+    setDeptQuery(
+      m.department_category_id
+        ? deptNameById.get(m.department_category_id) || ""
+        : "",
+    );
 
     setOpen(true);
   };
@@ -425,50 +519,78 @@ export default function MembersPage() {
 
     setLoading(true);
     setErr("");
+    setDeptErr("");
 
-    const [adminFlag] = await Promise.all([isAdminForActiveOrg(orgId)]);
+    const [adminFlag, deptRes, memRes] = await Promise.all([
+      isAdminForActiveOrg(orgId),
+      supabase
+        .from("categories")
+        .select("id,name")
+        .eq("org_id", orgId)
+        .eq("status", "active")
+        .eq("type", "department")
+        .order("name", { ascending: true }),
+      supabase
+        .from("members")
+        .select(
+          "id,first_name,last_name,email,phone,joined_at,status,created_at,gender,dob,age_group,segment,address,notes,baptized,baptism_date,born_again,born_again_date,department_category_id",
+        )
+        .eq("org_id", orgId)
+        .eq("membership_stage", "member")
+        .eq("status", tab)
+        .order("last_name", { ascending: true })
+        .order("first_name", { ascending: true }),
+    ]);
+
     setIsAdmin(adminFlag);
 
-    const { data, error } = await supabase
-      .from("members")
-      .select(
-        "id,first_name,last_name,email,phone,joined_at,status,created_at,gender,dob,age_group,segment,address,notes,baptized,baptism_date,born_again,born_again_date",
-      )
-      .eq("org_id", orgId)
-      .eq("membership_stage", "member")
-      .eq("status", tab)
-      .order("last_name", { ascending: true })
-      .order("first_name", { ascending: true });
+    if (deptRes.error) {
+      setDeptErr(deptRes.error.message);
+      setDeptCats([]);
+    } else {
+      setDeptCats(
+        (deptRes.data ?? []).map((r) => ({
+          id: String(r.id),
+          name: String(r.name ?? ""),
+        })),
+      );
+    }
 
-    if (error) {
-      setErr(error.message);
+    if (memRes.error) {
+      setErr(memRes.error.message);
       setRows([]);
     } else {
-  const safe: MemberRow[] = (data ?? []).map((r) => ({
-    id: String(r.id),
-    first_name: String(r.first_name ?? ""),
-    last_name: String(r.last_name ?? ""),
-    email: toStringOrNull(r.email),
-    phone: toStringOrNull(r.phone),
-    joined_at: toStringOrNull(r.joined_at),
-    status: (r.status === "archived" ? "archived" : "active") as "active" | "archived",
-    created_at: String(r.created_at ?? ""),
+      const safe: MemberRow[] = (memRes.data ?? []).map((r) => ({
+        id: String(r.id),
+        first_name: String(r.first_name ?? ""),
+        last_name: String(r.last_name ?? ""),
+        email: toStringOrNull(r.email),
+        phone: toStringOrNull(r.phone),
+        joined_at: toStringOrNull(r.joined_at),
+        status: (r.status === "archived" ? "archived" : "active") as
+          | "active"
+          | "archived",
+        created_at: String(r.created_at ?? ""),
 
-    gender: (r.gender === "female" ? "female" : "male") as "male" | "female",
-    dob: toStringOrNull(r.dob),
-    age_group: (r.age_group ?? "") as AgeGroup,
-    segment: (r.segment ?? "") as Segment,
-    address: toStringOrNull(r.address),
-    notes: toStringOrNull(r.notes),
+        gender: (r.gender === "female" ? "female" : "male") as
+          | "male"
+          | "female",
+        dob: toStringOrNull(r.dob),
+        age_group: (r.age_group ?? "") as AgeGroup,
+        segment: (r.segment ?? "") as Segment,
+        address: toStringOrNull(r.address),
+        notes: toStringOrNull(r.notes),
 
-    baptized: toBoolOrNull(r.baptized),
-    baptism_date: toStringOrNull(r.baptism_date),
-    born_again: toBoolOrNull(r.born_again),
-    born_again_date: toStringOrNull(r.born_again_date),
-  }));
+        baptized: toBoolOrNull(r.baptized),
+        baptism_date: toStringOrNull(r.baptism_date),
+        born_again: toBoolOrNull(r.born_again),
+        born_again_date: toStringOrNull(r.born_again_date),
 
-  setRows(safe);
-}
+        department_category_id: toStringOrNull(r.department_category_id),
+      }));
+
+      setRows(safe);
+    }
 
     setLoading(false);
   };
@@ -482,11 +604,109 @@ export default function MembersPage() {
     setAgeGroupFilter(null);
   }, [tab, orgId]);
 
+  const openQuickAddDeptFromQuery = (query: string) => {
+    const clean = query.trim();
+    setQdName(clean);
+    setQdErr("");
+    setQuickDeptOpen(true);
+  };
+
+  const saveQuickDepartment = async () => {
+    if (!orgId) return;
+
+    setQdErr("");
+
+    const cleanName = qdName.trim();
+    if (!cleanName) {
+      setQdErr("Name is required.");
+      return;
+    }
+
+    // you said: anyone can add categories. so no admin gating here.
+    const { data: sessionRes } = await supabase.auth.getSession();
+    const userId = sessionRes.session?.user?.id;
+    if (!userId) {
+      setQdErr("You must be signed in.");
+      return;
+    }
+
+    // soft pre-check: department only
+    const { data: exists, error: existsErr } = await supabase
+      .from("categories")
+      .select("id,name")
+      .eq("org_id", orgId)
+      .eq("type", "department")
+      .ilike("name", cleanName.trim())
+      .maybeSingle();
+
+    if (existsErr) {
+      setQdErr(existsErr.message);
+      return;
+    }
+
+    if (exists?.id) {
+      // select existing
+      const id = String(exists.id);
+      setDepartmentId(id);
+      setDeptQuery(String(exists.name ?? cleanName));
+      setDeptSuggestOpen(false);
+      setQuickDeptOpen(false);
+      return;
+    }
+
+    setQdSaving(true);
+
+    const { data: inserted, error } = await supabase
+      .from("categories")
+      .insert({
+        org_id: orgId,
+        name: cleanName,
+        type: "department",
+        status: "active",
+        created_by: userId,
+      })
+      .select("id,name")
+      .maybeSingle();
+
+    if (error) {
+      if (isPostgresUniqueViolation(error)) {
+        setQdErr(`A Department named "${cleanName}" already exists.`);
+      } else {
+        setQdErr(error.message);
+      }
+      setQdSaving(false);
+      return;
+    }
+
+    // optimistic update local list + select it
+    const newItem = inserted
+      ? { id: String(inserted.id), name: String(inserted.name ?? cleanName) }
+      : null;
+
+    if (newItem) {
+      setDeptCats((cur) => {
+        const next = [...cur, newItem];
+        next.sort((a, b) => a.name.localeCompare(b.name));
+        return next;
+      });
+      setDepartmentId(newItem.id);
+      setDeptQuery(newItem.name);
+      setDeptSuggestOpen(false);
+    }
+
+    setQdSaving(false);
+    setQuickDeptOpen(false);
+  };
+
   const saveMember = async () => {
     if (!orgId) return;
     setErr("");
 
-    if (firstName.trim().length === 0 || lastName.trim().length === 0 || !gender) {
+    if (
+      firstName.trim().length === 0 ||
+      lastName.trim().length === 0 ||
+      !gender
+    ) {
       setErr("First name, last name, and gender are required.");
       return;
     }
@@ -512,12 +732,19 @@ export default function MembersPage() {
       return;
     }
 
-    // ✅ normalize new fields
+    // department: if query doesn't match a real department and user typed something, nudge them
+    if (deptQuery.trim().length > 0 && !departmentId) {
+      setErr("Select a valid Department (or add a new one).");
+      return;
+    }
+
     const baptizedBool = baptized === "" ? null : baptized === "yes";
     const bornAgainBool = bornAgain === "" ? null : bornAgain === "yes";
 
-    const baptismDateToSave = baptizedBool === true ? (baptismDate || null) : null;
-    const bornAgainDateToSave = bornAgainBool === true ? (bornAgainDate || null) : null;
+    const baptismDateToSave =
+      baptizedBool === true ? baptismDate || null : null;
+    const bornAgainDateToSave =
+      bornAgainBool === true ? bornAgainDate || null : null;
 
     if (baptismDateToSave && !isValidPastOrTodayDate(baptismDateToSave)) {
       setErr("Baptism date must be a valid date (not in the future).");
@@ -531,45 +758,46 @@ export default function MembersPage() {
     setSaving(true);
 
     const payload: {
-  org_id: string;
-  first_name: string;
-  last_name: string;
-  email: string | null;
-  phone: string | null;
-  joined_at: string | null;
-  status: "active" | "archived";
-  notes: string | null;
-  gender: "male" | "female";
-  dob: string | null;
-  age_group: AgeGroup;
-  segment: Segment;
-  address: string | null;
-  baptized: boolean | null;
-  baptism_date: string | null;
-  born_again: boolean | null;
-  born_again_date: string | null;
-} = {
-  org_id: orgId,
-  first_name: firstName.trim(),
-  last_name: lastName.trim(),
-  email: email.trim() || null,
-  phone: phone.trim() || null,
-  joined_at: joinedAt || null,
-  status: "active",
-  notes: notes.trim() || null,
-  gender,
-  dob: dob.trim() ? dob.trim() : null,
-  age_group: effectiveAgeGroup,
-  segment: segmentToSave,
-  address: address.trim() || null,
-  baptized: baptizedBool,
-  baptism_date: baptismDateToSave,
-  born_again: bornAgainBool,
-  born_again_date: bornAgainDateToSave,
-};
+      org_id: string;
+      first_name: string;
+      last_name: string;
+      email: string | null;
+      phone: string | null;
+      joined_at: string | null;
+      status: "active" | "archived";
+      notes: string | null;
+      gender: "male" | "female";
+      dob: string | null;
+      age_group: AgeGroup;
+      segment: Segment;
+      address: string | null;
+      baptized: boolean | null;
+      baptism_date: string | null;
+      born_again: boolean | null;
+      born_again_date: string | null;
+      department_category_id: string | null;
+    } = {
+      org_id: orgId,
+      first_name: firstName.trim(),
+      last_name: lastName.trim(),
+      email: email.trim() || null,
+      phone: phone.trim() || null,
+      joined_at: joinedAt || null,
+      status: "active",
+      notes: notes.trim() || null,
+      gender,
+      dob: dob.trim() ? dob.trim() : null,
+      age_group: effectiveAgeGroup,
+      segment: segmentToSave,
+      address: address.trim() || null,
+      baptized: baptizedBool,
+      baptism_date: baptismDateToSave,
+      born_again: bornAgainBool,
+      born_again_date: bornAgainDateToSave,
+      department_category_id: departmentId || null,
+    };
 
-
-    // ✅ DUPLICATE CHECK (create only)
+    // Create
     if (mode === "create") {
       const dup = await findDuplicates({
         orgId,
@@ -586,19 +814,22 @@ export default function MembersPage() {
         return;
       }
 
-      // Strong duplicates: block
       if (dup.strong.length > 0) {
-        const examples = dup.strong.slice(0, 3).map(formatCandidate).join("\n• ");
+        const examples = dup.strong
+          .slice(0, 3)
+          .map(formatCandidate)
+          .join("\n• ");
         setErr(
           `Possible duplicate found (strong match). Please check existing records before adding.\n\n• ${examples}${
-            dup.strong.length > 3 ? `\n• …and ${dup.strong.length - 3} more` : ""
+            dup.strong.length > 3
+              ? `\n• …and ${dup.strong.length - 3} more`
+              : ""
           }`,
         );
         setSaving(false);
         return;
       }
 
-      // Weak duplicates: warn (including swapped names e.g., "Mary Johnson" vs "Johnson Mary")
       if (dup.weak.length > 0) {
         const examples = dup.weak.slice(0, 3).map(formatCandidate).join("\n• ");
         const ok = confirm(
@@ -613,7 +844,6 @@ export default function MembersPage() {
       }
 
       const { error } = await supabase.from("members").insert(payload);
-
       if (error) setErr(error.message);
       else {
         setOpen(false);
@@ -642,7 +872,7 @@ export default function MembersPage() {
         joined_at: joinedAt || null,
         notes: notes.trim() || null,
         updated_at: new Date().toISOString(),
-        gender: gender,
+        gender,
         dob: dob.trim() ? dob.trim() : null,
         age_group: effectiveAgeGroup,
         segment: segmentToSave,
@@ -652,6 +882,8 @@ export default function MembersPage() {
         baptism_date: baptismDateToSave,
         born_again: bornAgainBool,
         born_again_date: bornAgainDateToSave,
+
+        department_category_id: departmentId || null,
       })
       .eq("id", editId);
 
@@ -743,11 +975,17 @@ export default function MembersPage() {
 
             <input
               className="w-full sm:w-96 rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              placeholder="Search name, phone, email…"
+              placeholder="Search name, phone, email, department…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
           </div>
+
+          {deptErr ? (
+            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              Department list could not be loaded: {deptErr}
+            </div>
+          ) : null}
 
           {err ? (
             <div className="mt-3 whitespace-pre-line rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -761,7 +999,7 @@ export default function MembersPage() {
       <div className="p-6">
         <div className="rounded-3xl border bg-white overflow-hidden">
           <div className="overflow-x-auto">
-            <div className="min-w-[900px]">
+            <div className="min-w-[1100px]">
               {/* KPI row */}
               <div className="border-b bg-white px-5 py-6">
                 <div className="flex items-center justify-between gap-3">
@@ -786,20 +1024,27 @@ export default function MembersPage() {
                   <button
                     type="button"
                     onClick={() => setAgeGroupFilter(null)}
-                    className={`rounded-2xl border px-4 py-3 text-left transition bg-white hover:bg-slate-50 ${
-                      ageGroupFilter === null ? "bg-white border-primary" : "bg-white hover:bg-slate-50"
+                    className={`rounded-2xl border px-4 py-3 text-left transition ${
+                      ageGroupFilter === null
+                        ? "bg-white border-primary"
+                        : "bg-white hover:bg-slate-50"
                     }`}
-                    title="Show all age groups"
                   >
-                    <div className="text-xs font-semibold text-slate-600">Total members</div>
+                    <div className="text-xs font-semibold text-slate-600">
+                      Total members
+                    </div>
                     <div className="mt-1 flex items-end justify-between gap-3">
-                      <div className="text-2xl font-semibold text-slate-900">{kpis.total.all}</div>
+                      <div className="text-2xl font-semibold text-slate-900">
+                        {kpis.total.all}
+                      </div>
                       <div className="text-[11px] text-slate-600 flex gap-3">
                         <span>
-                          <span className="font-semibold">Female</span>: {kpis.total.female}
+                          <span className="font-semibold">Female</span>:{" "}
+                          {kpis.total.female}
                         </span>
                         <span>
-                          <span className="font-semibold">Male</span>: {kpis.total.male}
+                          <span className="font-semibold">Male</span>:{" "}
+                          {kpis.total.male}
                         </span>
                       </div>
                     </div>
@@ -808,21 +1053,32 @@ export default function MembersPage() {
                   {/* Children */}
                   <button
                     type="button"
-                    onClick={() => setAgeGroupFilter((cur) => (cur === "1-12" ? null : "1-12"))}
+                    onClick={() =>
+                      setAgeGroupFilter((cur) =>
+                        cur === "1-12" ? null : "1-12",
+                      )
+                    }
                     className={`rounded-2xl border px-4 py-3 text-left transition ${
-                      ageGroupFilter === "1-12" ? "bg-primary/15 border-primary" : "bg-white hover:bg-slate-50"
+                      ageGroupFilter === "1-12"
+                        ? "bg-primary/15 border-primary"
+                        : "bg-white hover:bg-slate-50"
                     }`}
-                    title="Filter to Children (1–12)"
                   >
-                    <div className="text-xs font-semibold text-slate-600">Children (1–12)</div>
+                    <div className="text-xs font-semibold text-slate-600">
+                      Children (1–12)
+                    </div>
                     <div className="mt-1 flex items-end justify-between gap-3">
-                      <div className="text-2xl font-semibold text-slate-900">{kpis.kids.all}</div>
+                      <div className="text-2xl font-semibold text-slate-900">
+                        {kpis.kids.all}
+                      </div>
                       <div className="text-[11px] text-slate-600 flex gap-3">
                         <span>
-                          <span className="font-semibold">Female</span>: {kpis.kids.female}
+                          <span className="font-semibold">Female</span>:{" "}
+                          {kpis.kids.female}
                         </span>
                         <span>
-                          <span className="font-semibold">Male</span>: {kpis.kids.male}
+                          <span className="font-semibold">Male</span>:{" "}
+                          {kpis.kids.male}
                         </span>
                       </div>
                     </div>
@@ -831,21 +1087,32 @@ export default function MembersPage() {
                   {/* Teenagers */}
                   <button
                     type="button"
-                    onClick={() => setAgeGroupFilter((cur) => (cur === "13-17" ? null : "13-17"))}
+                    onClick={() =>
+                      setAgeGroupFilter((cur) =>
+                        cur === "13-17" ? null : "13-17",
+                      )
+                    }
                     className={`rounded-2xl border px-4 py-3 text-left transition ${
-                      ageGroupFilter === "13-17" ? "bg-primary/15 border-primary" : "bg-white hover:bg-slate-50"
+                      ageGroupFilter === "13-17"
+                        ? "bg-primary/15 border-primary"
+                        : "bg-white hover:bg-slate-50"
                     }`}
-                    title="Filter to Teenagers (13–17)"
                   >
-                    <div className="text-xs font-semibold text-slate-600">Teenagers (13–17)</div>
+                    <div className="text-xs font-semibold text-slate-600">
+                      Teenagers (13–17)
+                    </div>
                     <div className="mt-1 flex items-end justify-between gap-3">
-                      <div className="text-2xl font-semibold text-slate-900">{kpis.teens.all}</div>
+                      <div className="text-2xl font-semibold text-slate-900">
+                        {kpis.teens.all}
+                      </div>
                       <div className="text-[11px] text-slate-600 flex gap-3">
                         <span>
-                          <span className="font-semibold">Female</span>: {kpis.teens.female}
+                          <span className="font-semibold">Female</span>:{" "}
+                          {kpis.teens.female}
                         </span>
                         <span>
-                          <span className="font-semibold">Male</span>: {kpis.teens.male}
+                          <span className="font-semibold">Male</span>:{" "}
+                          {kpis.teens.male}
                         </span>
                       </div>
                     </div>
@@ -854,21 +1121,32 @@ export default function MembersPage() {
                   {/* Young adults */}
                   <button
                     type="button"
-                    onClick={() => setAgeGroupFilter((cur) => (cur === "18-35" ? null : "18-35"))}
+                    onClick={() =>
+                      setAgeGroupFilter((cur) =>
+                        cur === "18-35" ? null : "18-35",
+                      )
+                    }
                     className={`rounded-2xl border px-4 py-3 text-left transition ${
-                      ageGroupFilter === "18-35" ? "bg-primary/15 border-primary" : "bg-white hover:bg-slate-50"
+                      ageGroupFilter === "18-35"
+                        ? "bg-primary/15 border-primary"
+                        : "bg-white hover:bg-slate-50"
                     }`}
-                    title="Filter to Young adults (18–35)"
                   >
-                    <div className="text-xs font-semibold text-slate-600">Young adults (18–35)</div>
+                    <div className="text-xs font-semibold text-slate-600">
+                      Young adults (18–35)
+                    </div>
                     <div className="mt-1 flex items-end justify-between gap-3">
-                      <div className="text-2xl font-semibold text-slate-900">{kpis.young.all}</div>
+                      <div className="text-2xl font-semibold text-slate-900">
+                        {kpis.young.all}
+                      </div>
                       <div className="text-[11px] text-slate-600 flex gap-3">
                         <span>
-                          <span className="font-semibold">Female</span>: {kpis.young.female}
+                          <span className="font-semibold">Female</span>:{" "}
+                          {kpis.young.female}
                         </span>
                         <span>
-                          <span className="font-semibold">Male</span>: {kpis.young.male}
+                          <span className="font-semibold">Male</span>:{" "}
+                          {kpis.young.male}
                         </span>
                       </div>
                     </div>
@@ -877,21 +1155,30 @@ export default function MembersPage() {
                   {/* Adults */}
                   <button
                     type="button"
-                    onClick={() => setAgeGroupFilter((cur) => (cur === "36+" ? null : "36+"))}
+                    onClick={() =>
+                      setAgeGroupFilter((cur) => (cur === "36+" ? null : "36+"))
+                    }
                     className={`rounded-2xl border px-4 py-3 text-left transition ${
-                      ageGroupFilter === "36+" ? "bg-primary/15 border-primary" : "bg-white hover:bg-slate-50"
+                      ageGroupFilter === "36+"
+                        ? "bg-primary/15 border-primary"
+                        : "bg-white hover:bg-slate-50"
                     }`}
-                    title="Filter to Adults (36+)"
                   >
-                    <div className="text-xs font-semibold text-slate-600">Adults (36+)</div>
+                    <div className="text-xs font-semibold text-slate-600">
+                      Adults (36+)
+                    </div>
                     <div className="mt-1 flex items-end justify-between gap-3">
-                      <div className="text-2xl font-semibold text-slate-900">{kpis.adults.all}</div>
+                      <div className="text-2xl font-semibold text-slate-900">
+                        {kpis.adults.all}
+                      </div>
                       <div className="text-[11px] text-slate-600 flex gap-3">
                         <span>
-                          <span className="font-semibold">Female</span>: {kpis.adults.female}
+                          <span className="font-semibold">Female</span>:{" "}
+                          {kpis.adults.female}
                         </span>
                         <span>
-                          <span className="font-semibold">Male</span>: {kpis.adults.male}
+                          <span className="font-semibold">Male</span>:{" "}
+                          {kpis.adults.male}
                         </span>
                       </div>
                     </div>
@@ -899,7 +1186,8 @@ export default function MembersPage() {
                 </div>
 
                 <div className="mt-3 text-xs text-slate-500">
-                  Showing <span className="font-semibold">{displayed.length}</span>{" "}
+                  Showing{" "}
+                  <span className="font-semibold">{displayed.length}</span>{" "}
                   {displayed.length === 1 ? "member" : "members"}
                   {q.trim() ? ` matching “${q.trim()}”` : ""}
                   {ageGroupFilter
@@ -916,11 +1204,12 @@ export default function MembersPage() {
                 </div>
               </div>
 
+              {/* Table header */}
               <div className="grid grid-cols-12 border-b bg-primary px-5 py-4 text-sm font-semibold text-slate-100">
                 <div className="col-span-3">Name</div>
+                <div className="col-span-2">Department</div>
                 <div className="col-span-2">Gender</div>
-                <div className="col-span-3">Email</div>
-                <div className="col-span-2">Phone</div>
+                <div className="col-span-3">Contact</div>
                 <div className="col-span-2 text-right">Actions</div>
               </div>
 
@@ -952,58 +1241,80 @@ export default function MembersPage() {
                 </div>
               ) : (
                 <div className="divide-y">
-                  {displayed.map((m) => (
-                    <div key={m.id} className="grid grid-cols-12 items-center px-5 py-4 text-sm">
-                      <div className="col-span-3">
-                        <div className="font-semibold capitalize">
-                          {m.first_name} {m.last_name}
+                  {displayed.map((m) => {
+                    const deptName = m.department_category_id
+                      ? deptNameById.get(m.department_category_id) || "—"
+                      : "—";
+
+                    return (
+                      <div
+                        key={m.id}
+                        className="grid grid-cols-12 items-center px-5 py-4 text-sm"
+                      >
+                        <div className="col-span-3">
+                          <div className="font-semibold capitalize">
+                            {m.first_name} {m.last_name}
+                          </div>
+                          <div className="text-xs text-slate-500">
+                            {m.status}
+                          </div>
                         </div>
-                        <div className="text-xs text-slate-500">{m.status}</div>
-                      </div>
 
-                      <div className="col-span-2 text-slate-700 capitalize">{m.gender || "—"}</div>
-                      <div className="col-span-3 text-slate-700">{m.email || "—"}</div>
-                      <div className="col-span-2 text-slate-700">{m.phone || "—"}</div>
+                        <div className="col-span-2 text-slate-700">
+                          {deptName}
+                        </div>
 
-                      <div className="col-span-2 flex justify-end gap-2">
-                        {isAdmin ? (
-                          <>
-                            <button
-                              className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
-                              onClick={() => openEdit(m)}
-                            >
-                              Edit
-                            </button>
+                        <div className="col-span-2 text-slate-700 capitalize">
+                          {m.gender || "—"}
+                        </div>
 
-                            {m.status === "active" ? (
+                        <div className="col-span-3 text-slate-700">
+                          {m.email || "—"}
+                          <div className="text-xs text-slate-500">
+                            {m.phone || ""}
+                          </div>
+                        </div>
+
+                        <div className="col-span-2 flex justify-end gap-2">
+                          {isAdmin ? (
+                            <>
                               <button
                                 className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
-                                onClick={() => setStatus(m.id, "archived")}
+                                onClick={() => openEdit(m)}
                               >
-                                Archive
+                                Edit
                               </button>
-                            ) : (
-                              <button
-                                className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
-                                onClick={() => setStatus(m.id, "active")}
-                              >
-                                Restore
-                              </button>
-                            )}
 
-                            <button
-                              className="rounded-xl border border-red-200 px-3 py-1 text-xs text-red-700 hover:bg-red-50"
-                              onClick={() => deleteMember(m.id)}
-                            >
-                              Delete
-                            </button>
-                          </>
-                        ) : (
-                          <span className="text-xs text-slate-400">—</span>
-                        )}
+                              {m.status === "active" ? (
+                                <button
+                                  className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
+                                  onClick={() => setStatus(m.id, "archived")}
+                                >
+                                  Archive
+                                </button>
+                              ) : (
+                                <button
+                                  className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
+                                  onClick={() => setStatus(m.id, "active")}
+                                >
+                                  Restore
+                                </button>
+                              )}
+
+                              <button
+                                className="rounded-xl border border-red-200 px-3 py-1 text-xs text-red-700 hover:bg-red-50"
+                                onClick={() => deleteMember(m.id)}
+                              >
+                                Delete
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-xs text-slate-400">—</span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1012,7 +1323,8 @@ export default function MembersPage() {
 
         {!isAdmin ? (
           <div className="mt-4 text-xs text-slate-500">
-            You can add members, but only admins/owners can edit, archive/restore, or delete member info.
+            You can add members, but only admins/owners can edit,
+            archive/restore, or delete member info.
           </div>
         ) : null}
       </div>
@@ -1037,7 +1349,9 @@ export default function MembersPage() {
             <div className="max-h-[75vh] overflow-auto px-6 py-6 space-y-6">
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">First name</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    First name
+                  </div>
                   <input
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                     value={firstName}
@@ -1049,7 +1363,9 @@ export default function MembersPage() {
                 </div>
 
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Last name</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Last name
+                  </div>
                   <input
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                     value={lastName}
@@ -1063,13 +1379,16 @@ export default function MembersPage() {
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Gender *</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Gender *
+                  </div>
                   <select
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                     value={gender}
                     onChange={(e) => {
                       const v = e.target.value;
-                      if (v === "" || v === "male" || v === "female") setGender(v);
+                      if (v === "" || v === "male" || v === "female")
+                        setGender(v);
                       setErr("");
                     }}
                   >
@@ -1080,7 +1399,9 @@ export default function MembersPage() {
                 </div>
 
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Age group *</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Age group *
+                  </div>
                   <select
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 disabled:bg-slate-50 disabled:text-slate-600"
                     value={effectiveAgeGroup}
@@ -1101,15 +1422,19 @@ export default function MembersPage() {
 
                   {hasDob ? (
                     <div className="mt-1 text-xs text-slate-500">
-                      Age group is set automatically from date of birth. Clear DOB to choose manually.
+                      Age group is set automatically from date of birth. Clear
+                      DOB to choose manually.
                     </div>
                   ) : null}
                 </div>
               </div>
 
+              {/* DOB + Segment */}
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Date of birth</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Date of birth
+                  </div>
 
                   <div className="flex gap-2">
                     <input
@@ -1139,7 +1464,9 @@ export default function MembersPage() {
                 </div>
 
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Segment (auto)</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Segment (auto)
+                  </div>
                   <input
                     readOnly
                     className="w-full rounded-2xl border bg-slate-50 px-4 py-2 text-sm text-slate-700"
@@ -1148,9 +1475,97 @@ export default function MembersPage() {
                 </div>
               </div>
 
+              {/* ✅ Department (typeahead + quick add) */}
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Department
+                </div>
+
+                <div className="relative">
+                  <input
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                    value={deptQuery}
+                    onFocus={() => {
+                      setDeptSuggestOpen(true);
+
+                      if (!clearedDeptOnFocusRef.current) {
+                        clearedDeptOnFocusRef.current = true;
+                        setDeptQuery("");
+                        setDepartmentId("");
+                        setErr("");
+                      }
+                    }}
+                    onBlur={() => {
+                      window.setTimeout(() => setDeptSuggestOpen(false), 120);
+                      clearedDeptOnFocusRef.current = false;
+                    }}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setDeptQuery(v);
+                      setErr("");
+
+                      const id = deptIdByLabel.get(v.trim().toLowerCase());
+                      setDepartmentId(id ?? "");
+                      setDeptSuggestOpen(true);
+                    }}
+                    placeholder="Type a department…"
+                  />
+
+                  {deptSuggestOpen ? (
+                    <div className="absolute z-50 mt-2 w-full overflow-hidden rounded-2xl border bg-white shadow-lg max-h-56 overflow-auto">
+                      {filteredDeptCats.length === 0 ? (
+                        <div className="px-4 py-3 text-sm text-slate-600">
+                          No matches.
+                        </div>
+                      ) : (
+                        filteredDeptCats.map((c) => (
+                          <button
+                            type="button"
+                            key={c.id}
+                            className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setDepartmentId(c.id);
+                              setDeptQuery(c.name);
+                              setDeptSuggestOpen(false);
+                              setErr("");
+                            }}
+                          >
+                            {c.name}
+                          </button>
+                        ))
+                      )}
+
+                      {showAddDeptRow ? (
+                        <div className="border-t">
+                          <button
+                            type="button"
+                            className="block w-full px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-slate-50"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => openQuickAddDeptFromQuery(deptQuery)}
+                          >
+                            + Add department
+                            {deptQuery.trim() ? `: “${deptQuery.trim()}”` : ""}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {!departmentId && deptQuery.trim().length > 0 ? (
+                    <div className="mt-1 text-xs text-amber-700">
+                      Select a valid department (or add a new one).
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Email/Phone */}
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Email</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Email
+                  </div>
                   <input
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                     value={email}
@@ -1162,7 +1577,9 @@ export default function MembersPage() {
                 </div>
 
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">Phone</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Phone
+                  </div>
                   <input
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                     value={phone}
@@ -1171,7 +1588,7 @@ export default function MembersPage() {
                 </div>
               </div>
 
-                        <div>
+              <div>
                 <div className="mb-1 text-xs font-semibold text-slate-600">
                   Home address
                 </div>
@@ -1207,7 +1624,7 @@ export default function MembersPage() {
                 </div>
               </div>
 
-              {/* ✅ New: Baptism + Born again */}
+              {/* Baptism + Born again */}
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
                   <div className="mb-1 text-xs font-semibold text-slate-600">
@@ -1330,6 +1747,69 @@ export default function MembersPage() {
                 onClick={saveMember}
               >
                 {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Quick add department modal */}
+      {quickDeptOpen ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
+          onClick={() => setQuickDeptOpen(false)}
+        >
+          <div
+            className="w-full max-w-xl rounded-3xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b px-6 py-4">
+              <div className="text-sm font-semibold">Add department</div>
+              <div className="text-xs text-slate-600">
+                Quick add without leaving Members.
+              </div>
+            </div>
+
+            <div className="px-6 py-6 space-y-4">
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Name *
+                </div>
+                <input
+                  className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                  value={qdName}
+                  onChange={(e) => {
+                    setQdName(e.target.value);
+                    setQdErr("");
+                  }}
+                  placeholder="e.g., Choir, Ushering, Media…"
+                  autoFocus
+                />
+              </div>
+
+              {qdErr ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {qdErr}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
+              <button
+                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                onClick={() => setQuickDeptOpen(false)}
+              >
+                Cancel
+              </button>
+
+              <button
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
+                  qdSaving ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
+                }`}
+                disabled={qdSaving}
+                onClick={saveQuickDepartment}
+              >
+                {qdSaving ? "Saving…" : "Save department"}
               </button>
             </div>
           </div>
