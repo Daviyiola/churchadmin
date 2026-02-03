@@ -5,6 +5,8 @@ import {
   getPublicMeta,
   getPublicMonth,
   submitPublic,
+  getPublicCategories,
+  verifyPublicMonthCode,
 } from "@/lib/client/scheduleApi";
 import type {
   PublicMetaResponse,
@@ -212,6 +214,9 @@ export default function PublicScheduleClient({ token }: { token: string }) {
   const [signupServiceId, setSignupServiceId] = useState<string>("");
   const [signupDeptId, setSignupDeptId] = useState<string>("");
 
+  // Calendar filter
+  const [deptFilterId, setDeptFilterId] = useState<string>("all");
+
   // Scroll freeze like admin modal
   useEffect(() => {
     if (!modal.open) return;
@@ -240,8 +245,14 @@ export default function PublicScheduleClient({ token }: { token: string }) {
     setErr(null);
     setLoading(true);
     try {
-      const m = await getPublicMeta(token);
+      const [m, cats] = await Promise.all([
+        getPublicMeta(token),
+        getPublicCategories(token),
+      ]);
+
       setMeta(m);
+      setServices(cats.services ?? []);
+      setDepartments(cats.departments ?? []);
 
       const mm = targetMonth ?? m.defaultMonth;
       setMonth(mm);
@@ -253,6 +264,8 @@ export default function PublicScheduleClient({ token }: { token: string }) {
       setErr({ message: msg });
       setMonthData(null);
       setMeta(null);
+      setServices([]);
+      setDepartments([]);
     } finally {
       setLoading(false);
     }
@@ -267,6 +280,14 @@ export default function PublicScheduleClient({ token }: { token: string }) {
     void refreshMetaAndMonth();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  useEffect(() => {
+  setEditEnabled(false);
+  setEditCode("");
+  setEditErr("");
+  setCodeOpen(false);
+}, [month]);
+
 
   // When month changes via nav
   useEffect(() => {
@@ -292,31 +313,25 @@ export default function PublicScheduleClient({ token }: { token: string }) {
   const useDefaultLogo = coerceBool(meta?.org.settings.use_default_logo, true);
 
   // Optional categories (if you add them to meta later)
-  const services = useMemo(() => {
-    const v: unknown =
-      (meta && "services" in meta ? (meta as unknown as { services: unknown }).services : undefined);
-    return readCategoryList(v);
-  }, [meta]);
+  const [services, setServices] = useState<CatLite[]>([]);
+  const [departments, setDepartments] = useState<CatLite[]>([]);
 
-  const departments = useMemo(() => {
-    const v: unknown =
-      (meta && "departments" in meta
-        ? (meta as unknown as { departments: unknown }).departments
-        : undefined);
-    return readCategoryList(v);
-  }, [meta]);
+  const approvedByDate = useMemo(() => {
+    const all = monthData?.approved ?? [];
+    const filtered =
+      deptFilterId === "all"
+        ? all
+        : all.filter((e) => e.department_category_id === deptFilterId);
 
-  const approvedByDate = useMemo(
-    () => groupApprovedByDate(monthData?.approved ?? []),
-    [monthData],
-  );
+    return groupApprovedByDate(filtered);
+  }, [monthData, deptFilterId]);
+
+  const { cells } = useMemo(() => buildMonthGridWithMuted(month), [month]);
 
   const pendingMap = useMemo(
     () => pendingCountsToMap(monthData?.pending_counts ?? []),
     [monthData],
   );
-
-  const { cells } = useMemo(() => buildMonthGridWithMuted(month), [month]);
 
   const rawDraftOpen: unknown = monthData?.month.draft_open;
   const draftOpen = coerceBool(rawDraftOpen, false);
@@ -330,19 +345,35 @@ export default function PublicScheduleClient({ token }: { token: string }) {
 
   const modalPendingCount = modalDate ? (pendingMap[modalDate] ?? 0) : 0;
 
+  // Month edit mode (public)
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [editCode, setEditCode] = useState<string>("");
+  const [editEnabled, setEditEnabled] = useState<boolean>(false); // "edit mode" toggle after verify
+  const [editOpen, setEditOpen] = useState<boolean>(false); // modal open/close
+  const [editErr, setEditErr] = useState<string>(""); // error inside modal
+
+  const editsOpen = coerceBool(monthData?.month?.edits_open, false);
+  const canEdit = draftOpen && editsOpen && editEnabled;
+
   const canSubmit = Boolean(
     draftOpen &&
-      modal.open &&
-      signupName.trim().length > 0 &&
-      modalDate &&
-      signupDeptId &&
-      signupServiceId,
+    modal.open &&
+    signupName.trim().length > 0 &&
+    modalDate &&
+    signupDeptId &&
+    signupServiceId,
   );
 
   function openDay(date: string) {
     setModal({ open: true, date });
     // keep dayView as-is (like admin)
   }
+
+  useEffect(() => {
+    if (!deptFilterId && departments.length > 0) {
+      setDeptFilterId(departments[0].id);
+    }
+  }, [departments, deptFilterId]);
 
   function closeModal() {
     setModal({ open: false });
@@ -372,6 +403,7 @@ export default function PublicScheduleClient({ token }: { token: string }) {
         role: signupRole,
         name: signupName.trim(),
         notes: signupNotes.trim() ? signupNotes.trim() : null,
+        month_code: canEdit ? editCode : null, // ✅ THIS is what unlocks approved
       });
 
       // Refresh month data so pending badge updates
@@ -385,6 +417,29 @@ export default function PublicScheduleClient({ token }: { token: string }) {
     }
   }
 
+  async function verifyCode() {
+    if (!monthData) return;
+    setEditErr("");
+
+    try {
+      const res = await verifyPublicMonthCode(
+        token,
+        monthData.month.month,
+        editCode,
+      );
+      if (!res.valid) {
+        setEditEnabled(false);
+        setEditErr("Invalid code.");
+        return;
+      }
+      setEditEnabled(true);
+      setEditOpen(false);
+    } catch (e) {
+      setEditEnabled(false);
+      setEditErr(e instanceof Error ? e.message : "Error verifying code");
+    }
+  }
+
   const showApprovedInline = tab === "approved";
   const showPendingInline = tab === "signup";
 
@@ -394,28 +449,122 @@ export default function PublicScheduleClient({ token }: { token: string }) {
     <>
       {/* Top bar (matches admin layout) */}
       <div className="border-b">
-        <div className="flex items-center justify-between px-6 py-4 mt-6">
-          <div className="flex items-center gap-3">
-            {!useDefaultLogo && logoPath ? (
-              <div className="h-10 w-10 overflow-hidden rounded-xl border bg-white">
-                <img src={logoPath} alt="" className="h-full w-full object-cover" />
-              </div>
-            ) : (
-              <div className="h-10 w-10 overflow-hidden rounded-xl border bg-white" />
-            )}
+        {/* ===================== Row 1: Header + Month nav + Signups status ===================== */}
+        <div className="px-6 pt-6 pb-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            {/* Left: Logo + Title + Subtitle */}
+            <div className="flex items-center gap-3">
+              {!useDefaultLogo && logoPath ? (
+                <div className="h-10 w-10 overflow-hidden rounded-xl border bg-white">
+                  <img
+                    src={logoPath}
+                    alt=""
+                    className="h-full w-full object-cover"
+                  />
+                </div>
+              ) : (
+                <div className="h-10 w-10 overflow-hidden rounded-xl border bg-white" />
+              )}
 
-            <div>
-              <div className="text-xl font-semibold">Workers Schedule</div>
-              <div className="text-sm text-slate-600">
-                {orgName} • View approved assignments, and sign up for open days.
+              <div>
+                <div className="text-xl font-semibold">Workers Schedule</div>
+                <div className="text-sm text-slate-600">
+                  {orgName} • View approved assignments, and sign up for open
+                  days.
+                </div>
+              </div>
+            </div>
+
+            {/* Right: Month nav + Signups status (2 cols) */}
+            <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+              {/* Month nav */}
+              <div className="inline-flex items-center rounded-2xl border bg-white p-1">
+                <button
+                  type="button"
+                  onClick={() => setMonth((m) => addMonths(m, -1))}
+                  aria-label="Previous month"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl
+              text-slate-600 hover:bg-slate-50
+              focus-visible:ring-2 focus-visible:ring-primary/30"
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    className="h-4 w-4"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M12.79 15.3a1 1 0 01-1.42 0l-5-5a1 1 0 010-1.42l5-5a1 1 0 111.42 1.42L8.91 10l3.88 3.88a1 1 0 010 1.42z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const mm = meta?.defaultMonth ?? monthFromDate(new Date());
+                    setMonth(mm);
+                  }}
+                  className="mx-1 rounded-xl px-4 py-2 text-sm font-semibold
+              hover:bg-slate-50
+              focus-visible:ring-2 focus-visible:ring-primary/30"
+                  title="Jump to default month"
+                >
+                  {fmtMonthTitle(month)}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setMonth((m) => addMonths(m, 1))}
+                  aria-label="Next month"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl
+              text-slate-600 hover:bg-slate-50
+              focus-visible:ring-2 focus-visible:ring-primary/30"
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    className="h-4 w-4"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M7.21 4.7a1 1 0 011.42 0l5 5a1 1 0 010 1.42l-5 5a1 1 0 11-1.42-1.42L11.09 10 7.21 6.12a1 1 0 010-1.42z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Signups status */}
+              <div
+                className={`inline-flex items-center gap-2 rounded-2xl border bg-white px-4 py-2 ${
+                  draftOpen ? "border-emerald-700" : "border-amber-700"
+                }`}
+                title={draftOpen ? "Signups are open" : "Signups are closed"}
+              >
+                <div className="text-sm font-semibold text-slate-800">
+                  Signups
+                </div>
+
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                    draftOpen
+                      ? "bg-emerald-50 text-emerald-800"
+                      : "bg-amber-50 text-amber-800"
+                  }`}
+                >
+                  {draftOpen ? "Open" : "Closed"}
+                </span>
               </div>
             </div>
           </div>
         </div>
 
+        {/* ===================== Row 2: Tabs + Department + Edit mode ===================== */}
         <div className="px-6 pb-5">
-          <div className="mt-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            {/* Tabs */}
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            {/* Tabs (left) */}
             <div className="inline-flex rounded-2xl border bg-slate-50 p-1">
               <button
                 type="button"
@@ -441,77 +590,67 @@ export default function PublicScheduleClient({ token }: { token: string }) {
               </button>
             </div>
 
-            {/* Actions (month nav + draft banner) */}
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="inline-flex items-center rounded-2xl border bg-white p-1">
-                <button
-                  type="button"
-                  onClick={() => setMonth((m) => addMonths(m, -1))}
-                  aria-label="Previous month"
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl
-                    text-slate-600 hover:bg-slate-50
-                    focus-visible:ring-2 focus-visible:ring-primary/30"
-                >
-                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
-                    <path
-                      fillRule="evenodd"
-                      d="M12.79 15.3a1 1 0 01-1.42 0l-5-5a1 1 0 010-1.42l5-5a1 1 0 111.42 1.42L8.91 10l3.88 3.88a1 1 0 010 1.42z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    const mm = meta?.defaultMonth ?? monthFromDate(new Date());
-                    setMonth(mm);
-                  }}
-                  className="mx-1 rounded-xl px-4 py-2 text-sm font-semibold
-                    hover:bg-slate-50
-                    focus-visible:ring-2 focus-visible:ring-primary/30"
-                  title="Jump to default month"
-                >
-                  {fmtMonthTitle(month)}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setMonth((m) => addMonths(m, 1))}
-                  aria-label="Next month"
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl
-                    text-slate-600 hover:bg-slate-50
-                    focus-visible:ring-2 focus-visible:ring-primary/30"
-                >
-                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
-                    <path
-                      fillRule="evenodd"
-                      d="M7.21 4.7a1 1 0 011.42 0l5 5a1 1 0 010 1.42l-5 5a1 1 0 11-1.42-1.42L11.09 10 7.21 6.12a1 1 0 010-1.42z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                </button>
-              </div>
-
-              <div
-                className={`inline-flex items-center gap-2 rounded-2xl border bg-white px-4 py-2 ${
-                  draftOpen ? "border-emerald-200" : "border-amber-200"
-                }`}
-                title={draftOpen ? "Signups are open" : "Signups are closed"}
-              >
+            {/* Dept + Edit (right, 2 cols) */}
+            <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+              {/* Department filter */}
+              <div className="inline-flex items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-2">
                 <div className="text-sm font-semibold text-slate-800">
-                  Signups
+                  Department
                 </div>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                    draftOpen
-                      ? "bg-emerald-50 text-emerald-800"
-                      : "bg-amber-50 text-amber-800"
-                  }`}
+                <select
+                  className="rounded-xl border bg-white px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                  value={deptFilterId}
+                  onChange={(e) => setDeptFilterId(e.target.value)}
                 >
-                  {draftOpen ? "Open" : "Closed"}
-                </span>
+                  {/* <option value="all">All</option> */}
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
               </div>
+
+              {/* Edit mode button */}
+              <button
+                type="button"
+                onClick={() => {
+                  setEditErr("");
+                  setEditOpen(true);
+                }}
+                disabled={!editsOpen}
+                className={[
+                  "inline-flex items-center justify-between gap-3 rounded-2xl border px-4 py-2 text-left transition",
+                  !editsOpen
+                    ? "opacity-60 cursor-not-allowed bg-white"
+                    : "bg-white hover:bg-slate-50",
+                  canEdit ? "border-emerald-200 bg-emerald-50" : "",
+                ].join(" ")}
+              >
+                <div>
+                  <div className="text-sm font-semibold text-slate-800">
+                    Edit mode
+                  </div>
+                  <div className="text-xs text-slate-600">
+                    {!editsOpen
+                      ? "Admin has not enabled edits for this month"
+                      : canEdit
+                        ? "Enabled for this session"
+                        : "Enter month code to enable"}
+                  </div>
+                </div>
+
+                <span
+                  className={[
+                    "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                    canEdit
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-slate-100 text-slate-700",
+                  ].join(" ")}
+                >
+                  {canEdit ? "ON" : "OFF"}
+                </span>
+              </button>
             </div>
           </div>
 
@@ -552,11 +691,13 @@ export default function PublicScheduleClient({ token }: { token: string }) {
                       gridTemplateColumns: "repeat(7, minmax(170px, 1fr))",
                     }}
                   >
-                    {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-                      <div key={d} className="px-4 py-3">
-                        {d}
-                      </div>
-                    ))}
+                    {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(
+                      (d) => (
+                        <div key={d} className="px-4 py-3">
+                          {d}
+                        </div>
+                      ),
+                    )}
                   </div>
 
                   {/* Calendar cells */}
@@ -570,8 +711,11 @@ export default function PublicScheduleClient({ token }: { token: string }) {
                       const approved = approvedByDate[c.iso] ?? [];
                       const pendingCount = pendingMap[c.iso] ?? 0;
 
-                      const approvedNames = approved.map((e) => e.name).filter(Boolean);
-                      const collapseApproved = shouldCollapseNames(approvedNames);
+                      const approvedNames = approved
+                        .map((e) => e.name)
+                        .filter(Boolean);
+                      const collapseApproved =
+                        shouldCollapseNames(approvedNames);
 
                       const isLastCol = (idx + 1) % 7 === 0;
                       const isEmpty = !c.inMonth;
@@ -806,7 +950,9 @@ export default function PublicScheduleClient({ token }: { token: string }) {
                         Submit a signup
                       </div>
                       <div className="text-xs text-slate-600">
-                        Your signup will be pending approval.
+                        {canEdit
+                          ? "Edit mode is enabled. Submissions are treated as approved."
+                          : "Your signup will be pending approval."}
                       </div>
                     </div>
 
@@ -828,7 +974,9 @@ export default function PublicScheduleClient({ token }: { token: string }) {
                             <select
                               className="block w-full min-w-0 rounded-2xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 border"
                               value={signupServiceId}
-                              onChange={(e) => setSignupServiceId(e.target.value)}
+                              onChange={(e) =>
+                                setSignupServiceId(e.target.value)
+                              }
                             >
                               <option value="">Select service</option>
                               {services.map((s) => (
@@ -886,7 +1034,7 @@ export default function PublicScheduleClient({ token }: { token: string }) {
                             className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                             value={signupNotes}
                             onChange={(e) => setSignupNotes(e.target.value)}
-                            placeholder="e.g., Door 5"
+                            placeholder="e.g., Door 5, Camera 2, Drummer"
                             rows={3}
                           />
 
@@ -925,6 +1073,92 @@ export default function PublicScheduleClient({ token }: { token: string }) {
                     )}
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {editOpen ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/40 backdrop-blur-sm p-4"
+          onClick={() => setEditOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-3xl bg-white p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-lg font-semibold">Enable edit mode</div>
+                <div className="mt-1 text-sm text-slate-600">
+                  Enter the 6-digit month code to unlock editing.
+                </div>
+                <div className="mt-2 text-xs text-slate-500">
+                  Month:{" "}
+                  <span className="font-semibold">{fmtMonthTitle(month)}</span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setEditOpen(false)}
+                className="rounded-2xl border px-3 py-1 text-sm hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-3">
+              {editErr ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {editErr}
+                </div>
+              ) : null}
+
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Month code
+                </div>
+                <input
+                  inputMode="numeric"
+                  value={editCode}
+                  onChange={(e) => {
+                    const raw = e.target.value.replace(/\D/g, "");
+                    setEditCode(raw.slice(0, 6));
+                  }}
+                  className="w-full rounded-2xl border px-4 py-3 text-lg tracking-widest font-mono outline-none focus:ring-2 focus:ring-primary/30"
+                  placeholder="000000"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2">
+                {editEnabled ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditEnabled(false);
+                      setEditCode("");
+                      setEditErr("");
+                      setEditOpen(false);
+                    }}
+                    className="rounded-2xl border px-4 py-2 text-sm font-semibold hover:bg-slate-50"
+                  >
+                    Turn off
+                  </button>
+                ) : null}
+
+                <button
+                  type="button"
+                  disabled={editCode.length !== 6}
+                  onClick={verifyCode}
+                  className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/85 disabled:bg-slate-300"
+                >
+                  Enable
+                </button>
+              </div>
+
+              <div className="text-xs text-slate-500">
+                When enabled, new signups are treated as approved (only while
+                edits are allowed).
               </div>
             </div>
           </div>

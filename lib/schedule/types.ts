@@ -15,8 +15,14 @@ export type PublicMetaResponse = {
   ok: true;
   org: OrgBranding;
   token: { is_active: boolean };
-  months: Array<{ month: string; draft_open: boolean; is_public_visible: boolean }>;
+  months: Array<{
+    month: string;
+    draft_open: boolean;
+    is_public_visible: boolean;
+  }>;
   defaultMonth: string; // YYYY-MM
+    services?: { id: string; name: string }[];
+  departments?: { id: string; name: string }[];
 };
 
 export type PublicMonthResponse = {
@@ -25,6 +31,7 @@ export type PublicMonthResponse = {
     month: string;
     draft_open: boolean;
     is_public_visible: boolean;
+    edits_open: boolean;
   };
   // Approved entries for rendering calendar/modals
   approved: Array<{
@@ -49,11 +56,20 @@ export type PublicSubmitBody = {
   role: ScheduleRole;
   name: string;
   notes: string | null;
+  month_code?: string | null;
 };
 
 export type AdminMonthResponse = {
   ok: true;
-  month: { id: string; month: string; draft_open: boolean; is_public_visible: boolean };
+  month: {
+    id: string;
+    month: string;
+    draft_open: boolean;
+    edits_open: boolean;
+    is_public_visible: boolean;
+    month_code_set_at: string | null;
+  };
+
   entries: Array<{
     id: string;
     date: string;
@@ -76,12 +92,14 @@ export type AdminEntryPatchBody = {
   role?: ScheduleRole;
   service_category_id?: string | null;
   department_category_id?: string | null;
+  edits_open?: boolean;
   date?: string; // YYYY-MM-DD
 };
 
 export type AdminMonthSettingsPatchBody = {
   org_id: string;
-  month: string; // YYYY-MM
+  month: string;
   draft_open?: boolean;
+  edits_open?: boolean;
   is_public_visible?: boolean;
 };

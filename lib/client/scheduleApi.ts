@@ -113,3 +113,23 @@ export function createAdminEntry(body: {
     jwt,
   );
 }
+
+export type PublicCategoriesResponse = {
+  ok: true;
+  services: { id: string; name: string }[];
+  departments: { id: string; name: string }[];
+};
+
+export function getPublicCategories(token: string) {
+  return apiGet<PublicCategoriesResponse>(
+    `/api/schedule/public/categories?token=${encodeURIComponent(token)}`,
+  );
+}
+
+export function verifyPublicMonthCode(token: string, month: string, code: string) {
+  return apiSend<{ ok: true; valid: boolean }>(
+    `/api/schedule/public/verify-code`,
+    "POST",
+    { token, month, code },
+  );
+}

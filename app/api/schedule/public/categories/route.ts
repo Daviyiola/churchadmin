@@ -1,3 +1,4 @@
+// app/api/schedule/public/categories/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { resolveOrgByToken } from "@/lib/schedule/public";

@@ -4,7 +4,7 @@ export async function ensureScheduleMonth(orgId: string, month: string, createdB
   // 1) Try fetch
   const { data: existing, error: selErr } = await supabaseAdmin
     .from("schedule_months")
-    .select("id,org_id,month,draft_open,is_public_visible,created_by")
+    .select("id,org_id,month,draft_open,edits_open,is_public_visible,month_code_set_at,created_by")
     .eq("org_id", orgId)
     .eq("month", month)
     .maybeSingle();
@@ -35,7 +35,7 @@ export async function ensureScheduleMonth(orgId: string, month: string, createdB
   const { data: inserted, error: insErr } = await supabaseAdmin
     .from("schedule_months")
     .insert(insertPayload)
-    .select("id,org_id,month,draft_open,is_public_visible,created_by")
+    .select("id,org_id,month,draft_open,edits_open,is_public_visible,month_code_set_at,created_by")
     .single();
 
   if (insErr) return { ok: false as const, error: insErr.message };

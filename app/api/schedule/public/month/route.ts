@@ -102,6 +102,7 @@ export async function GET(req: Request) {
       month: ensured.monthRow.month,
       draft_open: ensured.monthRow.draft_open,
       is_public_visible: ensured.monthRow.is_public_visible,
+      edits_open: Boolean((ensured.monthRow as { edits_open?: unknown }).edits_open),
     },
     approved: (approved ?? []).map((r) => ({
       id: String(r.id),

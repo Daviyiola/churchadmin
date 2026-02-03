@@ -1675,7 +1675,7 @@ export default function ExpenseDraftPage() {
       {/* Add/Edit item modal */}
       {itemOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-          <div className="w-full max-w-6xl h-[90vh] rounded-3xl bg-white shadow-xl flex flex-col overflow-hidden">
+          <div className="w-full max-w-6xl rounded-3xl bg-white shadow-xl flex flex-col overflow-hidden">
             <div className="border-b px-6 py-4 flex items-start justify-between gap-4">
               <div>
                 <div className="text-sm font-semibold">

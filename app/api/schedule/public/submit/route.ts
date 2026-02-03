@@ -36,6 +36,9 @@ export async function POST(req: Request) {
   const service_category_id = cleanStr(body.service_category_id);
   const department_category_id = cleanStr(body.department_category_id);
 
+  // ✅ new: optional month edit code
+  const monthCode = cleanStr(body.month_code);
+
   if (!token)
     return NextResponse.json<ErrorJson>(
       { error: "Missing token" },
@@ -98,6 +101,43 @@ export async function POST(req: Request) {
     );
   }
 
+  // ✅ Decide pending vs approved based on edits_open + correct code
+  const editsOpen = Boolean(
+    (ensured.monthRow as { edits_open?: unknown }).edits_open,
+  );
+
+  let codeOk = false;
+
+  if (editsOpen && monthCode) {
+    const { data: ok, error: vErr } = await supabaseAdmin.rpc(
+      "schedule_verify_month_code",
+      {
+        p_org_id: resolved.org_id,
+        p_month: month,
+        p_code: monthCode,
+      },
+    );
+// console.log("[public-submit] verify rpc", { ok, vErr: vErr?.message ?? null });
+
+    if (!vErr) codeOk = Boolean(ok);
+  }
+
+//   console.log("[public-submit]", {
+//   org: resolved.org_id,
+//   month,
+//   date,
+//   draft_open: ensured.monthRow.draft_open,
+//   edits_open: (ensured.monthRow as { edits_open?: unknown }).edits_open,
+//   got_code: Boolean(monthCode),
+//   code_len: monthCode?.length ?? 0,
+// });
+
+
+  const status: "pending" | "approved" =
+    ensured.monthRow.draft_open && editsOpen && codeOk ? "approved" : "pending";
+    // console.log("[public-submit] status", { status });
+
+    
   const { error: insErr } = await supabaseAdmin
     .from("schedule_entries")
     .insert({
@@ -111,7 +151,7 @@ export async function POST(req: Request) {
       department_category_id: department_category_id
         ? department_category_id
         : null,
-      status: "pending",
+      status, 
       created_by: null,
     });
 

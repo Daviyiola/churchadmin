@@ -59,6 +59,7 @@ export async function GET(req: Request) {
   if (mErr) {
     return NextResponse.json<ErrorJson>({ error: mErr.message }, { status: 400 });
   }
+  
 
   const out: PublicMetaResponse = {
     ok: true,

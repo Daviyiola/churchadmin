@@ -14,6 +14,8 @@ import type {
   ScheduleStatus,
 } from "@/lib/schedule/types";
 import { supabase } from "@/lib/supabaseClient";
+import { QRCodeCanvas } from "qrcode.react";
+
 type UiError = { message: string } | null;
 
 type Entry = AdminMonthResponse["entries"][number];
@@ -142,6 +144,25 @@ function wordsLen(s: string) {
   return s.trim().split(/\s+/).filter(Boolean).length;
 }
 
+function previewNames(names: string[], maxChars = 140) {
+  const clean = names.map((n) => n.trim()).filter(Boolean);
+  if (clean.length === 0) return "—";
+
+  let out = "";
+  let used = 0;
+
+  for (let i = 0; i < clean.length; i++) {
+    const next = (i === 0 ? "" : ", ") + clean[i];
+    if (used + next.length > maxChars) {
+      return out.trim() + "…";
+    }
+    out += next;
+    used += next.length;
+  }
+
+  return out;
+}
+
 function coerceBool(v: unknown, fallback: boolean): boolean {
   if (typeof v === "boolean") return v;
 
@@ -166,9 +187,9 @@ function coerceBool(v: unknown, fallback: boolean): boolean {
  * - if >3 names OR too many total words -> show "Pending (N)" etc.
  */
 function shouldCollapseNames(names: string[]) {
-  if (names.length > 3) return true;
+  if (names.length > 7) return true;
   const totalWords = names.reduce((acc, n) => acc + wordsLen(n), 0);
-  return totalWords >= 10; // tweak
+  return totalWords >= 100; // tweak
 }
 
 function byAlpha(a: CategoryLite, b: CategoryLite) {
@@ -194,7 +215,7 @@ export default function AdminSchedulePage() {
   const [showAddRow, setShowAddRow] = useState(false);
 
   // Remember last view inside the day modal (do NOT reset on open/close)
-  const [dayView, setDayView] = useState<DayView>("pending");
+  const [dayView, setDayView] = useState<DayView>("approved");
 
   // Add form (in modal)
   const [addMode, setAddMode] = useState<AddMode>("approved");
@@ -210,6 +231,9 @@ export default function AdminSchedulePage() {
   const [deptId, setDeptId] = useState<string>("");
   const [deptQuery, setDeptQuery] = useState<string>("");
   const [deptOpen, setDeptOpen] = useState<boolean>(false);
+
+  const [deptFilterId, setDeptFilterId] = useState<string>("all");
+  const [autoApproveUi, setAutoApproveUi] = useState<boolean>(false);
 
   const serviceIdByLabel = useMemo(() => {
     const m = new Map<string, string>();
@@ -229,6 +253,49 @@ export default function AdminSchedulePage() {
   }, [deptCats]);
 
   const canAdd = addName.trim().length > 0 && !!serviceId;
+
+  // Public link modal
+  const [publicOpen, setPublicOpen] = useState(false);
+  const [publicLoading, setPublicLoading] = useState(false);
+  const [publicUrl, setPublicUrl] = useState<string>("");
+  const [publicErr, setPublicErr] = useState<string>("");
+
+  // Toast
+  const [toast, setToast] = useState<string>("");
+
+  const [monthCode, setMonthCode] = useState<string>("");
+  const [codeLoading, setCodeLoading] = useState(false);
+  const [codeErr, setCodeErr] = useState<string>("");
+
+  const codeSetAt = data?.month?.month_code_set_at
+    ? String(data.month.month_code_set_at)
+    : "";
+
+  const hasCodeSet = Boolean(codeSetAt);
+  const rawEditsOpen: unknown = data?.month?.edits_open;
+  const editsOpen = coerceBool(rawEditsOpen, false);
+
+  async function generateMonthCode() {
+    if (!orgId) return;
+    setCodeErr("");
+    setCodeLoading(true);
+    try {
+      const { data, error } = await supabase.rpc("schedule_set_month_code", {
+        p_org_id: orgId,
+        p_month: month,
+      });
+
+      if (error) throw new Error(error.message);
+
+      const code = String(data ?? "").trim();
+      if (!/^\d{6}$/.test(code)) throw new Error("Invalid code returned");
+      setMonthCode(code);
+    } catch (e) {
+      setCodeErr(e instanceof Error ? e.message : "Failed to generate code");
+    } finally {
+      setCodeLoading(false);
+    }
+  }
 
   async function fetchServices(_orgId: string, _jwt: string) {
     const { data, error } = await supabase
@@ -262,6 +329,95 @@ export default function AdminSchedulePage() {
       id: String(r.id),
       name: String(r.name ?? ""),
     }));
+  }
+
+  async function bulkSetStatus(entryIds: string[], status: ScheduleStatus) {
+    if (!orgId || !jwt) return;
+
+    try {
+      await Promise.allSettled(
+        entryIds.map((id) =>
+          patchAdminEntry({ org_id: orgId, entry_id: id, status }, jwt),
+        ),
+      );
+      await refresh(month);
+    } catch (e) {
+      setErr({ message: e instanceof Error ? e.message : "Error" });
+    }
+  }
+
+  function applyDeptFilter(list: Entry[]) {
+    if (deptFilterId === "all") return list;
+    return list.filter(
+      (e) => String(e.department_category_id ?? "") === deptFilterId,
+    );
+  }
+
+  function showToast(msg: string) {
+    setToast(msg);
+    window.setTimeout(() => setToast(""), 2000);
+  }
+
+  async function ensurePublicUrl() {
+    if (publicUrl) return publicUrl;
+    if (!orgId || !jwt) throw new Error("Missing orgId or auth");
+
+    setPublicLoading(true);
+    setPublicErr("");
+
+    try {
+      const res = await fetch(
+        `/api/schedule/admin/public-link?org_id=${encodeURIComponent(orgId)}`,
+        { headers: { Authorization: `Bearer ${jwt}` } },
+      );
+      if (!res.ok) throw new Error("Request failed");
+      const json: PublicLinkResponse = (await res.json()) as PublicLinkResponse;
+      if (!json.publicUrl) throw new Error("Missing publicUrl");
+
+      setPublicUrl(json.publicUrl);
+      return json.publicUrl;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load public link";
+      setPublicErr(msg);
+      throw new Error(msg);
+    } finally {
+      setPublicLoading(false);
+    }
+  }
+
+  async function openPublicLinkModal() {
+    setPublicOpen(true);
+    try {
+      await ensurePublicUrl();
+    } catch {
+      // error state already set
+    }
+  }
+
+  async function copyToClipboard(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("Copied to clipboard");
+    } catch {
+      setErr({ message: "Copy failed." });
+    }
+  }
+
+  function downloadQrPng(filename = "schedule-public-link-qr.png") {
+    // QRCodeCanvas renders a <canvas>. We can grab it and export PNG.
+    const canvas = document.getElementById(
+      "public-link-qr",
+    ) as HTMLCanvasElement | null;
+
+    if (!canvas) return;
+
+    const url = canvas.toDataURL("image/png");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 
   useEffect(() => {
@@ -405,10 +561,12 @@ export default function AdminSchedulePage() {
   const draftOpen = coerceBool(rawDraftOpen, true);
 
   const modalDate = modal.open ? modal.date : null;
-  const modalEntries = useMemo(
-    () => (modalDate ? (byDate[modalDate] ?? []) : []),
-    [modalDate, byDate],
-  );
+
+  const modalEntries = useMemo(() => {
+    if (!modalDate) return [];
+    const all = byDate[modalDate] ?? [];
+    return applyDeptFilter(all);
+  }, [modalDate, byDate, deptFilterId]);
 
   const modalPending = useMemo(
     () => modalEntries.filter((e) => e.status === "pending"),
@@ -425,7 +583,6 @@ export default function AdminSchedulePage() {
 
   function openDay(date: string) {
     setModal({ open: true, date });
-    // ✅ remember last dayView: do nothing
   }
 
   function closeModal() {
@@ -519,7 +676,7 @@ export default function AdminSchedulePage() {
           role: addRole,
           name: nm,
           notes: addNotes.trim() ? addNotes.trim() : null,
-          status: "pending",
+          status: "approved",
         },
         jwt,
       );
@@ -608,21 +765,85 @@ export default function AdminSchedulePage() {
   return (
     <>
       {/* Top bar */}
+      {/* Top bar */}
       <div className="border-b">
-        <div className="flex items-center justify-between px-6 py-4 mt-6">
-          <div>
-            <div className="text-xl font-semibold">Workers Schedule</div>
-            <div className="text-sm text-slate-600">Click any day to review signups, approve/reject, or add assignments.</div>
+        <div className="px-6 py-4 mt-6">
+          {/* ROW A: Title/subtitle (left) + Month nav/public link (right) */}
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            {/* Left: title + subheading */}
+            <div>
+              <div className="text-xl font-semibold">Workers Schedule</div>
+              <div className="text-sm text-slate-600">
+                Click any day to review signups, approve/reject, or add
+                assignments.
+              </div>
+            </div>
+
+            {/* Right: month nav + view public link */}
+            <div className="flex w-full flex-wrap items-center justify-end gap-2 lg:w-auto">
+              <button
+                type="button"
+                onClick={openPublicLinkModal}
+                className="rounded-2xl border bg-white px-4 py-2 text-sm hover:bg-slate-50"
+              >
+                View public link
+              </button>
+
+              <div className="inline-flex items-center rounded-2xl border bg-white p-1">
+                <button
+                  type="button"
+                  onClick={() => setMonth((m) => addMonths(m, -1))}
+                  aria-label="Previous month"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl text-slate-600 hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-primary/30"
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    className="h-4 w-4"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M12.79 15.3a1 1 0 01-1.42 0l-5-5a1 1 0 010-1.42l5-5a1 1 0 111.42 1.42L8.91 10l3.88 3.88a1 1 0 010 1.42z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setMonth(monthFromDate(new Date()))}
+                  className="mx-1 rounded-xl px-4 py-2 text-sm font-semibold hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-primary/30"
+                  title="Jump to current month"
+                >
+                  {fmtMonthTitle(month)}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setMonth((m) => addMonths(m, 1))}
+                  aria-label="Next month"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl text-slate-600 hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-primary/30"
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    className="h-4 w-4"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M7.21 4.7a1 1 0 011.42 0l5 5a1 1 0 010 1.42l-5 5a1 1 0 11-1.42-1.42L11.09 10 7.21 6.12a1 1 0 010-1.42z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
 
-        <div className="px-6 pb-5">
-          {/* Helper text ABOVE */}
-
-          {/* Tabs LEFT + Actions RIGHT in same row */}
-          <div className="mt-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            {/* Tabs */}
-            <div className="inline-flex rounded-2xl border bg-slate-50 p-1">
+          {/* ROW B: Tabs (left) + dept/toggles (right) */}
+          <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            {/* Left: tabs */}
+            <div className="inline-flex rounded-2xl border bg-slate-50 p-1 w-fit">
               <button
                 type="button"
                 className={`rounded-2xl px-4 py-2 text-sm ${
@@ -647,86 +868,56 @@ export default function AdminSchedulePage() {
               </button>
             </div>
 
-            {/* Actions (month nav + copy link + draft toggle) */}
-            <div className="flex flex-wrap items-center gap-2">
-              
-              <div className="inline-flex items-center rounded-2xl border bg-white p-1">
-                <button
-                  type="button"
-                  onClick={() => setMonth((m) => addMonths(m, -1))}
-                  aria-label="Previous month"
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl
-               text-slate-600 hover:bg-slate-50
-               focus-visible:ring-2 focus-visible:ring-primary/30"
+            {/* Right: department filter + toggles */}
+            <div className="flex w-full flex-wrap items-center justify-end gap-2 lg:w-auto">
+              <div className="inline-flex items-center gap-2 rounded-2xl border bg-white px-3 py-2">
+                <div className="text-sm font-semibold text-slate-800">
+                  Department
+                </div>
+                <select
+                  className="rounded-xl border bg-white px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                  value={deptFilterId}
+                  onChange={(e) => setDeptFilterId(e.target.value)}
                 >
-                  <svg
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                    className="h-4 w-4"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M12.79 15.3a1 1 0 01-1.42 0l-5-5a1 1 0 010-1.42l5-5a1 1 0 111.42 1.42L8.91 10l3.88 3.88a1 1 0 010 1.42z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setMonth(monthFromDate(new Date()))}
-                  className="mx-1 rounded-xl px-4 py-2 text-sm font-semibold
-               hover:bg-slate-50
-               focus-visible:ring-2 focus-visible:ring-primary/30"
-                  title="Jump to current month"
-                >
-                  {fmtMonthTitle(month)}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setMonth((m) => addMonths(m, 1))}
-                  aria-label="Next month"
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl
-               text-slate-600 hover:bg-slate-50
-               focus-visible:ring-2 focus-visible:ring-primary/30"
-                >
-                  <svg
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                    className="h-4 w-4"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M7.21 4.7a1 1 0 011.42 0l5 5a1 1 0 010 1.42l-5 5a1 1 0 11-1.42-1.42L11.09 10 7.21 6.12a1 1 0 010-1.42z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                </button>
+                  <option value="all">All</option>
+                  {deptCats.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              <button
-                type="button"
-                onClick={async () => {
-                  if (!orgId || !jwt) return;
-                  try {
-                    const res = await fetch(
-                      `/api/schedule/admin/public-link?org_id=${encodeURIComponent(orgId)}`,
-                      { headers: { Authorization: `Bearer ${jwt}` } },
-                    );
-                    if (!res.ok) throw new Error("Request failed");
-                    const json: PublicLinkResponse =
-                      (await res.json()) as PublicLinkResponse;
-                    if (!json.publicUrl) throw new Error("Missing publicUrl");
-                    await navigator.clipboard.writeText(json.publicUrl);
-                  } catch {
-                    setErr({ message: "Failed to copy public link." });
-                  }
-                }}
-                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
-              >
-                Copy public link
-              </button>
+              <div className="inline-flex items-center gap-2 rounded-2xl border bg-white px-4 py-2">
+                <div className="text-sm font-semibold text-slate-800">
+                  Allow Edits
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!orgId || !jwt) return;
+                    try {
+                      await patchAdminMonthSettings(
+                        { org_id: orgId, month, edits_open: !editsOpen },
+                        jwt,
+                      );
+                      await refresh(month);
+                    } catch (e) {
+                      setErr({
+                        message: e instanceof Error ? e.message : "Error",
+                      });
+                    }
+                  }}
+                  title={editsOpen ? "Allow edits: On" : "Allow edits: Off"}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition
+    ${editsOpen ? "bg-emerald-500" : "bg-slate-300"}`}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition
+      ${editsOpen ? "translate-x-5" : "translate-x-1"}`}
+                  />
+                </button>
+              </div>
 
               <div className="inline-flex items-center gap-2 rounded-2xl border bg-white px-4 py-2">
                 <div className="text-sm font-semibold text-slate-800">
@@ -752,6 +943,7 @@ export default function AdminSchedulePage() {
             </div>
           </div>
 
+          {/* Errors */}
           {catErr ? (
             <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
               Service/Department lists could not be loaded: {catErr}
@@ -806,7 +998,8 @@ export default function AdminSchedulePage() {
                   }}
                 >
                   {cells.map((c, idx) => {
-                    const dayEntries = byDate[c.iso] ?? [];
+                    const dayEntries = applyDeptFilter(byDate[c.iso] ?? []);
+
                     const pending = dayEntries.filter(
                       (e) => e.status === "pending",
                     );
@@ -845,7 +1038,7 @@ export default function AdminSchedulePage() {
                           openDay(c.iso);
                         }}
                         className={[
-                          "aspect-square min-h-[140px] border-t p-3 text-left transition flex flex-col",
+                          "aspect-square min-h-[120px] border-t p-3 text-left transition flex flex-col",
                           isLastCol ? "" : "border-r",
 
                           isEmpty
@@ -883,23 +1076,22 @@ export default function AdminSchedulePage() {
                               </div>
                             </div>
 
-                           <div className="mt-4 flex-1 space-y-2 min-h-0">
-
+                            <div className="mt-4 flex-1 space-y-2 min-h-0">
                               {showApprovedInline ? (
                                 approved.length ? (
-                                  <div className="rounded-xl border bg-amber px-3 py-7 text-xs text-slate-700">
-                                    <div className="font-semibold text-slate-800">
+                                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-xs text-emerald-900">
+                                    <div className="font-semibold text-emerald-900">
                                       Approved
                                     </div>
-                                    <div className="mt-1 text-slate-600 whitespace-normal leading-snug line-clamp-3">
 
+                                    <div className="mt-1 whitespace-normal leading-snug text-black line-clamp-5">
                                       {collapseApproved
                                         ? `Approved (${approved.length})`
-                                        : preview(approvedNames)}
+                                        : previewNames(approvedNames, 140)}
                                     </div>
                                   </div>
                                 ) : (
-                                  <div className="rounded-xl border bg-white px-3 py-7 text-xs text-slate-500">
+                                  <div className="rounded-xl border bg-white px-3 py-3 text-xs text-slate-500">
                                     <div className="font-semibold text-slate-700">
                                       Approved
                                     </div>
@@ -912,11 +1104,10 @@ export default function AdminSchedulePage() {
                                 pending.length ? (
                                   <div className="rounded-xl border bg-amber-50 px-3 py-7 text-xs text-amber-900">
                                     <div className="font-semibold">Pending</div>
-                                   <div className="mt-1 text-slate-600 whitespace-normal leading-snug line-clamp-3">
-
+                                    <div className="mt-1 text-slate-600 whitespace-normal leading-snug line-clamp-3">
                                       {collapsePending
                                         ? `Pending (${pending.length})`
-                                        : preview(pendingNames)}
+                                        : previewNames(pendingNames, 140)}
                                     </div>
                                   </div>
                                 ) : (
@@ -1005,15 +1196,6 @@ export default function AdminSchedulePage() {
                       Approved ({modalApproved.length})
                     </button>
                   </div>
-
-                  {modalRejected.length ? (
-                    <div className="text-xs text-slate-500">
-                      Rejected:{" "}
-                      <span className="font-semibold">
-                        {modalRejected.length}
-                      </span>
-                    </div>
-                  ) : null}
                 </div>
 
                 {/* Inline Add Row (replaces the big "Add new" card) */}
@@ -1289,12 +1471,60 @@ export default function AdminSchedulePage() {
                 {/* Pending / Approved lists */}
                 {dayView === "pending" ? (
                   <div className="rounded-3xl border bg-white overflow-hidden">
-                    <div className="border-b bg-slate-50 px-5 py-4">
-                      <div className="text-sm font-semibold text-slate-800">
-                        Pending signups
-                      </div>
-                      <div className="text-xs text-slate-600">
-                        Approve or reject individual signups.
+                    <div className="border-b bg-slate-50 px-5 py-3">
+                      <div className="flex items-center justify-between gap-4">
+                        {/* Left: header + subheader */}
+                        <div>
+                          <div className="text-sm font-semibold text-slate-800">
+                            Pending signups
+                          </div>
+                          <div className="text-xs text-slate-600">
+                            Approve or reject individual signups.
+                          </div>
+                        </div>
+
+                        {/* Right: actions */}
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={modalPending.length === 0}
+                            onClick={() => {
+                              if (
+                                !confirm(
+                                  `Approve all ${modalPending.length} pending signups?`,
+                                )
+                              )
+                                return;
+                              void bulkSetStatus(
+                                modalPending.map((e) => e.id),
+                                "approved",
+                              );
+                            }}
+                            className="rounded-xl bg-emerald-600 px-3 py-1.5 text-sm text-white hover:bg-emerald-500 disabled:bg-slate-300"
+                          >
+                            Approve all
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={modalPending.length === 0}
+                            onClick={() => {
+                              if (
+                                !confirm(
+                                  `Reject all ${modalPending.length} pending signups?`,
+                                )
+                              )
+                                return;
+                              void bulkSetStatus(
+                                modalPending.map((e) => e.id),
+                                "rejected",
+                              );
+                            }}
+                            className="rounded-xl bg-amber-600 px-3 py-1.5 text-sm text-white hover:bg-amber-500 disabled:bg-slate-300"
+                          >
+                            Reject all
+                          </button>
+                        </div>
                       </div>
                     </div>
 
@@ -1361,7 +1591,7 @@ export default function AdminSchedulePage() {
                                       </button>
                                       <button
                                         type="button"
-                                        className="rounded-xl bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500"
+                                        className="rounded-xl bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-500"
                                         onClick={() =>
                                           setEntryStatus(e.id, "rejected")
                                         }
@@ -1413,9 +1643,12 @@ export default function AdminSchedulePage() {
 
                             <div className="border-t bg-white">
                               <div className="grid grid-cols-12 border-b bg-primary/15 px-5 py-3 text-xs font-semibold text-black">
-                                <div className="col-span-5">Name</div>
+                                <div className="col-span-4">Name</div>
                                 <div className="col-span-2">Role</div>
-                                <div className="col-span-5">Notes</div>
+                                <div className="col-span-4">Notes</div>
+                                <div className="col-span-2 text-right">
+                                  Actions
+                                </div>
                               </div>
 
                               <div className="divide-y">
@@ -1424,13 +1657,13 @@ export default function AdminSchedulePage() {
                                     key={e.id}
                                     className="grid grid-cols-12 items-center px-5 py-3 text-sm bg-white hover:bg-slate-50/60"
                                   >
-                                    <div className="col-span-5 font-semibold text-slate-900">
+                                    <div className="col-span-4 font-semibold text-slate-900">
                                       {e.name}
                                     </div>
                                     <div className="col-span-2 text-slate-700">
                                       {roleLabel(e.role)}
                                     </div>
-                                    <div className="col-span-5 text-slate-700">
+                                    <div className="col-span-4 text-slate-700">
                                       {e.notes ? (
                                         e.notes
                                       ) : (
@@ -1438,6 +1671,21 @@ export default function AdminSchedulePage() {
                                           —
                                         </span>
                                       )}
+                                    </div>
+
+                                    <div className="col-span-2 flex justify-end">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (!confirm(`Reject ${e.name}?`))
+                                            return;
+                                          setEntryStatus(e.id, "rejected");
+                                        }}
+                                        className="rounded-xl bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-500"
+                                        title="Reject assignment"
+                                      >
+                                        Remove
+                                      </button>
                                     </div>
                                   </div>
                                 ))}
@@ -1456,20 +1704,245 @@ export default function AdminSchedulePage() {
                     <div className="text-xs font-semibold text-slate-600">
                       Rejected
                     </div>
-                    <div className="mt-2 space-y-1">
-                      {modalRejected.slice(0, 10).map((e) => (
-                        <div key={e.id} className="text-sm text-slate-700">
-                          {roleLabel(e.role)}: {e.name}
+
+                    <div className="mt-3 divide-y rounded-2xl border bg-white">
+                      {modalRejected.map((e) => (
+                        <div
+                          key={e.id}
+                          className="flex items-center justify-between gap-3 px-4 py-3"
+                        >
+                          <div className="text-sm text-slate-800">
+                            <span className="font-semibold">{e.name}</span>
+                            <span className="ml-2 text-slate-500 text-xs">
+                              {roleLabel(e.role)}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="rounded-xl border px-3 py-1 text-xs font-semibold hover:bg-slate-50"
+                              onClick={() => setEntryStatus(e.id, "pending")}
+                            >
+                              Pending
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-xl bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                              onClick={() => setEntryStatus(e.id, "approved")}
+                            >
+                              Approve
+                            </button>
+                          </div>
                         </div>
                       ))}
-                      {modalRejected.length > 10 ? (
-                        <div className="text-xs text-slate-500">
-                          +{modalRejected.length - 10} more
-                        </div>
-                      ) : null}
                     </div>
                   </div>
                 ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {toast ? (
+        <div className="fixed right-4 top-4 z-[100]">
+          <div className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg">
+            {toast}
+          </div>
+        </div>
+      ) : null}
+
+      {publicOpen ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/40 backdrop-blur-sm p-4"
+          onClick={() => setPublicOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg max-h-[90vh] rounded-3xl bg-white shadow-xl flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b px-6 py-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-lg font-semibold">
+                    Public schedule link
+                  </div>
+                  <div className="mt-1 text-sm text-slate-600">
+                    Share this link or let people scan the QR code to sign up.
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setPublicOpen(false)}
+                  className="rounded-2xl border px-3 py-1 text-sm hover:bg-slate-50"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto overscroll-contain">
+              <div className="px-6 py-5 space-y-4">
+                <div className="mt-5 space-y-4">
+                  {publicErr ? (
+                    <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {publicErr}
+                    </div>
+                  ) : null}
+
+                  <div className="rounded-2xl border p-4 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold">QR code</div>
+
+                      <button
+                        type="button"
+                        disabled={!publicUrl}
+                        onClick={() => downloadQrPng()}
+                        className="rounded-2xl border px-3 py-1.5 text-sm font-semibold hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        Download
+                      </button>
+                    </div>
+
+                    <div className="flex justify-center">
+                      <div className="rounded-3xl border bg-slate-50 p-5">
+                        {publicLoading && !publicUrl ? (
+                          <div className="h-[280px] w-[280px] grid place-items-center text-sm text-slate-600">
+                            Loading…
+                          </div>
+                        ) : publicUrl ? (
+                          <QRCodeCanvas
+                            id="public-link-qr"
+                            value={publicUrl}
+                            size={280}
+                            includeMargin
+                          />
+                        ) : (
+                          <div className="h-[280px] w-[280px] grid place-items-center text-sm text-slate-600">
+                            No link yet.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <input
+                        readOnly
+                        value={publicUrl}
+                        className="flex-1 rounded-2xl border px-3 py-2 text-sm"
+                        placeholder={publicLoading ? "Loading…" : ""}
+                      />
+
+                      <button
+                        type="button"
+                        disabled={!publicUrl}
+                        onClick={() => copyToClipboard(publicUrl)}
+                        className="rounded-2xl border px-4 py-2 text-sm font-semibold hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        Copy
+                      </button>
+                    </div>
+
+                    <div className="text-xs text-slate-500 text-center">
+                      People can scan this QR code to open the public schedule.
+                    </div>
+                  </div>
+
+                  {/* ✅ Monthly code block goes here */}
+                  <div className="rounded-2xl border p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold">
+                          Monthly code
+                        </div>
+                        <div className="text-xs text-slate-600">
+                          Share this with department heads. With the code, they
+                          can approve/edit for this month when “Allow edits” is
+                          enabled.
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={generateMonthCode}
+                        disabled={!orgId || codeLoading}
+                        className="rounded-2xl border px-3 py-1.5 text-sm font-semibold hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        {codeLoading
+                          ? "Generating…"
+                          : monthCode || hasCodeSet
+                            ? "Rotate"
+                            : "Generate"}
+                      </button>
+                    </div>
+
+                    {codeErr ? (
+                      <div className="rounded-2xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                        {codeErr}
+                      </div>
+                    ) : null}
+
+                    {monthCode ? (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 rounded-2xl border bg-slate-50 px-4 py-3">
+                          <div className="text-[11px] font-semibold text-slate-600">
+                            Code (valid for {fmtMonthTitle(month)})
+                          </div>
+                          <div className="mt-1 font-mono text-2xl tracking-widest text-slate-900">
+                            {monthCode}
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(monthCode)}
+                          className="rounded-2xl border px-4 py-2 text-sm font-semibold hover:bg-slate-50"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    ) : hasCodeSet ? (
+                      <div className="rounded-2xl border bg-slate-50 px-4 py-3">
+                        <div className="text-sm font-semibold text-slate-800">
+                          Code is already set
+                        </div>
+                        <div className="mt-1 text-xs text-slate-600">
+                          For security, the code is only shown when generated.
+                          Use “Rotate” to generate a new one.
+                        </div>
+
+                        {codeSetAt ? (
+                          <div className="mt-2 text-xs text-slate-500">
+                            Last rotated: {new Date(codeSetAt).toLocaleString()}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="text-sm text-slate-600">
+                        No code generated yet.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex justify-end gap-2">
+                    {/* Open link button etc */}
+                  </div>
+
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={!publicUrl}
+                      onClick={() => {
+                        if (!publicUrl) return;
+                        window.open(publicUrl, "_blank", "noopener,noreferrer");
+                      }}
+                      className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/85 disabled:bg-slate-300"
+                    >
+                      Open link
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

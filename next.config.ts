@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  reactStrictMode: false, // ⬅️ THIS IS THE FIX
+  reactStrictMode: false,
+  serverExternalPackages: ["puppeteer-core", "@sparticuz/chromium-min"],
 
   images: {
     remotePatterns: [

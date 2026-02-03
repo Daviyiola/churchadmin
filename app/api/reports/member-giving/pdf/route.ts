@@ -3,14 +3,10 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import puppeteer, { type Browser } from "puppeteer-core";
-import chromium from "@sparticuz/chromium";
+import type { Page } from "puppeteer-core";
 import { launchBrowser } from "@/lib/server/pdf/launchBrowser";
 
-import type {
-  RunMemberGivingBody,
-  ErrorResponse,
-} from "@/lib/reports/members/types";
+import type { RunMemberGivingBody, ErrorResponse } from "@/lib/reports/members/types";
 import { runMemberGivingReportFromToken } from "@/lib/server/reports/memberGiving";
 import { renderMemberGivingHtml } from "@/lib/server/reports/memberGivingHtml";
 
@@ -26,7 +22,7 @@ function safeFilePart(s: string) {
 }
 
 export async function POST(req: Request) {
-  let browser: Browser | null = null;
+  let page: Page | null = null;
 
   try {
     const body: RunMemberGivingBody = await req.json();
@@ -72,16 +68,9 @@ export async function POST(req: Request) {
 
     const html = renderMemberGivingHtml(report, filtersLine);
 
-    const executablePath = await chromium.executablePath();
-    if (!executablePath) {
-      throw new Error("Chromium executablePath not found");
-    }
+    const browser = await launchBrowser();
+    page = await browser.newPage();
 
-    browser = await launchBrowser();
-
-    const page = await browser.newPage();
-
-    // Allow external assets (logos) to load
     await page.setContent(html, { waitUntil: "load", timeout: 30_000 });
     await new Promise((r) => setTimeout(r, 200));
 
@@ -109,9 +98,9 @@ export async function POST(req: Request) {
       status: 400,
     });
   } finally {
-    if (browser) {
+    if (page) {
       try {
-        await browser.close();
+        await page.close();
       } catch {
         // ignore
       }
