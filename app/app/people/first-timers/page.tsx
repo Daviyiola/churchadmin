@@ -746,6 +746,9 @@ export default function FirstTimersPage() {
       if (!Number.isFinite(days) || days <= 0)
         throw new Error("Days must be a valid number.");
 
+      if (days >= 31)
+        throw new Error("Maximum allowed expiration is 30 days to prevent stale links. Please choose a shorter duration.");
+
       const res = await fetch("/api/intake/campaign/create", {
         method: "POST",
         headers: {

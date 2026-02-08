@@ -7,23 +7,75 @@ import {
   submitPublic,
   getPublicCategories,
   verifyPublicMonthCode,
+  getPublicDay,
+  patchPublicEntry,
 } from "@/lib/client/scheduleApi";
 import type {
+  PublicDayResponse,
   PublicMetaResponse,
   PublicMonthResponse,
   ScheduleRole,
 } from "@/lib/schedule/types";
 
+import { supabase } from "@/lib/supabaseClient";
+import Image from "next/image";
+
 type UiError = { message: string } | null;
 
-type TabKey = "approved" | "signup";
-type DayView = "approved" | "signup";
+type TabKey = "approved" | "pending";
+type DayView = "approved" | "pending";
 
 type DayModalState = { open: false } | { open: true; date: string };
 
 type CalendarCell = { iso: string; day: number; inMonth: boolean };
 
 type CatLite = { id: string; name: string };
+
+type PublicEntryLite = {
+  id: string;
+  name: string;
+  role: ScheduleRole;
+  notes: string | null;
+  service_category_id: string | null;
+  department_category_id: string | null;
+};
+
+type PendingEntry = NonNullable<PublicDayResponse>["pending"][number];
+
+type PendingGroup = {
+  key: string;
+  service_category_id: string | null;
+  department_category_id: string | null;
+  rows: PendingEntry[];
+};
+
+function groupByServiceDeptPublic(
+  items: PublicEntryLite[],
+  serviceNameById: Map<string, string>,
+  deptNameById: Map<string, string>,
+) {
+  const m: Record<string, PublicEntryLite[]> = {};
+  for (const e of items) {
+    const svc = e.service_category_id
+      ? serviceNameById.get(e.service_category_id) || "—"
+      : "—";
+    const dep = e.department_category_id
+      ? deptNameById.get(e.department_category_id) || "—"
+      : "—";
+    const key = `${svc} • ${dep}`;
+    if (!m[key]) m[key] = [];
+    m[key].push(e);
+  }
+  return Object.keys(m)
+    .sort((a, b) => a.localeCompare(b))
+    .map((k) => ({ key: k, rows: m[k] }));
+}
+
+function setsEqual(a: Set<string>, b: Set<string>) {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
 
 function roleLabel(r: ScheduleRole) {
   if (r === "lead") return "Lead";
@@ -116,6 +168,72 @@ function buildMonthGridWithMuted(month: string) {
 
 function wordsLen(s: string) {
   return s.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function normalizeCategoryName(s: string) {
+  return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+type ServiceGroupSummary = {
+  serviceLabel: string;
+  total: number;
+  namesPreview: string;
+};
+
+function previewNames(names: string[], maxChars = 60) {
+  const clean = names.map((n) => n.trim()).filter(Boolean);
+  if (clean.length === 0) return "—";
+
+  let out = "";
+  let used = 0;
+
+  for (let i = 0; i < clean.length; i++) {
+    const next = (i === 0 ? "" : ", ") + clean[i];
+    if (used + next.length > maxChars) return out.trim() + "…";
+    out += next;
+    used += next.length;
+  }
+  return out;
+}
+
+function summarizeApprovedByService(
+  items: ApprovedEntry[],
+  serviceNameById: Map<string, string>,
+  opts?: { maxServices?: number; maxNamesChars?: number },
+): { shown: ServiceGroupSummary[]; overflowServices: number } {
+  const maxServices = opts?.maxServices ?? 1;
+  const maxNamesChars = opts?.maxNamesChars ?? 50;
+
+  const g = new Map<string, ApprovedEntry[]>();
+  for (const e of items) {
+    const sid = String(e.service_category_id ?? "");
+    const key = sid || "__none__";
+    if (!g.has(key)) g.set(key, []);
+    g.get(key)!.push(e);
+  }
+
+  const groups: ServiceGroupSummary[] = Array.from(g.entries()).map(
+    ([sid, rows]) => {
+      const label = sid === "__none__" ? "—" : serviceNameById.get(sid) || "—";
+      const names = rows.map((r) => r.name).filter(Boolean);
+
+      return {
+        serviceLabel: label,
+        total: rows.length,
+        namesPreview: shouldCollapseNames(names)
+          ? `${rows.length} people`
+          : previewNames(names, maxNamesChars),
+      };
+    },
+  );
+
+  groups.sort((a, b) => {
+    if (b.total !== a.total) return b.total - a.total;
+    return a.serviceLabel.localeCompare(b.serviceLabel);
+  });
+
+  const shown = groups.slice(0, maxServices);
+  return { shown, overflowServices: Math.max(0, groups.length - shown.length) };
 }
 
 /**
@@ -215,7 +333,7 @@ export default function PublicScheduleClient({ token }: { token: string }) {
   const [signupDeptId, setSignupDeptId] = useState<string>("");
 
   // Calendar filter
-  const [deptFilterId, setDeptFilterId] = useState<string>("all");
+  const [deptFilterId, setDeptFilterId] = useState<string>("");
 
   // Scroll freeze like admin modal
   useEffect(() => {
@@ -271,6 +389,74 @@ export default function PublicScheduleClient({ token }: { token: string }) {
     }
   }
 
+  const [dayData, setDayData] = useState<PublicDayResponse | null>(null);
+  const [showAddRow, setShowAddRow] = useState(false);
+  const [showSignupRow, setShowSignupRow] = useState(false);
+
+  async function refreshDay(dateOverride?: string) {
+    if (!monthData) return;
+    const date = dateOverride ?? (modal.open ? modal.date : null);
+    if (!date) return;
+    const res = await getPublicDay(token, monthData.month.month, date);
+    setDayData(res);
+  }
+
+  async function refreshMonth() {
+    if (!monthData) return;
+    const md = await getPublicMonth(token, monthData.month.month);
+    setMonthData(md);
+  }
+
+  async function setPublicEntryStatus(
+    entryId: string,
+    status: "pending" | "approved" | "rejected",
+  ) {
+    if (!canEdit || !monthData) {
+      setErr({ message: "Edit mode is not enabled." });
+      return;
+    }
+    try {
+      setErr(null);
+      await patchPublicEntry({
+        token,
+        month: monthData.month.month,
+        month_code: editCode,
+        entry_id: entryId,
+        status,
+      });
+      await Promise.all([refreshDay(), refreshMonth()]);
+    } catch (e) {
+      setErr({ message: e instanceof Error ? e.message : "Error" });
+    }
+  }
+
+  async function bulkPublicSetStatus(
+    ids: string[],
+    status: "pending" | "approved" | "rejected",
+  ) {
+    if (!canEdit || !monthData) {
+      setErr({ message: "Edit mode is not enabled." });
+      return;
+    }
+    try {
+      setErr(null);
+      // simple: sequential (safe + easy)
+      for (const id of ids) {
+        // eslint-disable-next-line no-await-in-loop
+        await patchPublicEntry({
+          token,
+          month: monthData.month.month,
+          month_code: editCode,
+          entry_id: id,
+          status,
+        });
+      }
+      await Promise.all([refreshDay(), refreshMonth()]);
+    } catch (e) {
+      setErr({ message: e instanceof Error ? e.message : "Error" });
+    }
+  }
+
   useEffect(() => {
     if (!token) {
       setErr({ message: "Invalid link." });
@@ -282,12 +468,10 @@ export default function PublicScheduleClient({ token }: { token: string }) {
   }, [token]);
 
   useEffect(() => {
-  setEditEnabled(false);
-  setEditCode("");
-  setEditErr("");
-  setCodeOpen(false);
-}, [month]);
-
+    setEditEnabled(false);
+    setEditCode("");
+    setEditErr("");
+  }, [month]);
 
   // When month changes via nav
   useEffect(() => {
@@ -318,10 +502,9 @@ export default function PublicScheduleClient({ token }: { token: string }) {
 
   const approvedByDate = useMemo(() => {
     const all = monthData?.approved ?? [];
-    const filtered =
-      deptFilterId === "all"
-        ? all
-        : all.filter((e) => e.department_category_id === deptFilterId);
+    const filtered = !deptFilterId
+      ? all
+      : all.filter((e) => e.department_category_id === deptFilterId);
 
     return groupApprovedByDate(filtered);
   }, [monthData, deptFilterId]);
@@ -343,10 +526,7 @@ export default function PublicScheduleClient({ token }: { token: string }) {
     return approvedByDate[modalDate] ?? [];
   }, [approvedByDate, modalDate]);
 
-  const modalPendingCount = modalDate ? (pendingMap[modalDate] ?? 0) : 0;
-
   // Month edit mode (public)
-  const [codeOpen, setCodeOpen] = useState(false);
   const [editCode, setEditCode] = useState<string>("");
   const [editEnabled, setEditEnabled] = useState<boolean>(false); // "edit mode" toggle after verify
   const [editOpen, setEditOpen] = useState<boolean>(false); // modal open/close
@@ -354,6 +534,43 @@ export default function PublicScheduleClient({ token }: { token: string }) {
 
   const editsOpen = coerceBool(monthData?.month?.edits_open, false);
   const canEdit = draftOpen && editsOpen && editEnabled;
+
+  const [openPendingKeys, setOpenPendingKeys] = useState<Set<string>>(
+    new Set(),
+  );
+  const [openApprovedKeys, setOpenApprovedKeys] = useState<Set<string>>(
+    new Set(),
+  );
+
+  const approvedList: PublicEntryLite[] = useMemo(() => {
+    const fromDay = dayData?.approved ?? [];
+    if (fromDay.length) return fromDay;
+
+    // normalize month-approved into PublicEntryLite
+    return modalApproved.map((e) => ({
+      id: e.id,
+      name: e.name,
+      role: e.role,
+      notes: e.notes ?? null,
+      service_category_id: e.service_category_id ?? null,
+      department_category_id: e.department_category_id ?? null,
+    }));
+  }, [dayData?.approved, modalApproved]);
+
+  const pendingList = dayData?.pending ?? [];
+  const rejectedList = dayData?.rejected ?? [];
+
+  const pendingListFiltered = useMemo(() => {
+    if (!deptFilterId) return pendingList;
+    return pendingList.filter((e) => e.department_category_id === deptFilterId);
+  }, [pendingList, deptFilterId]);
+
+  const rejectedListFiltered = useMemo(() => {
+    if (!deptFilterId) return rejectedList;
+    return rejectedList.filter(
+      (e) => e.department_category_id === deptFilterId,
+    );
+  }, [rejectedList, deptFilterId]);
 
   const canSubmit = Boolean(
     draftOpen &&
@@ -366,8 +583,86 @@ export default function PublicScheduleClient({ token }: { token: string }) {
 
   function openDay(date: string) {
     setModal({ open: true, date });
-    // keep dayView as-is (like admin)
+    setShowAddRow(false);
+    setShowSignupRow(false);
   }
+
+  const serviceNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of services) m.set(s.id, s.name);
+    return m;
+  }, [services]);
+
+  const deptNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const d of departments) m.set(d.id, d.name);
+    return m;
+  }, [departments]);
+
+  const pendingGroups = useMemo<PendingGroup[]>(() => {
+    const map = new Map<string, PendingGroup>();
+
+    for (const e of pendingListFiltered) {
+      const sid = e.service_category_id ?? "";
+      const did = e.department_category_id ?? "";
+      const mapKey = `${sid}|${did}`;
+
+      const serviceName = sid
+        ? (serviceNameById.get(sid) ?? "Service")
+        : "Service";
+      const deptName = did
+        ? (deptNameById.get(did) ?? "Department")
+        : "Department";
+      const header = `${serviceName} • ${deptName}`;
+
+      const g =
+        map.get(mapKey) ??
+        (() => {
+          const ng: PendingGroup = {
+            key: header,
+            service_category_id: e.service_category_id,
+            department_category_id: e.department_category_id,
+            rows: [],
+          };
+          map.set(mapKey, ng);
+          return ng;
+        })();
+
+      g.rows.push(e);
+    }
+
+    return Array.from(map.values()).sort((a, b) => a.key.localeCompare(b.key));
+  }, [pendingListFiltered, serviceNameById, deptNameById]);
+
+  const approvedGroups = useMemo(
+    () => groupByServiceDeptPublic(approvedList, serviceNameById, deptNameById),
+    [approvedList, serviceNameById, deptNameById],
+  );
+
+  const [pendingDeptMap, setPendingDeptMap] = useState<Record<string, number>>(
+    {},
+  );
+  const [pendingDeptLoading, setPendingDeptLoading] = useState(false);
+
+  useEffect(() => {
+    const keys =
+      pendingGroups.length <= 2
+        ? pendingGroups.map((g) => g.key)
+        : pendingGroups.slice(0, 2).map((g) => g.key);
+
+    const next = new Set(keys);
+    setOpenPendingKeys((prev) => (setsEqual(prev, next) ? prev : next));
+  }, [modalDate, pendingGroups]);
+
+  useEffect(() => {
+    const keys =
+      approvedGroups.length <= 2
+        ? approvedGroups.map((g) => g.key)
+        : approvedGroups.slice(0, 2).map((g) => g.key);
+
+    const next = new Set(keys);
+    setOpenApprovedKeys((prev) => (setsEqual(prev, next) ? prev : next));
+  }, [modalDate, approvedGroups]);
 
   useEffect(() => {
     if (!deptFilterId && departments.length > 0) {
@@ -375,10 +670,90 @@ export default function PublicScheduleClient({ token }: { token: string }) {
     }
   }, [departments, deptFilterId]);
 
+  useEffect(() => {
+    if (!modal.open || !monthData) return;
+
+    (async () => {
+      try {
+        const res = await getPublicDay(
+          token,
+          monthData.month.month,
+          modal.date,
+        );
+        setDayData(res);
+      } catch (e) {
+        // optional: show error in UI
+        setDayData(null);
+      }
+    })();
+  }, [modal.open, modalDate, monthData, token]);
+
+  useEffect(() => {
+    if (!canEdit) return;
+    if (tab !== "pending") return;
+    if (!monthData) return;
+    if (!deptFilterId) {
+      setPendingDeptMap({});
+      return;
+    }
+
+    // immediate clear so old dept counts don't flash
+    setPendingDeptMap({});
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setPendingDeptLoading(true);
+
+        const monthStr = monthData.month.month;
+        const inMonthDates = cells.filter((c) => c.inMonth).map((c) => c.iso);
+
+        const entries = await Promise.all(
+          inMonthDates.map(async (date) => {
+            const res = await getPublicDay(token, monthStr, date);
+            const cnt = (res?.pending ?? []).filter(
+              (e) => e.department_category_id === deptFilterId,
+            ).length;
+            return [date, cnt] as const;
+          }),
+        );
+
+        if (cancelled) return;
+
+        const next: Record<string, number> = {};
+        for (const [date, cnt] of entries) next[date] = cnt;
+        setPendingDeptMap(next);
+      } finally {
+        if (!cancelled) setPendingDeptLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canEdit, tab, monthData, deptFilterId, token, cells]);
+
+  useEffect(() => {
+    if (!canEdit && dayView === "pending") setDayView("approved");
+  }, [canEdit, dayView]);
+
+  const modalPendingCount = useMemo(() => {
+    if (!modalDate) return 0;
+
+    // when you're in pending tab (or you always want it dept-aware), prefer dept map
+    if (deptFilterId && tab === "pending")
+      return pendingDeptMap[modalDate] ?? 0;
+
+    return pendingMap[modalDate] ?? 0;
+  }, [modalDate, deptFilterId, tab, pendingDeptMap, pendingMap]);
+
   function closeModal() {
     setModal({ open: false });
 
-    // reset ONLY the signup form (like admin resets add row fields)
+    setShowAddRow(false);
+    setShowSignupRow(false);
+
     setSignupNotes("");
     setSignupRole("member");
     setSignupName("");
@@ -403,7 +778,7 @@ export default function PublicScheduleClient({ token }: { token: string }) {
         role: signupRole,
         name: signupName.trim(),
         notes: signupNotes.trim() ? signupNotes.trim() : null,
-        month_code: canEdit ? editCode : null, // ✅ THIS is what unlocks approved
+        month_code: canEdit ? editCode : null,
       });
 
       // Refresh month data so pending badge updates
@@ -441,9 +816,21 @@ export default function PublicScheduleClient({ token }: { token: string }) {
   }
 
   const showApprovedInline = tab === "approved";
-  const showPendingInline = tab === "signup";
+  const showPendingInline = canEdit && tab === "pending";
 
   const preview = (names: string[]) => names.slice(0, 3).join(", ");
+
+  const logoKey = meta?.org.settings.logo_path ?? null;
+
+  const logoUrl = useMemo(() => {
+    if (!logoKey) return null;
+
+    if (logoKey.startsWith("http://") || logoKey.startsWith("https://"))
+      return logoKey;
+
+    return supabase.storage.from("org-logos").getPublicUrl(logoKey).data
+      .publicUrl;
+  }, [logoKey]);
 
   return (
     <>
@@ -454,12 +841,15 @@ export default function PublicScheduleClient({ token }: { token: string }) {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             {/* Left: Logo + Title + Subtitle */}
             <div className="flex items-center gap-3">
-              {!useDefaultLogo && logoPath ? (
-                <div className="h-10 w-10 overflow-hidden rounded-xl border bg-white">
-                  <img
-                    src={logoPath}
-                    alt=""
-                    className="h-full w-full object-cover"
+              {!useDefaultLogo && logoUrl ? (
+                <div className="h-16 w-16 overflow-hidden rounded-xl bg-white flex items-center justify-center">
+                  <Image
+                    src={logoUrl}
+                    alt={`${orgName} logo`}
+                    width={100}
+                    height={100}
+                    className="object-contain"
+                    priority
                   />
                 </div>
               ) : (
@@ -467,10 +857,11 @@ export default function PublicScheduleClient({ token }: { token: string }) {
               )}
 
               <div>
-                <div className="text-xl font-semibold">Workers Schedule</div>
+                <div className="text-xl font-semibold"> {orgName} </div>
+
                 <div className="text-sm text-slate-600">
-                  {orgName} • View approved assignments, and sign up for open
-                  days.
+                  Workers Schedule | View approved assignments, and sign up for
+                  open days.
                 </div>
               </div>
             </div>
@@ -577,17 +968,20 @@ export default function PublicScheduleClient({ token }: { token: string }) {
               >
                 Approved
               </button>
-              <button
-                type="button"
-                className={`rounded-2xl px-4 py-2 text-sm ${
-                  tab === "signup"
-                    ? "bg-white border shadow-sm"
-                    : "text-slate-600 hover:bg-white"
-                }`}
-                onClick={() => setTab("signup")}
-              >
-                Signups
-              </button>
+
+              {canEdit ? (
+                <button
+                  type="button"
+                  className={`rounded-2xl px-4 py-2 text-sm ${
+                    tab === "pending"
+                      ? "bg-white border shadow-sm"
+                      : "text-slate-600 hover:bg-white"
+                  }`}
+                  onClick={() => setTab("pending")}
+                >
+                  Signups
+                </button>
+              ) : null}
             </div>
 
             {/* Dept + Edit (right, 2 cols) */}
@@ -674,7 +1068,7 @@ export default function PublicScheduleClient({ token }: { token: string }) {
           </div>
         ) : (
           <>
-            {tab === "signup" && !draftOpen ? (
+            {canEdit && tab === "pending" && !draftOpen ? (
               <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 Sign-ups are closed for this month.
               </div>
@@ -709,7 +1103,21 @@ export default function PublicScheduleClient({ token }: { token: string }) {
                   >
                     {cells.map((c, idx) => {
                       const approved = approvedByDate[c.iso] ?? [];
-                      const pendingCount = pendingMap[c.iso] ?? 0;
+                      const approvedSummary = summarizeApprovedByService(
+                        approved,
+                        serviceNameById,
+                        {
+                          maxServices: 1,
+                          maxNamesChars: 50,
+                        },
+                      );
+
+                      const pendingCount =
+                        tab === "pending" && deptFilterId
+                          ? pendingDeptLoading
+                            ? 0
+                            : (pendingDeptMap[c.iso] ?? 0)
+                          : (pendingMap[c.iso] ?? 0);
 
                       const approvedNames = approved
                         .map((e) => e.name)
@@ -722,7 +1130,7 @@ export default function PublicScheduleClient({ token }: { token: string }) {
 
                       const isClickable =
                         !isEmpty &&
-                        (tab === "approved" || (tab === "signup" && draftOpen));
+                        (tab === "approved" || (canEdit && tab === "pending"));
 
                       return (
                         <button
@@ -774,25 +1182,51 @@ export default function PublicScheduleClient({ token }: { token: string }) {
 
                               <div className="mt-4 flex-1 space-y-2 min-h-0">
                                 {showApprovedInline ? (
-                                  approved.length ? (
-                                    <div className="rounded-xl border bg-white px-3 py-7 text-xs text-slate-700">
-                                      <div className="font-semibold text-slate-800">
-                                        Approved
+                                  approved.length > 0 ? (
+                                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-xs">
+                                      <div className="flex items-center justify-between">
+                                        <div className="font-semibold text-emerald-900">
+                                          Approved
+                                        </div>
+                                        <div className="text-[11px] text-emerald-900/70">
+                                          {approved.length}
+                                        </div>
                                       </div>
-                                      <div className="mt-1 text-slate-600 whitespace-normal leading-snug line-clamp-3">
-                                        {collapseApproved
-                                          ? `Approved (${approved.length})`
-                                          : preview(approvedNames)}
-                                      </div>
+
+                                      {approvedSummary.shown.length ? (
+                                        <div className="mt-2 space-y-2">
+                                          {approvedSummary.shown.map((s) => (
+                                            <div
+                                              key={`${c.iso}-a-${s.serviceLabel}`}
+                                              className="min-w-0"
+                                            >
+                                              <div className="font-semibold text-slate-900 truncate">
+                                                {s.serviceLabel}
+                                              </div>
+                                              <div className="text-slate-700 whitespace-normal leading-snug line-clamp-2">
+                                                {s.namesPreview}
+                                              </div>
+                                            </div>
+                                          ))}
+                                          {approvedSummary.overflowServices ? (
+                                            <div className="text-slate-600">
+                                              +
+                                              {approvedSummary.overflowServices}{" "}
+                                              more{" "}
+                                              {approvedSummary.overflowServices ===
+                                              1
+                                                ? "service"
+                                                : "services"}
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      ) : (
+                                        <div className="mt-2 text-slate-600">
+                                          —
+                                        </div>
+                                      )}
                                     </div>
-                                  ) : (
-                                    <div className="rounded-xl border bg-white px-3 py-7 text-xs text-slate-500">
-                                      <div className="font-semibold text-slate-700">
-                                        Approved
-                                      </div>
-                                      <div className="mt-1">—</div>
-                                    </div>
-                                  )
+                                  ) : null
                                 ) : null}
 
                                 {showPendingInline ? (
@@ -828,7 +1262,7 @@ export default function PublicScheduleClient({ token }: { token: string }) {
         )}
       </div>
 
-      {/* Day Modal */}
+      {/* ===================== Public Day Modal (Admin-style UI, Public logic) ===================== */}
       {modal.open && monthData ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div
@@ -843,6 +1277,33 @@ export default function PublicScheduleClient({ token }: { token: string }) {
               </div>
 
               <div className="flex items-center gap-2">
+                {/* Context action: edit-mode = Add assignment, normal = Sign up */}
+                {canEdit ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAddRow((v) => !v);
+                      setShowSignupRow(false);
+                    }}
+                    className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                  >
+                    {showAddRow ? "Hide add" : "Add assignment"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowSignupRow((v) => !v);
+                      setShowAddRow(false);
+                    }}
+                    className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                    disabled={!draftOpen}
+                    title={!draftOpen ? "Sign-ups are closed" : undefined}
+                  >
+                    {showSignupRow ? "Hide sign up" : "Sign up"}
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={closeModal}
@@ -856,7 +1317,7 @@ export default function PublicScheduleClient({ token }: { token: string }) {
             {/* Scroll body */}
             <div className="flex-1 overflow-y-auto overscroll-contain">
               <div className="px-6 py-6 space-y-5">
-                {/* Day view tabs */}
+                {/* Tabs row: only Approved/Pending; Pending hidden in edit mode */}
                 <div className="flex items-center justify-between gap-3">
                   <div className="inline-flex rounded-2xl border bg-slate-50 p-1">
                     <button
@@ -868,24 +1329,31 @@ export default function PublicScheduleClient({ token }: { token: string }) {
                       }`}
                       onClick={() => setDayView("approved")}
                     >
-                      Approved ({modalApproved.length})
+                      Approved ({approvedList.length})
                     </button>
-                    <button
-                      type="button"
-                      className={`rounded-2xl px-4 py-2 text-sm ${
-                        dayView === "signup"
-                          ? "bg-white border shadow-sm"
-                          : "text-slate-600 hover:bg-white"
-                      }`}
-                      onClick={() => setDayView("signup")}
-                      disabled={!draftOpen}
-                      title={!draftOpen ? "Signups are closed" : undefined}
-                    >
-                      Sign up
-                    </button>
+
+                    {canEdit ? (
+                      <button
+                        type="button"
+                        className={`rounded-2xl px-4 py-2 text-sm ${
+                          dayView === "pending"
+                            ? "bg-white border shadow-sm"
+                            : "text-slate-600 hover:bg-white"
+                        }`}
+                        onClick={() => setDayView("pending")}
+                        disabled={!draftOpen}
+                        title={
+                          !draftOpen
+                            ? "Pending is unavailable when sign-ups are closed"
+                            : undefined
+                        }
+                      >
+                        Pending ({pendingListFiltered.length})
+                      </button>
+                    ) : null}
                   </div>
 
-                  {modalPendingCount ? (
+                  {!canEdit && modalPendingCount ? (
                     <div className="text-xs text-slate-500">
                       Pending:{" "}
                       <span className="font-semibold">{modalPendingCount}</span>
@@ -893,66 +1361,159 @@ export default function PublicScheduleClient({ token }: { token: string }) {
                   ) : null}
                 </div>
 
-                {/* Approved list (admin-style table card) */}
-                {dayView === "approved" ? (
-                  <div className="rounded-3xl border bg-white overflow-hidden">
-                    <div className="border-b bg-slate-50 px-5 py-4">
-                      <div className="text-sm font-semibold text-slate-800">
-                        Approved assignments
+                {/* Inline action card:
+              - edit mode: "Add assignment" (submissions treated as approved)
+              - normal mode: "Submit a signup" (pending)
+          */}
+                {canEdit ? (
+                  showAddRow ? (
+                    <div className="rounded-3xl border bg-white overflow-hidden">
+                      <div className="border-b bg-slate-50 px-5 py-4">
+                        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-800">
+                              Add assignment
+                            </div>
+                            <div className="text-xs text-slate-600">
+                              Edit mode is enabled — additions are saved as
+                              approved.
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setShowAddRow(false)}
+                              className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              disabled={!canSubmit}
+                              onClick={handleSubmit}
+                              className={`rounded-2xl px-5 py-2 text-sm font-semibold text-white ${
+                                canSubmit
+                                  ? "bg-primary hover:bg-primary/85"
+                                  : "bg-slate-300"
+                              }`}
+                            >
+                              Add
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                      <div className="text-xs text-slate-600">
-                        These are the final assignments for the day.
+
+                      <div className="grid grid-cols-12 gap-x-3 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100">
+                        <div className="col-span-3">Service *</div>
+                        <div className="col-span-3">Department *</div>
+                        <div className="col-span-2">Role</div>
+                        <div className="col-span-4">Name *</div>
+                      </div>
+
+                      <div className="grid grid-cols-12 gap-x-3 px-5 py-4">
+                        <div className="col-span-3 pr-3 min-w-0">
+                          <select
+                            className="block w-full min-w-0 rounded-2xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 border"
+                            value={signupServiceId}
+                            onChange={(e) => setSignupServiceId(e.target.value)}
+                          >
+                            <option value="">Select service</option>
+                            {services.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="col-span-3 pr-3 min-w-0">
+                          <select
+                            className="block w-full min-w-0 rounded-2xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 border"
+                            value={signupDeptId}
+                            onChange={(e) => setSignupDeptId(e.target.value)}
+                          >
+                            <option value="">Select department</option>
+                            {departments.map((d) => (
+                              <option key={d.id} value={d.id}>
+                                {d.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="col-span-2 pr-3 min-w-0">
+                          <select
+                            className="block w-full min-w-0 rounded-2xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 border"
+                            value={signupRole}
+                            onChange={(e) =>
+                              setSignupRole(e.target.value as ScheduleRole)
+                            }
+                          >
+                            <option value="lead">Lead</option>
+                            <option value="asst">Asst</option>
+                            <option value="member">Member</option>
+                          </select>
+                        </div>
+
+                        <div className="col-span-4 min-w-0">
+                          <input
+                            className="block w-full min-w-0 rounded-2xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 border"
+                            value={signupName}
+                            onChange={(e) => setSignupName(e.target.value)}
+                            placeholder="e.g., John A."
+                          />
+                        </div>
+                      </div>
+
+                      <div className="px-5 pb-5">
+                        <div className="text-xs font-semibold text-slate-600 mb-2">
+                          Notes (optional)
+                        </div>
+                        <textarea
+                          className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                          value={signupNotes}
+                          onChange={(e) => setSignupNotes(e.target.value)}
+                          placeholder="e.g., Door 5, Camera 2, Drummer"
+                          rows={3}
+                        />
                       </div>
                     </div>
-
-                    {modalApproved.length === 0 ? (
-                      <div className="p-6 text-sm text-slate-600">
-                        No approved entries yet.
-                      </div>
-                    ) : (
-                      <>
-                        <div className="grid grid-cols-12 border-b bg-primary/15 px-5 py-3 text-xs font-semibold text-black">
-                          <div className="col-span-5">Name</div>
-                          <div className="col-span-2">Role</div>
-                          <div className="col-span-5">Notes</div>
-                        </div>
-
-                        <div className="divide-y">
-                          {modalApproved.map((e) => (
-                            <div
-                              key={e.id}
-                              className="grid grid-cols-12 items-center px-5 py-3 text-sm bg-white hover:bg-slate-50/60"
-                            >
-                              <div className="col-span-5 font-semibold text-slate-900">
-                                {e.name}
-                              </div>
-                              <div className="col-span-2 text-slate-700">
-                                {roleLabel(e.role)}
-                              </div>
-                              <div className="col-span-5 text-slate-700">
-                                {e.notes ? (
-                                  e.notes
-                                ) : (
-                                  <span className="text-slate-400">—</span>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ) : (
-                  // Signup form (admin-style card)
+                  ) : null
+                ) : showSignupRow ? (
                   <div className="rounded-3xl border bg-white overflow-hidden">
                     <div className="border-b bg-slate-50 px-5 py-4">
-                      <div className="text-sm font-semibold text-slate-800">
-                        Submit a signup
-                      </div>
-                      <div className="text-xs text-slate-600">
-                        {canEdit
-                          ? "Edit mode is enabled. Submissions are treated as approved."
-                          : "Your signup will be pending approval."}
+                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-800">
+                            Submit a signup
+                          </div>
+                          <div className="text-xs text-slate-600">
+                            Your signup will be pending approval.
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowSignupRow(false)}
+                            className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!canSubmit}
+                            onClick={handleSubmit}
+                            className={`rounded-2xl px-5 py-2 text-sm font-semibold text-white ${
+                              canSubmit
+                                ? "bg-primary hover:bg-primary/85"
+                                : "bg-slate-300"
+                            }`}
+                          >
+                            Submit
+                          </button>
+                        </div>
                       </div>
                     </div>
 
@@ -1038,29 +1599,6 @@ export default function PublicScheduleClient({ token }: { token: string }) {
                             rows={3}
                           />
 
-                          <div className="mt-4 flex items-center justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={closeModal}
-                              className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              type="button"
-                              disabled={!canSubmit}
-                              onClick={handleSubmit}
-                              className={`rounded-2xl px-5 py-2 text-sm font-semibold text-white ${
-                                canSubmit
-                                  ? "bg-primary hover:bg-primary/85"
-                                  : "bg-slate-300"
-                              }`}
-                            >
-                              Submit
-                            </button>
-                          </div>
-
-                          {/* Helpful wiring note (only when empty) */}
                           {services.length === 0 || departments.length === 0 ? (
                             <div className="mt-3 text-xs text-slate-500">
                               Service/department dropdowns are empty until you
@@ -1072,12 +1610,277 @@ export default function PublicScheduleClient({ token }: { token: string }) {
                       </>
                     )}
                   </div>
+                ) : null}
+
+                {/* ===================== Main panel ===================== */}
+                {dayView === "approved" || !canEdit ? (
+                  <div className="rounded-3xl border bg-white overflow-hidden">
+                    <div className="border-b bg-slate-50 px-5 py-4">
+                      <div className="text-sm font-semibold text-slate-800">
+                        Approved assignments
+                      </div>
+                      <div className="text-xs text-slate-600">
+                        These are the final assignments for the day.
+                      </div>
+                    </div>
+
+                    {modalApproved.length === 0 ? (
+                      <div className="p-6 text-sm text-slate-600">
+                        No approved entries yet.
+                      </div>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-12 border-b bg-primary/15 px-5 py-3 text-xs font-semibold text-black">
+                          <div className="col-span-5">Name</div>
+                          <div className="col-span-2">Role</div>
+                          <div className="col-span-5">Notes</div>
+                        </div>
+
+                        <div className="divide-y">
+                          {modalApproved.map((e) => (
+                            <div
+                              key={e.id}
+                              className="grid grid-cols-12 items-center px-5 py-3 text-sm bg-white hover:bg-slate-50/60"
+                            >
+                              <div className="col-span-5 font-semibold text-slate-900">
+                                {e.name}
+                              </div>
+                              <div className="col-span-2 text-slate-700">
+                                {roleLabel(e.role)}
+                              </div>
+                              <div className="col-span-5 text-slate-700">
+                                {e.notes ? (
+                                  e.notes
+                                ) : (
+                                  <span className="text-slate-400">—</span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-3xl border bg-white overflow-hidden">
+                    <div className="border-b bg-slate-50 px-5 py-3">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-800">
+                            Pending signups
+                          </div>
+                          <div className="text-xs text-slate-600">
+                            Approve or reject individual signups.
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={pendingListFiltered.length === 0}
+                            onClick={() => {
+                              if (
+                                !confirm(
+                                  `Approve all ${pendingListFiltered.length} pending signups?`,
+                                )
+                              )
+                                return;
+                              void bulkPublicSetStatus(
+                                pendingListFiltered.map((e) => e.id),
+                                "approved",
+                              );
+                            }}
+                            className="rounded-xl bg-emerald-600 px-3 py-1.5 text-sm text-white hover:bg-emerald-500 disabled:bg-slate-300"
+                          >
+                            Approve all
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={pendingListFiltered.length === 0}
+                            onClick={() => {
+                              if (
+                                !confirm(
+                                  `Reject all ${pendingListFiltered.length} pending signups?`,
+                                )
+                              )
+                                return;
+                              void bulkPublicSetStatus(
+                                pendingListFiltered.map((e) => e.id),
+                                "rejected",
+                              );
+                            }}
+                            className="rounded-xl bg-amber-600 px-3 py-1.5 text-sm text-white hover:bg-amber-500 disabled:bg-slate-300"
+                          >
+                            Reject all
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {pendingGroups.length === 0 ? (
+                      <div className="p-6 text-sm text-slate-600">
+                        No pending entries.
+                      </div>
+                    ) : (
+                      <div className="divide-y">
+                        {pendingGroups.map((g) => {
+                          const isOpen = openPendingKeys.has(g.key);
+
+                          return (
+                            <details
+                              key={g.key}
+                              open={isOpen}
+                              className="group"
+                            >
+                              <summary
+                                className="cursor-pointer list-none px-5 py-4 bg-primary text-white hover:bg-primary/90"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  setOpenPendingKeys((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(g.key)) next.delete(g.key);
+                                    else next.add(g.key);
+                                    return next;
+                                  });
+                                }}
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="text-sm font-semibold text-white">
+                                    {g.key}
+                                  </div>
+                                  <div className="text-xs text-white">
+                                    {g.rows.length}{" "}
+                                    {g.rows.length === 1 ? "signup" : "signups"}
+                                  </div>
+                                </div>
+                              </summary>
+
+                              {isOpen ? (
+                                <div className="border-t bg-white">
+                                  <div className="grid grid-cols-12 border-b bg-primary/10 px-5 py-3 text-xs font-semibold text-black/95">
+                                    <div className="col-span-4">Name</div>
+                                    <div className="col-span-2">Role</div>
+                                    <div className="col-span-4">Notes</div>
+                                    <div className="col-span-2 text-right">
+                                      Actions
+                                    </div>
+                                  </div>
+
+                                  <div className="divide-y">
+                                    {g.rows.map((e) => (
+                                      <div
+                                        key={e.id}
+                                        className="grid grid-cols-12 items-center px-5 py-3 text-sm bg-white hover:bg-slate-50/60"
+                                      >
+                                        <div className="col-span-4 font-semibold text-slate-900">
+                                          {e.name}
+                                        </div>
+                                        <div className="col-span-2 text-slate-700">
+                                          {roleLabel(e.role)}
+                                        </div>
+                                        <div className="col-span-4 text-slate-700">
+                                          {e.notes ? (
+                                            e.notes
+                                          ) : (
+                                            <span className="text-slate-400">
+                                              —
+                                            </span>
+                                          )}
+                                        </div>
+
+                                        <div className="col-span-2 flex justify-end gap-2">
+                                          <button
+                                            type="button"
+                                            className="rounded-xl bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                                            onClick={() =>
+                                              setPublicEntryStatus(
+                                                e.id,
+                                                "approved",
+                                              )
+                                            }
+                                          >
+                                            Approve
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="rounded-xl bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-500"
+                                            onClick={() =>
+                                              setPublicEntryStatus(
+                                                e.id,
+                                                "rejected",
+                                              )
+                                            }
+                                          >
+                                            Reject
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+                            </details>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 )}
+
+                {/* ===================== Rejected (always below) ===================== */}
+                {canEdit && rejectedListFiltered.length ? (
+                  <div className="rounded-3xl border bg-slate-50 p-5">
+                    <div className="text-xs font-semibold text-slate-600">
+                      Rejected
+                    </div>
+
+                    <div className="mt-3 divide-y rounded-2xl border bg-white">
+                      {rejectedListFiltered.map((e) => (
+                        <div
+                          key={e.id}
+                          className="flex items-center justify-between gap-3 px-4 py-3"
+                        >
+                          <div className="text-sm text-slate-800">
+                            <span className="font-semibold">{e.name}</span>
+                            <span className="ml-2 text-slate-500 text-xs">
+                              {roleLabel(e.role)}
+                            </span>
+                          </div>
+
+                          {canEdit ? (
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                className="rounded-xl border px-3 py-1 text-xs font-semibold hover:bg-slate-50"
+                                onClick={() =>
+                                  setPublicEntryStatus(e.id, "pending")
+                                }
+                              >
+                                Pending
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded-xl bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                                onClick={() =>
+                                  setPublicEntryStatus(e.id, "approved")
+                                }
+                              >
+                                Approve
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
         </div>
       ) : null}
+
       {editOpen ? (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/40 backdrop-blur-sm p-4"

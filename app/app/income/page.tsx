@@ -172,19 +172,6 @@ function Toast({ show, text }: { show: boolean; text: string }) {
   );
 }
 
-/* ===================== CSV Import (Income) — placeholders for Part 4 ===================== */
-/**
- * Part 4 will add:
- * - import state
- * - csv parsing + server helpers
- * - "Import CSV" modal (scroll-proof)
- * - "Confirm append / warnings" modal (2nd modal)
- *
- * And the special rule:
- * - Keep member_name + description as-entered from CSV
- * - Unmatched member_name => status needs_review, not blanked
- */
-
 /* ===================== Page ===================== */
 
 export default function IncomePage() {
@@ -264,6 +251,7 @@ export default function IncomePage() {
   const [incomeCatQuery, setIncomeCatQuery] = useState("");
   const [incomeCatSuggestOpen, setIncomeCatSuggestOpen] = useState(false);
   const clearedIncomeCatOnFocusRef = useRef(false);
+  const [qmRowId, setQmRowId] = useState<string | null>(null);
 
   /* ===================== Derived maps/memos (File 2 logic preserved) ===================== */
 
@@ -1304,7 +1292,7 @@ export default function IncomePage() {
 
   /* ===================== Quick-add member hooks ===================== */
 
-  function openQuickAddMemberFromQuery(query: string): void {
+  function openQuickAddMemberFromQuery(query: string, rowId?: string): void {
     const trimmed = query.trim();
 
     // best-effort: split "First Last"
@@ -1318,6 +1306,7 @@ export default function IncomePage() {
     setQmAgeGroup("");
     setQmErr("");
 
+    setQmRowId(rowId ?? null);
     setQuickMemberOpen(true);
   }
 
@@ -1371,19 +1360,33 @@ export default function IncomePage() {
       }
 
       showToast("Member added");
+
+      // Close modal early for snappy UX
       setQuickMemberOpen(false);
 
-      // refresh member list + select the new member in item modal
+      // Refresh members list so dropdowns / maps are up-to-date
       await loadAll();
+
       if (data?.id) {
-        const label = `${data.first_name} ${data.last_name}`;
-        setMemberId(data.id);
-        setMemberQuery(label);
-        setMemberSuggestOpen(false);
-        setItemErr("");
+        const label = `${data.first_name} ${data.last_name}`.trim();
+
+        if (qmRowId) {
+          patchImportRowLocal(qmRowId, {
+            member_id: data.id,
+            member_match_query: label,
+            member_match_open: false,
+          });
+        } else {
+          // Fallback: your original single-item modal behavior
+          setMemberId(data.id);
+          setMemberQuery(label);
+          setMemberSuggestOpen(false);
+          setItemErr("");
+        }
       }
     } finally {
       setQmSaving(false);
+      setQmRowId(null);
     }
   }
 
@@ -1511,23 +1514,6 @@ export default function IncomePage() {
                   {draftCount} / 10 drafts
                 </div>
               </div>
-
-              {/* Import CSV entrypoint (modal built in Part 4) */}
-              <button
-                className={`rounded-2xl border px-3 py-2 text-xs font-semibold hover:bg-slate-50 ${
-                  !selectedBatch || selectedBatch.status !== "draft"
-                    ? "opacity-50 pointer-events-none"
-                    : ""
-                }`}
-                title={
-                  !selectedBatch || selectedBatch.status !== "draft"
-                    ? "Select a draft batch to import into"
-                    : "Import CSV into selected draft"
-                }
-                onClick={() => setImportOpen(true)}
-              >
-                Import CSV
-              </button>
             </div>
 
             <div className="mt-4 space-y-5">
@@ -2155,7 +2141,7 @@ export default function IncomePage() {
       {/* ===================== Quick-add Member modal ===================== */}
       {quickMemberOpen ? (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
+          className="fixed inset-0 z-[9990] flex items-center justify-center bg-black/30 p-4"
           onClick={() => setQuickMemberOpen(false)}
         >
           <div
@@ -2243,7 +2229,10 @@ export default function IncomePage() {
             <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
               <button
                 className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
-                onClick={() => setQuickMemberOpen(false)}
+                onClick={() => {
+                  setQuickMemberOpen(false);
+                  setQmRowId(null);
+                }}
               >
                 Cancel
               </button>
@@ -2330,11 +2319,11 @@ export default function IncomePage() {
       {importOpen ? (
         <div
           className="fixed inset-0 z-[70] bg-black/30"
-          onClick={() => {
-            void (async () => {
-              await closeImportModal();
-            })();
-          }}
+          // onClick={() => {
+          //   void (async () => {
+          //     await closeImportModal();
+          //   })();
+          // }}
         >
           <div className="h-[100dvh] w-full p-4 flex items-center justify-center">
             <div
@@ -2767,11 +2756,11 @@ export default function IncomePage() {
                                         <input
                                           className="w-full rounded-xl border px-3 py-2 text-sm"
                                           value={r.member_match_query ?? ""}
-                                          onFocus={() =>
+                                          onFocus={() => {
                                             patchImportRowLocal(r.id, {
                                               member_match_open: true,
-                                            })
-                                          }
+                                            });
+                                          }}
                                           onBlur={() => {
                                             window.setTimeout(() => {
                                               patchImportRowLocal(r.id, {
@@ -2781,13 +2770,13 @@ export default function IncomePage() {
                                           }}
                                           onChange={(e) => {
                                             const v = e.target.value;
-                                            // Update query text
+
                                             patchImportRowLocal(r.id, {
                                               member_match_query: v,
                                               member_match_open: true,
                                             });
 
-                                            // Optional: auto-set member_id ONLY on exact match
+                                            // auto-set member_id only on exact match
                                             const id =
                                               memberIdByLabel.get(
                                                 v.trim().toLowerCase(),
@@ -2807,6 +2796,7 @@ export default function IncomePage() {
                                               )
                                                 .trim()
                                                 .toLowerCase();
+
                                               const shown = !needle
                                                 ? members.slice(0, 8)
                                                 : members
@@ -2817,40 +2807,80 @@ export default function IncomePage() {
                                                     )
                                                     .slice(0, 8);
 
-                                              if (shown.length === 0) {
-                                                return (
-                                                  <div className="px-4 py-3 text-sm text-slate-600">
-                                                    No matches.
-                                                  </div>
-                                                );
-                                              }
+                                              const exactId = needle
+                                                ? (memberIdByLabel.get(
+                                                    needle,
+                                                  ) ?? null)
+                                                : null;
 
-                                              return shown.map((m) => {
-                                                const label = `${m.first_name} ${m.last_name}`;
-                                                return (
-                                                  <button
-                                                    type="button"
-                                                    key={m.id}
-                                                    className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
-                                                    onMouseDown={(e) =>
-                                                      e.preventDefault()
-                                                    }
-                                                    onClick={() => {
-                                                      patchImportRowLocal(
-                                                        r.id,
-                                                        {
-                                                          member_id: m.id,
-                                                          member_match_query:
-                                                            label,
-                                                          member_match_open: false,
-                                                        },
+                                              const showAddMemberRow =
+                                                (
+                                                  r.member_match_query ?? ""
+                                                ).trim().length > 0 && !exactId;
+
+                                              return (
+                                                <>
+                                                  {shown.length === 0 ? (
+                                                    <div className="px-4 py-3 text-sm text-slate-600">
+                                                      No matches.
+                                                    </div>
+                                                  ) : (
+                                                    shown.map((m) => {
+                                                      const label = `${m.first_name} ${m.last_name}`;
+                                                      return (
+                                                        <button
+                                                          type="button"
+                                                          key={m.id}
+                                                          className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
+                                                          onMouseDown={(e) =>
+                                                            e.preventDefault()
+                                                          }
+                                                          onClick={() => {
+                                                            patchImportRowLocal(
+                                                              r.id,
+                                                              {
+                                                                member_id: m.id,
+                                                                member_match_query:
+                                                                  label,
+                                                                member_match_open: false,
+                                                              },
+                                                            );
+                                                          }}
+                                                        >
+                                                          {label}
+                                                        </button>
                                                       );
-                                                    }}
-                                                  >
-                                                    {label}
-                                                  </button>
-                                                );
-                                              });
+                                                    })
+                                                  )}
+
+                                                  {showAddMemberRow ? (
+                                                    <div className="border-t">
+                                                      <button
+                                                        type="button"
+                                                        className="block w-full px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-slate-50"
+                                                        onMouseDown={(e) =>
+                                                          e.preventDefault()
+                                                        }
+                                                        onClick={() =>
+                                                          openQuickAddMemberFromQuery(
+                                                            r.member_match_query ??
+                                                              "",
+                                                            r.id,
+                                                          )
+                                                        }
+                                                      >
+                                                        + Add new member
+                                                        {(
+                                                          r.member_match_query ??
+                                                          ""
+                                                        ).trim()
+                                                          ? `: “${(r.member_match_query ?? "").trim()}”`
+                                                          : ""}
+                                                      </button>
+                                                    </div>
+                                                  ) : null}
+                                                </>
+                                              );
                                             })()}
                                           </div>
                                         ) : null}
@@ -2859,10 +2889,12 @@ export default function IncomePage() {
                                         (r.member_match_query ?? "").trim()
                                           .length > 0 ? (
                                           <div className="mt-1 text-[11px] text-amber-700">
-                                            Select a valid member from the list.
+                                            Select a valid member from the list
+                                            (or add a new one).
                                           </div>
                                         ) : null}
                                       </div>
+
                                       <div className="mt-2">
                                         <input
                                           className="w-full rounded-xl border px-3 py-2 text-sm"

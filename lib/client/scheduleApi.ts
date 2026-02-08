@@ -5,6 +5,8 @@ import type {
   PublicMetaResponse,
   PublicMonthResponse,
   PublicSubmitBody,
+  PublicDayResponse,
+  ScheduleRole,
 } from "@/lib/schedule/types";
 
 type ApiOk<T> = T;
@@ -131,5 +133,35 @@ export function verifyPublicMonthCode(token: string, month: string, code: string
     `/api/schedule/public/verify-code`,
     "POST",
     { token, month, code },
+  );
+}
+
+export function getPublicDay(token: string, month: string, date: string) {
+  const qs = new URLSearchParams({ token, month, date });
+  return apiGet<PublicDayResponse>(
+    `/api/schedule/public/day?${qs.toString()}`
+  );
+}
+
+export type PublicEntryPatch = Partial<{
+  name: string;
+  notes: string | null;
+  role: ScheduleRole;
+  service_category_id: string | null;
+  department_category_id: string | null;
+}>;
+
+export function patchPublicEntry(args: {
+  token: string;
+  month: string;
+  month_code: string;
+  entry_id: string;
+  status?: "pending" | "approved" | "rejected";
+  patch?: PublicEntryPatch;
+}) {
+  return apiSend<{ ok: true; entry: { id: string; status: string } }>(
+    "/api/schedule/public/entry",
+    "PATCH",
+    args,
   );
 }

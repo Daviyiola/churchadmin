@@ -103,3 +103,27 @@ export type AdminMonthSettingsPatchBody = {
   edits_open?: boolean;
   is_public_visible?: boolean;
 };
+
+export type PublicDayEntry = {
+  id: string;
+  date: string;
+  service_category_id: string | null;
+  department_category_id: string | null;
+  role: ScheduleRole;
+  name: string;
+  notes: string | null;
+  created_at: string; // you return this in the route
+};
+
+export type PublicDayResponse = {
+  ok: true;
+  month: {
+    month: string;
+    draft_open: boolean;
+    edits_open: boolean;
+    is_public_visible: boolean;
+  };
+  approved: PublicDayEntry[];
+  pending: PublicDayEntry[];
+  rejected: PublicDayEntry[];
+};

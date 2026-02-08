@@ -33,14 +33,14 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => null);
     const orgId = String(body?.org_id ?? "").trim();
     const name = String(body?.name ?? "Intake QR").trim();
-    const expiresInDaysRaw = Number(body?.expires_in_days ?? 3);
+    const expiresInDaysRaw = Number(body?.expires_in_days ?? 30);
 
     const expiresInDays =
       Number.isFinite(expiresInDaysRaw) &&
       expiresInDaysRaw > 0 &&
-      expiresInDaysRaw <= 7
+      expiresInDaysRaw <= 31
         ? Math.floor(expiresInDaysRaw)
-        : 3;
+        : 30; // default 30 days, max 70 days
 
     if (!orgId) {
       return NextResponse.json({ error: "Missing org_id" }, { status: 400 });

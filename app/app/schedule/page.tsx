@@ -29,6 +29,12 @@ type DayModalState = { open: false } | { open: true; date: string };
 
 type CalendarCell = { iso: string; day: number; inMonth: boolean };
 
+type ServiceGroupSummary = {
+  serviceLabel: string;
+  total: number;
+  namesPreview: string;
+};
+
 function monthFromDate(d: Date) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -235,6 +241,13 @@ export default function AdminSchedulePage() {
   const [deptFilterId, setDeptFilterId] = useState<string>("all");
   const [autoApproveUi, setAutoApproveUi] = useState<boolean>(false);
 
+  const [openPendingKeys, setOpenPendingKeys] = useState<Set<string>>(
+    new Set(),
+  );
+  const [openApprovedKeys, setOpenApprovedKeys] = useState<Set<string>>(
+    new Set(),
+  );
+
   const serviceIdByLabel = useMemo(() => {
     const m = new Map<string, string>();
     for (const c of serviceCats) m.set(normalizeCategoryName(c.name), c.id);
@@ -344,6 +357,65 @@ export default function AdminSchedulePage() {
     } catch (e) {
       setErr({ message: e instanceof Error ? e.message : "Error" });
     }
+  }
+
+  type ServiceGroupSummary = {
+    serviceLabel: string;
+    total: number;
+    namesPreview: string;
+  };
+
+  function summarizeByService(
+    items: Entry[],
+    status: ScheduleStatus,
+    serviceNameById: Map<string, string>,
+    opts?: {
+      maxServices?: number; // how many service groups to show in the cell
+      maxNamesChars?: number; // max chars for names preview per service
+      sort?: "count" | "alpha"; // how to order services in the cell
+    },
+  ): { shown: ServiceGroupSummary[]; overflowServices: number } {
+    const maxServices = opts?.maxServices ?? 2;
+    const maxNamesChars = opts?.maxNamesChars ?? 80;
+    const sort = opts?.sort ?? "count";
+
+    const filtered = items.filter((e) => e.status === status);
+
+    // group by service id
+    const g = new Map<string, Entry[]>();
+    for (const e of filtered) {
+      const sid = String(e.service_category_id ?? "");
+      const key = sid || "__none__";
+      if (!g.has(key)) g.set(key, []);
+      g.get(key)!.push(e);
+    }
+
+    const groups = Array.from(g.entries()).map(([sid, rows]) => {
+      const label = sid === "__none__" ? "—" : serviceNameById.get(sid) || "—";
+
+      const names = rows.map((r) => r.name).filter(Boolean);
+      const namesPreview = shouldCollapseNames(names)
+        ? `${rows.length} people`
+        : previewNames(names, maxNamesChars);
+
+      return {
+        serviceLabel: label,
+        total: rows.length,
+        namesPreview,
+      } satisfies ServiceGroupSummary;
+    });
+
+    groups.sort((a, b) => {
+      if (sort === "alpha") return a.serviceLabel.localeCompare(b.serviceLabel);
+      // default: biggest first, then alpha
+      if (b.total !== a.total) return b.total - a.total;
+      return a.serviceLabel.localeCompare(b.serviceLabel);
+    });
+
+    const shown = groups.slice(0, maxServices);
+    const overflowServices = Math.max(0, groups.length - shown.length);
+
+    return { shown, overflowServices };
   }
 
   function applyDeptFilter(list: Entry[]) {
@@ -761,6 +833,34 @@ export default function AdminSchedulePage() {
     return !deptIdByLabel.has(clean.toLowerCase());
   }, [deptQuery, deptIdByLabel]);
 
+  function setsEqual(a: Set<string>, b: Set<string>) {
+    if (a.size !== b.size) return false;
+    for (const v of a) if (!b.has(v)) return false;
+    return true;
+  }
+
+  useEffect(() => {
+    const keys =
+      pendingGroups.length <= 2
+        ? pendingGroups.map((g) => g.key)
+        : pendingGroups.slice(0, 2).map((g) => g.key);
+
+    const next = new Set(keys);
+
+    setOpenPendingKeys((prev) => (setsEqual(prev, next) ? prev : next));
+  }, [modalDate, pendingGroups]);
+
+  useEffect(() => {
+    const keys =
+      approvedGroups.length <= 2
+        ? approvedGroups.map((g) => g.key)
+        : approvedGroups.slice(0, 2).map((g) => g.key);
+
+    const next = new Set(keys);
+
+    setOpenApprovedKeys((prev) => (setsEqual(prev, next) ? prev : next));
+  }, [modalDate, approvedGroups]);
+
   // ---------- render ----------
   return (
     <>
@@ -1019,6 +1119,20 @@ export default function AdminSchedulePage() {
 
                     const isLastCol = (idx + 1) % 7 === 0;
 
+                    const approvedSummary = summarizeByService(
+                      dayEntries,
+                      "approved",
+                      serviceNameById,
+                      { maxServices: 1, maxNamesChars: 50, sort: "count" },
+                    );
+
+                    const pendingSummary = summarizeByService(
+                      dayEntries,
+                      "pending",
+                      serviceNameById,
+                      { maxServices: 1, maxNamesChars: 50, sort: "count" },
+                    );
+
                     // show BOTH badges always; show ONE detail box based on tab
                     const showApprovedInline = tab === "approved";
                     const showPendingInline = tab === "draft";
@@ -1077,47 +1191,91 @@ export default function AdminSchedulePage() {
                             </div>
 
                             <div className="mt-4 flex-1 space-y-2 min-h-0">
-                              {showApprovedInline ? (
-                                approved.length ? (
-                                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-xs text-emerald-900">
+                              {showApprovedInline && approved.length > 0 ? (
+                                <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-xs">
+                                  <div className="flex items-center justify-between">
                                     <div className="font-semibold text-emerald-900">
                                       Approved
                                     </div>
+                                    <div className="text-[11px] text-emerald-900/70">
+                                      {approved.length || 0}
+                                    </div>
+                                  </div>
 
-                                    <div className="mt-1 whitespace-normal leading-snug text-black line-clamp-5">
-                                      {collapseApproved
-                                        ? `Approved (${approved.length})`
-                                        : previewNames(approvedNames, 140)}
+                                  {approvedSummary.shown.length ? (
+                                    <div className="mt-2 space-y-2">
+                                      {approvedSummary.shown.map((s) => (
+                                        <div
+                                          key={`a-${c.iso}-${s.serviceLabel}`}
+                                          className="min-w-0"
+                                        >
+                                          <div className="font-semibold text-slate-900 truncate">
+                                            {s.serviceLabel}
+                                          </div>
+                                          <div className="text-slate-700 whitespace-normal leading-snug line-clamp-2">
+                                            {s.namesPreview}
+                                          </div>
+                                        </div>
+                                      ))}
+
+                                      {approvedSummary.overflowServices ? (
+                                        <div className="text-slate-600">
+                                          +{approvedSummary.overflowServices}{" "}
+                                          more{" "}
+                                          {approvedSummary.overflowServices ===
+                                          1
+                                            ? "service"
+                                            : "services"}
+                                        </div>
+                                      ) : null}
                                     </div>
-                                  </div>
-                                ) : (
-                                  <div className="rounded-xl border bg-white px-3 py-3 text-xs text-slate-500">
-                                    <div className="font-semibold text-slate-700">
-                                      Approved
-                                    </div>
-                                    <div className="mt-1">—</div>
-                                  </div>
-                                )
+                                  ) : (
+                                    <div className="mt-2 text-slate-600">—</div>
+                                  )}
+                                </div>
                               ) : null}
 
-                              {showPendingInline ? (
-                                pending.length ? (
-                                  <div className="rounded-xl border bg-amber-50 px-3 py-7 text-xs text-amber-900">
-                                    <div className="font-semibold">Pending</div>
-                                    <div className="mt-1 text-slate-600 whitespace-normal leading-snug line-clamp-3">
-                                      {collapsePending
-                                        ? `Pending (${pending.length})`
-                                        : previewNames(pendingNames, 140)}
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="rounded-xl border bg-white px-3 py-7 text-xs text-slate-500">
-                                    <div className="font-semibold text-slate-700">
+                              {showPendingInline && pending.length > 0 ? (
+                                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs">
+                                  <div className="flex items-center justify-between">
+                                    <div className="font-semibold text-amber-900">
                                       Pending
                                     </div>
-                                    <div className="mt-1">—</div>
+                                    <div className="text-[11px] text-amber-900/70">
+                                      {pending.length || 0}
+                                    </div>
                                   </div>
-                                )
+
+                                  {pendingSummary.shown.length ? (
+                                    <div className="mt-2 space-y-2">
+                                      {pendingSummary.shown.map((s) => (
+                                        <div
+                                          key={`p-${c.iso}-${s.serviceLabel}`}
+                                          className="min-w-0"
+                                        >
+                                          <div className="font-semibold text-slate-900 truncate">
+                                            {s.serviceLabel}
+                                          </div>
+                                          <div className="text-slate-700 whitespace-normal leading-snug line-clamp-2">
+                                            {s.namesPreview}
+                                          </div>
+                                        </div>
+                                      ))}
+
+                                      {pendingSummary.overflowServices ? (
+                                        <div className="text-slate-600">
+                                          +{pendingSummary.overflowServices}{" "}
+                                          more{" "}
+                                          {pendingSummary.overflowServices === 1
+                                            ? "service"
+                                            : "services"}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  ) : (
+                                    <div className="mt-2 text-slate-600">—</div>
+                                  )}
+                                </div>
                               ) : null}
                             </div>
                           </>
@@ -1534,77 +1692,97 @@ export default function AdminSchedulePage() {
                       </div>
                     ) : (
                       <div className="divide-y">
-                        {pendingGroups.map((g) => (
-                          <details key={g.key} open className="group">
-                            <summary className="cursor-pointer list-none px-5 py-4 bg-primary text-white hover:bg-primary/90">
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="text-sm font-semibold text-white">
-                                  {g.key}
-                                </div>
-                                <div className="text-xs text-white">
-                                  {g.rows.length}{" "}
-                                  {g.rows.length === 1 ? "signup" : "signups"}
-                                </div>
-                              </div>
-                            </summary>
+                        {pendingGroups.map((g) => {
+                          const isOpen = openPendingKeys.has(g.key);
 
-                            <div className="border-t bg-white">
-                              <div className="grid grid-cols-12 border-b bg-primary/10 px-5 py-3 text-xs font-semibold text-black/95">
-                                <div className="col-span-4">Name</div>
-                                <div className="col-span-2">Role</div>
-                                <div className="col-span-4">Notes</div>
-                                <div className="col-span-2 text-right">
-                                  Actions
+                          return (
+                            <details
+                              key={g.key}
+                              open={isOpen}
+                              className="group"
+                            >
+                              <summary
+                                className="cursor-pointer list-none px-5 py-4 bg-primary text-white hover:bg-primary/90"
+                                onClick={(e) => {
+                                  e.preventDefault(); // stop native toggle
+                                  setOpenPendingKeys((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(g.key)) next.delete(g.key);
+                                    else next.add(g.key);
+                                    return next;
+                                  });
+                                }}
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="text-sm font-semibold text-white">
+                                    {g.key}
+                                  </div>
+                                  <div className="text-xs text-white">
+                                    {g.rows.length}{" "}
+                                    {g.rows.length === 1 ? "signup" : "signups"}
+                                  </div>
                                 </div>
-                              </div>
-
-                              <div className="divide-y">
-                                {g.rows.map((e) => (
-                                  <div
-                                    key={e.id}
-                                    className="grid grid-cols-12 items-center px-5 py-3 text-sm bg-white hover:bg-slate-50/60"
-                                  >
-                                    <div className="col-span-4 font-semibold text-slate-900">
-                                      {e.name}
-                                    </div>
-                                    <div className="col-span-2 text-slate-700">
-                                      {roleLabel(e.role)}
-                                    </div>
-                                    <div className="col-span-4 text-slate-700">
-                                      {e.notes ? (
-                                        e.notes
-                                      ) : (
-                                        <span className="text-slate-400">
-                                          —
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="col-span-2 flex justify-end gap-2">
-                                      <button
-                                        type="button"
-                                        className="rounded-xl bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
-                                        onClick={() =>
-                                          setEntryStatus(e.id, "approved")
-                                        }
-                                      >
-                                        Approve
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="rounded-xl bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-500"
-                                        onClick={() =>
-                                          setEntryStatus(e.id, "rejected")
-                                        }
-                                      >
-                                        Reject
-                                      </button>
+                              </summary>
+                              {isOpen ? (
+                                <div className="border-t bg-white">
+                                  <div className="grid grid-cols-12 border-b bg-primary/10 px-5 py-3 text-xs font-semibold text-black/95">
+                                    <div className="col-span-4">Name</div>
+                                    <div className="col-span-2">Role</div>
+                                    <div className="col-span-4">Notes</div>
+                                    <div className="col-span-2 text-right">
+                                      Actions
                                     </div>
                                   </div>
-                                ))}
-                              </div>
-                            </div>
-                          </details>
-                        ))}
+
+                                  <div className="divide-y">
+                                    {g.rows.map((e) => (
+                                      <div
+                                        key={e.id}
+                                        className="grid grid-cols-12 items-center px-5 py-3 text-sm bg-white hover:bg-slate-50/60"
+                                      >
+                                        <div className="col-span-4 font-semibold text-slate-900">
+                                          {e.name}
+                                        </div>
+                                        <div className="col-span-2 text-slate-700">
+                                          {roleLabel(e.role)}
+                                        </div>
+                                        <div className="col-span-4 text-slate-700">
+                                          {e.notes ? (
+                                            e.notes
+                                          ) : (
+                                            <span className="text-slate-400">
+                                              —
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="col-span-2 flex justify-end gap-2">
+                                          <button
+                                            type="button"
+                                            className="rounded-xl bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                                            onClick={() =>
+                                              setEntryStatus(e.id, "approved")
+                                            }
+                                          >
+                                            Approve
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="rounded-xl bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-500"
+                                            onClick={() =>
+                                              setEntryStatus(e.id, "rejected")
+                                            }
+                                          >
+                                            Reject
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+                            </details>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -1625,74 +1803,94 @@ export default function AdminSchedulePage() {
                       </div>
                     ) : (
                       <div className="divide-y">
-                        {approvedGroups.map((g) => (
-                          <details key={g.key} open className="group">
-                            <summary className="cursor-pointer list-none px-5 py-4 bg-primary">
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="text-sm font-semibold text-white">
-                                  {g.key}
-                                </div>
-                                <div className="text-xs text-white">
-                                  {g.rows.length}{" "}
-                                  {g.rows.length === 1
-                                    ? "assignment"
-                                    : "assignments"}
-                                </div>
-                              </div>
-                            </summary>
+                        {approvedGroups.map((g) => {
+                          const isOpen = openApprovedKeys.has(g.key);
 
-                            <div className="border-t bg-white">
-                              <div className="grid grid-cols-12 border-b bg-primary/15 px-5 py-3 text-xs font-semibold text-black">
-                                <div className="col-span-4">Name</div>
-                                <div className="col-span-2">Role</div>
-                                <div className="col-span-4">Notes</div>
-                                <div className="col-span-2 text-right">
-                                  Actions
+                          return (
+                            <details
+                              key={g.key}
+                              open={isOpen}
+                              className="group"
+                            >
+                              <summary
+                                className="cursor-pointer list-none px-5 py-4 bg-primary text-white hover:bg-primary/90"
+                                onClick={(e) => {
+                                  e.preventDefault(); // stop native toggle
+                                  setOpenApprovedKeys((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(g.key)) next.delete(g.key);
+                                    else next.add(g.key);
+                                    return next;
+                                  });
+                                }}
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="text-sm font-semibold text-white">
+                                    {g.key}
+                                  </div>
+                                  <div className="text-xs text-white">
+                                    {g.rows.length}{" "}
+                                    {g.rows.length === 1
+                                      ? "assignment"
+                                      : "assignments"}
+                                  </div>
                                 </div>
-                              </div>
-
-                              <div className="divide-y">
-                                {g.rows.map((e) => (
-                                  <div
-                                    key={e.id}
-                                    className="grid grid-cols-12 items-center px-5 py-3 text-sm bg-white hover:bg-slate-50/60"
-                                  >
-                                    <div className="col-span-4 font-semibold text-slate-900">
-                                      {e.name}
-                                    </div>
-                                    <div className="col-span-2 text-slate-700">
-                                      {roleLabel(e.role)}
-                                    </div>
-                                    <div className="col-span-4 text-slate-700">
-                                      {e.notes ? (
-                                        e.notes
-                                      ) : (
-                                        <span className="text-slate-400">
-                                          —
-                                        </span>
-                                      )}
-                                    </div>
-
-                                    <div className="col-span-2 flex justify-end">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          if (!confirm(`Reject ${e.name}?`))
-                                            return;
-                                          setEntryStatus(e.id, "rejected");
-                                        }}
-                                        className="rounded-xl bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-500"
-                                        title="Reject assignment"
-                                      >
-                                        Remove
-                                      </button>
+                              </summary>
+                              {isOpen ? (
+                                <div className="border-t bg-white">
+                                  <div className="grid grid-cols-12 border-b bg-primary/15 px-5 py-3 text-xs font-semibold text-black">
+                                    <div className="col-span-4">Name</div>
+                                    <div className="col-span-2">Role</div>
+                                    <div className="col-span-4">Notes</div>
+                                    <div className="col-span-2 text-right">
+                                      Actions
                                     </div>
                                   </div>
-                                ))}
-                              </div>
-                            </div>
-                          </details>
-                        ))}
+
+                                  <div className="divide-y">
+                                    {g.rows.map((e) => (
+                                      <div
+                                        key={e.id}
+                                        className="grid grid-cols-12 items-center px-5 py-3 text-sm bg-white hover:bg-slate-50/60"
+                                      >
+                                        <div className="col-span-4 font-semibold text-slate-900">
+                                          {e.name}
+                                        </div>
+                                        <div className="col-span-2 text-slate-700">
+                                          {roleLabel(e.role)}
+                                        </div>
+                                        <div className="col-span-4 text-slate-700">
+                                          {e.notes ? (
+                                            e.notes
+                                          ) : (
+                                            <span className="text-slate-400">
+                                              —
+                                            </span>
+                                          )}
+                                        </div>
+
+                                        <div className="col-span-2 flex justify-end">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              if (!confirm(`Reject ${e.name}?`))
+                                                return;
+                                              setEntryStatus(e.id, "rejected");
+                                            }}
+                                            className="rounded-xl bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-500"
+                                            title="Reject assignment"
+                                          >
+                                            Remove
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+                            </details>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
