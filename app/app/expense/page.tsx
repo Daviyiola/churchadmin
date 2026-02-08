@@ -1948,11 +1948,8 @@ export default function ExpenseDraftPage() {
             <div
               className={[
                 "w-full max-w-6xl rounded-3xl bg-white shadow-xl",
-                "flex flex-col overflow-hidden",
-                // Upload step: don't force full height (removes useless white space)
-                isUpload
-                  ? "h-auto max-h-[calc(100dvh-4rem)]"
-                  : "h-[calc(100dvh-4rem)]",
+    "flex flex-col overflow-hidden",
+    "h-[calc(100dvh-4rem)]",
               ].join(" ")}
               onClick={(e) => e.stopPropagation()}
             >
@@ -1987,14 +1984,7 @@ export default function ExpenseDraftPage() {
               </div>
 
               {/* ================= Body (VERTICAL SCROLLER) ================= */}
-              <div
-                className={[
-                  "px-6 py-6",
-                  isUpload
-                    ? "flex-none overflow-visible"
-                    : "flex-1 min-h-0 overflow-y-auto",
-                ].join(" ")}
-              >
+              <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6">
                 {importErr ? (
                   <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                     {importErr}
