@@ -264,6 +264,16 @@ export default function ExpensePublishedPage() {
   }, [orgId]);
 
   useEffect(() => {
+  if (!adjOpen) return;
+  const prev = document.body.style.overflow;
+  document.body.style.overflow = "hidden";
+  return () => {
+    document.body.style.overflow = prev;
+  };
+}, [adjOpen]);
+
+
+  useEffect(() => {
     if (selectedBatchId) loadEntries(selectedBatchId);
     else setEntries([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -762,16 +772,16 @@ export default function ExpensePublishedPage() {
 
       {/* Negative adjustment modal */}
       {adjOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-          <div className="w-full max-w-3xl rounded-3xl bg-white shadow-xl">
-            <div className="border-b px-6 py-4">
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+    <div className="w-full max-w-3xl max-h-[90vh] rounded-3xl bg-white shadow-xl flex flex-col overflow-hidden">
+            <div className="border-b px-6 py-4 shrink-0">
               <div className="text-sm font-semibold">Negative adjustment</div>
               <div className="text-xs text-slate-600">
                 Posts a correcting entry. Admin only.
               </div>
             </div>
 
-            <div className="px-6 py-6 space-y-4">
+             <div className="px-6 py-6 space-y-4 overflow-y-auto">
               <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                 This will post a <span className="font-semibold">negative</span>{" "}
                 amount to correct an earlier mistake. For missing expenses, add
