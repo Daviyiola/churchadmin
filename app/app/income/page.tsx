@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 import { useRouter } from "next/navigation";
+import FloatingXScroll from "@/components/FloatingXScroll";
 
 /* ===================== Types ===================== */
 
@@ -27,6 +28,7 @@ type MemberRow = {
   gender?: "male" | "female";
   age_group?: "1-12" | "13-17" | "18-35" | "36+";
   segment?: "men" | "women" | "boys" | "girls";
+  membership_stage?: "member" ;
 };
 
 type DraftBatch = {
@@ -849,6 +851,7 @@ export default function IncomePage() {
         .select("id,first_name,last_name,status,gender,age_group,segment")
         .eq("org_id", orgId)
         .eq("status", "active")
+        .eq("membership_stage", "member")
         .order("last_name", { ascending: true })
         .order("first_name", { ascending: true }),
       supabase
@@ -1093,7 +1096,7 @@ export default function IncomePage() {
     }
 
     const ok = window.confirm(
-      "Publish this draft batch? Published batches are locked.",
+      "Publish this draft? Published entries cannot be deleted.",
     );
     if (!ok) return;
 
@@ -1101,16 +1104,11 @@ export default function IncomePage() {
     setErr("");
 
     try {
-      // === Option A: RPC (recommended) ===
-      // Replace this name/args if your RPC differs.
-      const { error } = await supabase.rpc("publish_income_batch", {
-        p_org_id: orgId,
+      const { error } = await supabase.rpc("publish_income_draft", {
         p_batch_id: selectedBatch.id,
       });
 
       if (error) {
-        // === Option B: If you don't have RPC, at minimum lock the batch ===
-        // (but you'd still need server-side to move rows to ledger)
         setErr(error.message);
         return;
       }
@@ -1656,13 +1654,13 @@ export default function IncomePage() {
 
                 <div className="mt-5 rounded-2xl border bg-slate-50 p-4 text-sm text-slate-700">
                   {selectedBatch.status === "draft"
-                    ? "Add and edit draft items, then publish. Published entries become immutable."
+                    ? "Add and edit draft items, then publish. Published entries cannot be deleted."
                     : "This batch is published and locked. Add a new draft for missing people, or post a negative adjustment for corrections."}
                 </div>
 
                 {/* Items table */}
                 <div className="mt-4 rounded-3xl border bg-white overflow-hidden">
-                  <div className="overflow-x-auto">
+                  <FloatingXScroll forceShow={true} onlyWhenOverflow={false}>
                     <div className="min-w-[1100px]">
                       <div className="grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100 rounded-t-3xl">
                         <div className="col-span-3">Member</div>
@@ -1734,7 +1732,7 @@ export default function IncomePage() {
                         </div>
                       )}
                     </div>
-                  </div>
+                  </FloatingXScroll>
                 </div>
 
                 {!isFinance && selectedBatch.status === "draft" ? (
@@ -2319,26 +2317,24 @@ export default function IncomePage() {
       {importOpen ? (
         <div
           className="fixed inset-0 z-[70] bg-black/30"
-          // onClick={() => {
-          //   void (async () => {
-          //     await closeImportModal();
-          //   })();
-          // }}
+          onClick={() => {
+            // backdrop click closes
+            void (async () => {
+              void closeImportModal();
+            })();
+          }}
         >
           <div className="h-[100dvh] w-full p-4 flex items-center justify-center">
             <div
               className={[
                 "w-full max-w-6xl rounded-3xl bg-white shadow-xl",
                 "flex flex-col overflow-hidden",
-                // Upload step: don't force full height
-                isUpload
-                  ? "h-auto max-h-[calc(100dvh-4rem)]"
-                  : "h-[calc(100dvh-4rem)]",
+                "h-[calc(100dvh-4rem)]",
               ].join(" ")}
               onClick={(e) => e.stopPropagation()}
             >
               {/* ================= Header (fixed) ================= */}
-              <div className="shrink-0 border-b px-6 py-4 flex items-start justify-between gap-4">
+              <div className="shrink-0 border-b px-6 py-4 flex items-center justify-between gap-4">
                 <div className="min-w-0">
                   <div className="text-sm font-semibold">
                     Import Income (CSV)
@@ -2372,14 +2368,7 @@ export default function IncomePage() {
               </div>
 
               {/* ================= Body (VERTICAL SCROLLER) ================= */}
-              <div
-                className={[
-                  "px-6 py-6",
-                  isUpload
-                    ? "flex-none overflow-visible"
-                    : "flex-1 min-h-0 overflow-y-auto",
-                ].join(" ")}
-              >
+              <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6">
                 {importErr ? (
                   <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                     {importErr}
@@ -2683,20 +2672,11 @@ export default function IncomePage() {
                       </div>
                     </div>
 
-                    {/* ================= Top horizontal scrollbar ================= */}
-                    <div
-                      ref={topXRef}
-                      className="overflow-x-auto overflow-y-hidden h-4 mb-2"
-                    >
-                      {/* This div ONLY exists to create scroll width */}
-                      <div style={{ width: scrollWidth }} className="h-1" />
-                    </div>
-
-                    {/* ================= Review table ================= */}
                     <div className="mt-4 rounded-3xl border bg-white overflow-hidden">
-                      <div
-                        ref={botXRef}
-                        className="overflow-x-auto overflow-y-visible"
+                      {/* Horizontal scroll lives here (single scrollbar) */}
+                      <FloatingXScroll
+                        forceShow={true}
+                        onlyWhenOverflow={false}
                       >
                         <div className="min-w-[1200px]">
                           <div className="sticky top-0 z-20 grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100">
@@ -3014,7 +2994,7 @@ export default function IncomePage() {
                             );
                           })()}
                         </div>
-                      </div>
+                      </FloatingXScroll>
                     </div>
 
                     <div className="mt-4 text-xs text-slate-500">

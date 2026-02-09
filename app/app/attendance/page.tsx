@@ -14,12 +14,14 @@ type MemberRow = {
   first_name: string;
   last_name: string;
   status: "active" | "archived";
+  membership_stage: "member" 
   gender: "male" | "female";
   dob: string | null;
   age_group: "1-12" | "13-17" | "18-35" | "36+" | "unknown";
   segment: "men" | "women" | "boys" | "girls" | "unknown";
   note: string | null;
 };
+
 
 // === Attendance draft batch ===
 type DraftBatch = {
@@ -337,6 +339,7 @@ export default function AttendanceDraftPage() {
         )
         .eq("org_id", orgId)
         .eq("status", "active")
+        .eq("membership_stage", "member")
         .order("last_name", { ascending: true })
         .order("first_name", { ascending: true }),
       supabase
@@ -502,12 +505,12 @@ export default function AttendanceDraftPage() {
     if (!orgId || !selectedBatchId) return;
     if (!selectedBatch || selectedBatch.status !== "draft") return;
 
-    if (draftHeadcounts.length > 0) {
-      setErr(
-        "Clear headcount before using individual roll (prevents double counting).",
-      );
-      return;
-    }
+    // if (draftHeadcounts.length > 0) {
+    //   setErr(
+    //     "Clear headcount before using individual roll (prevents double counting).",
+    //   );
+    //   return;
+    // }
 
     // prevent duplicates client-side too
     if (attendedMemberIdSet.has(memberId)) return;
@@ -543,40 +546,17 @@ export default function AttendanceDraftPage() {
     await loadDraftContent(selectedBatchId);
   };
 
-  //   const clearMemberRoll = async () => {
-  //     if (!orgId || !selectedBatchId) return;
-  //     if (!selectedBatch || selectedBatch.status !== "draft") return;
-  //     if (draftMembers.length === 0) return;
-
-  //     const ok = confirm("Clear all marked members for this draft?");
-  //     if (!ok) return;
-
-  //     const { error } = await supabase
-  //       .from("attendance_draft_members")
-  //       .delete()
-  //       .eq("org_id", orgId)
-  //       .eq("session_id", selectedBatchId);
-
-  //     if (error) {
-  //       setErr(error.message);
-  //       return;
-  //     }
-
-  //     await loadDraftContent(selectedBatchId);
-  //     showToast("Cleared roll ✓");
-  //   };
-
   // ===== Headcount actions (MVP) =====
   const addHeadcount = async () => {
     if (!orgId || !selectedBatchId) return;
     if (!selectedBatch || selectedBatch.status !== "draft") return;
 
-    if (draftMembers.length > 0) {
-      setHcErr(
-        "Clear individual roll before using headcount (prevents double counting).",
-      );
-      return;
-    }
+    // if (draftMembers.length > 0) {
+    //   setHcErr(
+    //     "Clear individual roll before using headcount (prevents double counting).",
+    //   );
+    //   return;
+    // }
 
     const n = Number(hcCount);
     if (!Number.isFinite(n) || n <= 0) {
@@ -798,7 +778,7 @@ export default function AttendanceDraftPage() {
                   {draftCount} / 10 drafts
                 </div>
               </div>
-              <Pill>v1</Pill>
+              {/* <Pill>v1</Pill> */}
             </div>
 
             <div className="mt-4 space-y-2">
@@ -896,8 +876,7 @@ export default function AttendanceDraftPage() {
                     Use <span className="font-semibold">individual roll</span>{" "}
                     when you know identities. Use{" "}
                     <span className="font-semibold">headcount</span> only for
-                    unknown visitors. We block using both at the same time to
-                    prevent double counting.
+                    unknown visitors. Headcount should not include people already marked on roll.
                   </div>
                 </div>
 
@@ -921,13 +900,9 @@ export default function AttendanceDraftPage() {
                           placeholder="Search…"
                           value={activeQuery}
                           onChange={(e) => setActiveQuery(e.target.value)}
-                          disabled={draftHeadcounts.length > 0}
+                          // disabled={draftHeadcounts.length > 0}
                         />
-                        {draftHeadcounts.length > 0 ? (
-                          <div className="mt-2 text-xs text-amber-700">
-                            Clear headcount to use individual roll.
-                          </div>
-                        ) : null}
+                       
                       </div>
                     </div>
 
@@ -953,12 +928,13 @@ export default function AttendanceDraftPage() {
                                 // optional: prefill first/last from search text if you want
                                 setQuickMemberOpen(true);
                               }}
-                              disabled={draftHeadcounts.length > 0}
-                              title={
-                                draftHeadcounts.length > 0
-                                  ? "Clear headcount to use individual roll"
-                                  : "Add a new member"
-                              }
+                              // disabled={draftHeadcounts.length > 0}
+                             title= "Add a new member" 
+                              //  {
+                              //   draftHeadcounts.length > 0
+                              //     ? "Clear headcount to use individual roll"
+                              //     : "Add a new member"
+                              // }
                             >
                               + Add new member
                               {activeQuery.trim()
@@ -977,7 +953,7 @@ export default function AttendanceDraftPage() {
                                   key={m.id}
                                   type="button"
                                   className="w-full rounded-xl border px-3 py-2 text-left text-sm hover:bg-slate-50"
-                                  disabled={draftHeadcounts.length > 0}
+                                  // disabled={draftHeadcounts.length > 0}
                                   onClick={() => addDraftMember(m.id)}
                                   title="Click to mark attended"
                                 >
@@ -1119,8 +1095,7 @@ export default function AttendanceDraftPage() {
                         Headcount (visitors / unknown)
                       </div>
                       <div className="text-xs text-slate-600">
-                        Only use if identities are unknown. Disabled when roll
-                        has entries.
+                        Use if identities are unknown.
                       </div>
                     </div>
                     <button
@@ -1132,12 +1107,12 @@ export default function AttendanceDraftPage() {
                     </button>
                   </div>
 
-                  {draftMembers.length > 0 ? (
+                  {/* {draftMembers.length > 0 ? (
                     <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                       Clear the individual roll to use headcount (prevents
                       double counting).
                     </div>
-                  ) : null}
+                  ) : null} */}
 
                   <div className="mt-3 grid gap-3 sm:grid-cols-4">
                     <div>
@@ -1152,7 +1127,7 @@ export default function AttendanceDraftPage() {
                             e.target.value as DraftHeadcount["age_group"],
                           )
                         }
-                        disabled={draftMembers.length > 0}
+                        // disabled={draftMembers.length > 0}
                       >
                         <option value="1-12">1-12</option>
                         <option value="13-17">13-17</option>
@@ -1174,7 +1149,7 @@ export default function AttendanceDraftPage() {
                             e.target.value as DraftHeadcount["gender"],
                           )
                         }
-                        disabled={draftMembers.length > 0}
+                        // disabled={draftMembers.length > 0}
                       >
                         <option value="male">Male</option>
                         <option value="female">Female</option>
@@ -1193,19 +1168,15 @@ export default function AttendanceDraftPage() {
                           setHcErr("");
                         }}
                         placeholder="e.g., 12"
-                        disabled={draftMembers.length > 0}
+                        // disabled={draftMembers.length > 0}
                       />
                     </div>
 
                     <div className="flex items-end">
                       <button
-                        className={`w-full rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                          draftMembers.length > 0
-                            ? "bg-slate-300"
-                            : "bg-primary hover:bg-primary/85"
-                        }`}
+                        className="w-full rounded-2xl px-4 py-2 text-sm font-semibold text-white bg-primary hover:bg-primary/85"
                         onClick={addHeadcount}
-                        disabled={draftMembers.length > 0}
+                        // disabled={draftMembers.length > 0}
                       >
                         Add
                       </button>

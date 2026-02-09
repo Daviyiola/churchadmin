@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 import { useRouter } from "next/navigation";
+import FloatingXScroll from "@/components/FloatingXScroll";
 
 type Role = "owner" | "admin" | "finance" | "member";
 type CategoryType = "income" | "expense" | "services";
@@ -1209,7 +1210,7 @@ export default function ExpenseDraftPage() {
       return;
     }
 
-    const ok = confirm("Publish this draft? Published entries are immutable.");
+    const ok = confirm("Publish this draft? Published entries cannot be deleted.");
     if (!ok) return;
 
     setPublishing(true);
@@ -1432,13 +1433,12 @@ export default function ExpenseDraftPage() {
                 </div>
 
                 <div className="mt-5 rounded-2xl border bg-slate-50 p-4 text-sm text-slate-700">
-                  Add and edit draft expenses, then publish. Published entries
-                  become immutable.
+                  Add and edit draft expenses, then publish. Published entries cannot be deleted.
                 </div>
 
                 {/* Items table */}
                 <div className="mt-4 rounded-3xl border bg-white overflow-hidden">
-                  <div className="overflow-x-auto">
+                  <FloatingXScroll forceShow={true} onlyWhenOverflow={false}>
                     <div className="min-w-[1100px]">
                       <div className="grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100 rounded-t-3xl">
                         <div className="col-span-2">Date</div>
@@ -1514,7 +1514,7 @@ export default function ExpenseDraftPage() {
                         </div>
                       )}
                     </div>
-                  </div>
+                  </FloatingXScroll>
                 </div>
 
                 {!isFinance ? (
@@ -1948,13 +1948,13 @@ export default function ExpenseDraftPage() {
             <div
               className={[
                 "w-full max-w-6xl rounded-3xl bg-white shadow-xl",
-    "flex flex-col overflow-hidden",
-    "h-[calc(100dvh-4rem)]",
+                "flex flex-col overflow-hidden",
+                "h-[calc(100dvh-4rem)]",
               ].join(" ")}
               onClick={(e) => e.stopPropagation()}
             >
               {/* ================= Header (fixed) ================= */}
-              <div className="shrink-0 border-b px-6 py-4 flex items-start justify-between gap-4">
+              <div className="shrink-0 border-b px-6 py-4 flex items-center justify-between gap-4">
                 <div className="min-w-0">
                   <div className="text-sm font-semibold">
                     Import Expenses (CSV)
@@ -1993,8 +1993,7 @@ export default function ExpenseDraftPage() {
 
                 {importStep === "upload" ? (
                   <div className="grid gap-6 lg:grid-cols-12">
-                    {/* Left: Upload */}
-                    {/* Left: Upload */}
+                
                     <div className="lg:col-span-5 rounded-3xl border bg-slate-50 p-5 flex flex-col">
                       <div className="text-sm font-semibold">
                         Step 1 — Upload CSV
@@ -2309,14 +2308,11 @@ export default function ExpenseDraftPage() {
                       </div>
                     </div>
 
-                    {/* ================= Review table ================= */}
+           
                     {/* ================= Review table ================= */}
                     <div className="mt-4 rounded-3xl border bg-white overflow-hidden">
                       {/* Horizontal scroll lives here (single scrollbar) */}
-                      <div
-                        ref={botXRef}
-                        className="overflow-x-auto overflow-y-visible"
-                      >
+                      <FloatingXScroll forceShow={true} onlyWhenOverflow={false}>
                         <div className="min-w-[1200px]">
                           {/* Sticky header (sticks while modal BODY scrolls) */}
                           <div className="sticky top-0 z-20 grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100">
@@ -2511,7 +2507,7 @@ export default function ExpenseDraftPage() {
                             );
                           })()}
                         </div>
-                      </div>
+                      </FloatingXScroll>
                     </div>
 
                     <div className="mt-4 text-xs text-slate-500">

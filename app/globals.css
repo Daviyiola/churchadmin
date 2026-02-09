@@ -34,3 +34,12 @@ body {
   .print-hidden { display: none !important; }
   .break-page { page-break-after: always; break-after: page; }
 }
+
+
+.scrollbar-x-none {
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* old Edge */
+}
+.scrollbar-x-none::-webkit-scrollbar {
+  height: 0;                      /* Chrome/Safari */
+}

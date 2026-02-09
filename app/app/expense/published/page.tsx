@@ -3,10 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
+import FloatingXScroll from "@/components/FloatingXScroll";
 
 type Role = "owner" | "admin" | "finance" | "viewer" | "member";
 type CategoryType = "income" | "expense" | "services";
 type PaymentMethod = "cash" | "cheque" | "online";
+type ExpenseEntryType = "normal" | "adjustment" | "post_publication";
 
 type CategoryRow = {
   id: string;
@@ -43,11 +45,22 @@ type ExpenseEntry = {
   cheque_number: string | null;
 
   amount_cents: number;
-  entry_type: "normal" | "adjustment";
+  entry_type: ExpenseEntryType;
   note: string | null;
 
   posted_by: string;
   posted_at: string;
+};
+
+type ExpenseEntryEdit = {
+  id: string;
+  edited_by: string;
+  edited_by_email: string | null;
+  edited_at: string;
+  field_name: "expense_category_id" | "amount_cents";
+  old_value: string;
+  new_value: string;
+  reason: string | null;
 };
 
 function fmtDate(isoOrDate: string) {
@@ -125,7 +138,7 @@ export default function ExpensePublishedPage() {
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   const selectedBatch = useMemo(
     () => batches.find((b) => b.id === selectedBatchId) ?? null,
-    [batches, selectedBatchId]
+    [batches, selectedBatchId],
   );
 
   const [entries, setEntries] = useState<ExpenseEntry[]>([]);
@@ -153,24 +166,25 @@ export default function ExpensePublishedPage() {
   const [descQuery, setDescQuery] = useState("");
   const [expenseCatFilter, setExpenseCatFilter] = useState<string>("all");
   const [methodFilter, setMethodFilter] = useState<PaymentMethod | "all">(
-    "all"
+    "all",
   );
   const [entryTypeFilter, setEntryTypeFilter] = useState<
-    "all" | "normal" | "adjustment"
+    "all" | "normal" | "adjustment" | "post_publication"
   >("all");
+
   const [dateFrom, setDateFrom] = useState<string>(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
     return toISODateInput(d);
   });
   const [dateTo, setDateTo] = useState<string>(() =>
-    toISODateInput(new Date())
+    toISODateInput(new Date()),
   );
 
   // Negative adjustment modal (admin only)
   const [adjOpen, setAdjOpen] = useState(false);
   const [adjExpenseDate, setAdjExpenseDate] = useState<string>(() =>
-    toISODateInput(new Date())
+    toISODateInput(new Date()),
   );
   const [adjExpenseCategoryId, setAdjExpenseCategoryId] = useState<string>("");
   const [adjDescription, setAdjDescription] = useState<string>("");
@@ -188,6 +202,19 @@ export default function ExpensePublishedPage() {
     for (const c of expenseCats) map.set(c.id, c.name);
     return map;
   }, [expenseCats]);
+
+  const [editOpen, setEditOpen] = useState(false);
+  const [editEntryId, setEditEntryId] = useState<string>("");
+  const [editExpenseCategoryId, setEditExpenseCategoryId] =
+    useState<string>("");
+  const [editAmount, setEditAmount] = useState("");
+  const [editReason, setEditReason] = useState("");
+  const [editErr, setEditErr] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  const [editLog, setEditLog] = useState<ExpenseEntryEdit[]>([]);
+  const [loadingLog, setLoadingLog] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   const loadAll = async () => {
     if (!orgId) return;
@@ -209,7 +236,7 @@ export default function ExpensePublishedPage() {
       supabase
         .from("expense_draft_batches")
         .select(
-          "id,org_id,period_month,status,created_by,created_at,updated_at,posted_by,posted_at"
+          "id,org_id,period_month,status,created_by,created_at,updated_at,posted_by,posted_at",
         )
         .eq("org_id", orgId)
         .eq("status", "published")
@@ -242,7 +269,7 @@ export default function ExpensePublishedPage() {
     const res = await supabase
       .from("expense_entries")
       .select(
-        "id,org_id,batch_id,period_month,expense_date,expense_category_id,description,vendor,payment_method,cheque_number,amount_cents,entry_type,note,posted_by,posted_at"
+        "id,org_id,batch_id,period_month,expense_date,expense_category_id,description,vendor,payment_method,cheque_number,amount_cents,entry_type,note,posted_by,posted_at",
       )
       .eq("org_id", orgId)
       .eq("batch_id", batchId)
@@ -264,20 +291,135 @@ export default function ExpensePublishedPage() {
   }, [orgId]);
 
   useEffect(() => {
-  if (!adjOpen) return;
-  const prev = document.body.style.overflow;
-  document.body.style.overflow = "hidden";
-  return () => {
-    document.body.style.overflow = prev;
-  };
-}, [adjOpen]);
-
+    if (!adjOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [adjOpen]);
 
   useEffect(() => {
     if (selectedBatchId) loadEntries(selectedBatchId);
     else setEntries([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBatchId]);
+
+  async function loadExpenseEditLog(entryId: string) {
+    if (!orgId) return;
+    setLoadingLog(true);
+
+    const { data, error } = await supabase
+      .from("expense_entry_edits")
+      .select(
+        "id,edited_by,edited_by_email,edited_at,field_name,old_value,new_value,reason",
+      )
+      .eq("org_id", orgId)
+      .eq("entry_id", entryId)
+      .order("edited_at", { ascending: false });
+
+    setLoadingLog(false);
+    if (error) {
+      setEditLog([]);
+      return;
+    }
+    setEditLog((data ?? []) as ExpenseEntryEdit[]);
+  }
+
+  function prettyExpenseLogValue(h: ExpenseEntryEdit): [string, string] {
+    if (h.field_name === "expense_category_id") {
+      const oldName = expenseCatNameById.get(h.old_value) ?? h.old_value;
+      const newName = expenseCatNameById.get(h.new_value) ?? h.new_value;
+      return [oldName, newName];
+    }
+
+    const oldCents = Number(h.old_value);
+    const newCents = Number(h.new_value);
+
+    const oldStr = Number.isFinite(oldCents)
+      ? formatMoney(oldCents)
+      : h.old_value;
+    const newStr = Number.isFinite(newCents)
+      ? formatMoney(newCents)
+      : h.new_value;
+    return [oldStr, newStr];
+  }
+
+  function openEditEntry(e: ExpenseEntry) {
+    if (!isAdmin) {
+      setErr("Admin only.");
+      return;
+    }
+
+    setShowHistory(false);
+    setEditErr("");
+    setEditEntryId(e.id);
+    setEditExpenseCategoryId(e.expense_category_id);
+    setEditAmount((e.amount_cents / 100).toFixed(2));
+    setEditReason("");
+
+    setEditOpen(true);
+    loadExpenseEditLog(e.id);
+  }
+
+  async function saveEditedExpense() {
+    if (!orgId) return;
+    if (!isAdmin) return;
+    if (!editEntryId) return;
+
+    if (!editExpenseCategoryId) return setEditErr("Select a category.");
+
+    const cents = parseMoneyToCents(editAmount);
+    if (cents === null || cents <= 0)
+      return setEditErr("Enter a valid amount > 0.");
+
+    if (editReason.trim() === "") return setEditErr("Enter a reason.");
+      
+    setSavingEdit(true);
+    setEditErr("");
+
+    const { data, error } = await supabase.rpc("edit_expense_entry_logged", {
+      p_org_id: orgId,
+      p_entry_id: editEntryId,
+      p_expense_category_id: editExpenseCategoryId,
+      p_amount_cents: cents,
+      p_reason: editReason.trim() || null,
+    });
+
+    if (error) {
+      setEditErr(error.message);
+      setSavingEdit(false);
+      return;
+    }
+
+    type EditExpenseResult = {
+      id: string;
+      expense_category_id: string;
+      amount_cents: number;
+      entry_type: ExpenseEntryType;
+    };
+
+    const row = (Array.isArray(data) ? data[0] : data) as EditExpenseResult;
+
+    setEntries((prev) =>
+      prev.map((x) =>
+        x.id === editEntryId
+          ? {
+              ...x,
+              expense_category_id: row.expense_category_id,
+              amount_cents: row.amount_cents,
+              entry_type: row.entry_type,
+            }
+          : x,
+      ),
+    );
+
+    setSavingEdit(false);
+    setEditOpen(false);
+
+    // refresh truth + log
+    if (selectedBatchId) await loadEntries(selectedBatchId);
+  }
 
   // ===== Apply filters =====
 
@@ -352,7 +494,7 @@ export default function ExpensePublishedPage() {
 
   const filteredTotalCents = useMemo(
     () => filteredEntries.reduce((s, e) => s + e.amount_cents, 0),
-    [filteredEntries]
+    [filteredEntries],
   );
 
   const openAdjustment = () => {
@@ -386,26 +528,28 @@ export default function ExpensePublishedPage() {
       return setAdjErr("Cheque number is required for cheque.");
     }
 
-    const raw = parseMoneyToCents(adjAmount);
-    if (raw === null || raw === 0)
-      return setAdjErr("Amount must be greater than zero.");
+    const cents = parseMoneyToCents(adjAmount);
+    if (cents === null || cents <= 0) {
+      setAdjErr("Amount must be greater than zero.");
+      return;
+    }
 
-    const absCents = Math.abs(raw);
+    const vendor = adjVendor?.trim() ? adjVendor.trim() : null;
+    const note = adjNote?.trim() ? adjNote.trim() : null;
+    const cheque =
+      adjPaymentMethod === "cheque" ? adjChequeNumber?.trim() || null : null;
 
-    setPostingAdj(true);
-    setAdjErr("");
-
-    const { error } = await supabase.rpc("add_expense_negative_adjustment", {
+    const { error } = await supabase.rpc("add_expense_post_publication", {
+      p_org_id: orgId,
       p_batch_id: selectedBatch.id,
       p_expense_date: adjExpenseDate,
       p_expense_category_id: adjExpenseCategoryId,
       p_description: adjDescription.trim(),
-      p_vendor: adjVendor.trim() ? adjVendor.trim() : null,
       p_payment_method: adjPaymentMethod,
-      p_cheque_number:
-        adjPaymentMethod === "cheque" ? adjChequeNumber.trim() : null,
-      p_amount_cents: absCents,
-      p_note: adjNote || null,
+      p_amount_cents: cents,
+      p_vendor: vendor,
+      p_cheque_number: cheque,
+      p_note: note,
     });
 
     if (error) {
@@ -425,7 +569,7 @@ export default function ExpensePublishedPage() {
     setMethodFilter("all");
     setEntryTypeFilter("all");
     setDateFrom(
-      toISODateInput(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000))
+      toISODateInput(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)),
     );
     setDateTo(toISODateInput(new Date()));
   };
@@ -584,10 +728,10 @@ export default function ExpensePublishedPage() {
                       disabled={!isAdmin}
                       onClick={openAdjustment}
                       title={
-                        !isAdmin ? "Admin only" : "Post a negative adjustment"
+                        !isAdmin ? "Admin only" : "Add a post-publication entry"
                       }
                     >
-                      Negative adjustment (−)
+                      Add post publication (+)
                     </button>
                   </div>
                 </div>
@@ -634,7 +778,7 @@ export default function ExpensePublishedPage() {
                         value={methodFilter}
                         onChange={(e) =>
                           setMethodFilter(
-                            e.target.value as PaymentMethod | "all"
+                            e.target.value as PaymentMethod | "all",
                           )
                         }
                       >
@@ -654,13 +798,16 @@ export default function ExpensePublishedPage() {
                         value={entryTypeFilter}
                         onChange={(e) =>
                           setEntryTypeFilter(
-                            e.target.value as "all" | "normal" | "adjustment"
+                            e.target.value as "all" | "normal" | "adjustment",
                           )
                         }
                       >
                         <option value="all">All</option>
                         <option value="normal">Normal</option>
                         <option value="adjustment">Adjustment</option>
+                        <option value="post_publication">
+                          Post-publication
+                        </option>
                       </select>
                     </div>
 
@@ -691,9 +838,9 @@ export default function ExpensePublishedPage() {
                 </div>
 
                 <div className="mt-4 rounded-3xl border bg-white overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <div className="min-w-[1200px]">
-                      <div className="grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100 rounded-t-3xl">
+                    <FloatingXScroll forceShow={true} onlyWhenOverflow={false}>
+                    <div className="min-w-[1300px]">
+                      <div className="grid grid-cols-13 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100 rounded-t-3xl">
                         <div className="col-span-2">Date</div>
                         <div className="col-span-2">Description</div>
                         <div className="col-span-2">Category</div>
@@ -701,6 +848,7 @@ export default function ExpensePublishedPage() {
                         <div className="col-span-2">Vendor</div>
                         <div className="col-span-1">Method</div>
                         <div className="col-span-1">Cheque #</div>
+                        <div className="col-span-2 text-right">Action</div>
                       </div>
 
                       {filteredEntries.length === 0 ? (
@@ -712,7 +860,7 @@ export default function ExpensePublishedPage() {
                           {filteredEntries.map((e) => (
                             <div
                               key={e.id}
-                              className="grid grid-cols-12 items-center px-5 py-4 text-sm"
+                              className="grid grid-cols-13 items-center px-5 py-4 text-sm"
                             >
                               <div className="col-span-2 text-slate-700">
                                 {fmtDate(e.expense_date)}
@@ -732,7 +880,7 @@ export default function ExpensePublishedPage() {
                               <div className="col-span-2">
                                 <div className="font-semibold">
                                   {expenseCatNameById.get(
-                                    e.expense_category_id
+                                    e.expense_category_id,
                                   ) ?? "—"}
                                 </div>
                                 <div className="text-xs text-slate-500">
@@ -741,8 +889,8 @@ export default function ExpensePublishedPage() {
                               </div>
 
                               <div className="col-span-1 font-semibold">
-                                  {formatMoney(e.amount_cents)}
-                                </div>
+                                {formatMoney(e.amount_cents)}
+                              </div>
 
                               <div className="col-span-2 text-slate-700">
                                 {e.vendor ?? "—"}
@@ -754,15 +902,34 @@ export default function ExpensePublishedPage() {
 
                               <div className="col-span-1 text-slate-700">
                                 {e.payment_method === "cheque"
-                                  ? e.cheque_number ?? "—"
+                                  ? (e.cheque_number ?? "—")
                                   : "—"}
+                              </div>
+
+                              <div className="col-span-2 flex justify-end">
+                                <button
+                                  className={`rounded-xl border px-3 py-1.5 text-xs font-semibold ${
+                                    !isAdmin
+                                      ? "bg-slate-100 text-slate-400"
+                                      : "hover:bg-slate-50"
+                                  }`}
+                                  disabled={!isAdmin}
+                                  onClick={() => openEditEntry(e)}
+                                  title={
+                                    !isAdmin
+                                      ? "Admin only"
+                                      : "Edit category/amount"
+                                  }
+                                >
+                                  Edit
+                                </button>
                               </div>
                             </div>
                           ))}
                         </div>
                       )}
                     </div>
-                  </div>
+                   </FloatingXScroll>
                 </div>
               </>
             )}
@@ -770,22 +937,187 @@ export default function ExpensePublishedPage() {
         </div>
       </div>
 
-      {/* Negative adjustment modal */}
-      {adjOpen ? (
-  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-    <div className="w-full max-w-3xl max-h-[90vh] rounded-3xl bg-white shadow-xl flex flex-col overflow-hidden">
+      {editOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-xl max-h-[90vh] rounded-3xl bg-white shadow-xl flex flex-col overflow-hidden">
             <div className="border-b px-6 py-4 shrink-0">
-              <div className="text-sm font-semibold">Negative adjustment</div>
+              <div className="text-sm font-semibold">Edit expense entry</div>
               <div className="text-xs text-slate-600">
                 Posts a correcting entry. Admin only.
               </div>
             </div>
 
-             <div className="px-6 py-6 space-y-4 overflow-y-auto">
+            <div className="px-6 py-6 space-y-4 overflow-y-auto">
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Expense category *
+                </div>
+                <select
+                  className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  value={editExpenseCategoryId}
+                  onChange={(e) => {
+                    setEditExpenseCategoryId(e.target.value);
+                    setEditErr("");
+                  }}
+                >
+                  <option value="">Select…</option>
+                  {expenseCats.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Amount *
+                </div>
+                <div className="flex">
+                  <div className="flex items-center rounded-l-2xl border border-r-0 bg-slate-50 px-4 text-sm font-semibold text-slate-700">
+                    $
+                  </div>
+                  <input
+                    className="w-full rounded-r-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    value={editAmount}
+                    onChange={(e) => {
+                      setEditAmount(e.target.value);
+                      setEditErr("");
+                    }}
+                    placeholder="e.g., 120.00"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Reason *
+                </div>
+                <input
+                  className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  value={editReason}
+                  onChange={(e) => setEditReason(e.target.value)}
+                  placeholder="e.g., miscategorized + recount"
+                />
+              </div>
+
+              {editErr ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {editErr}
+                </div>
+              ) : null}
+
+              <div className="rounded-2xl border bg-slate-50">
+                <button
+                  type="button"
+                  className="w-full px-4 py-3 flex items-center justify-between text-sm font-semibold"
+                  onClick={() => setShowHistory((v) => !v)}
+                >
+                  <span>Revision history</span>
+                  <span className="text-xs text-slate-600">
+                    {editLog.length
+                      ? `${editLog.length} change${editLog.length === 1 ? "" : "s"}`
+                      : "None"}
+                  </span>
+                </button>
+
+                {showHistory ? (
+                  <div className="border-t px-4 py-3">
+                    {loadingLog ? (
+                      <div className="text-sm text-slate-600">
+                        Loading history…
+                      </div>
+                    ) : editLog.length === 0 ? (
+                      <div className="text-sm text-slate-600">
+                        No revision history.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {editLog.map((h) => {
+                          const [oldV, newV] = prettyExpenseLogValue(h);
+                          return (
+                            <div
+                              key={h.id}
+                              className="rounded-xl border bg-white p-3"
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="text-xs font-semibold text-slate-700">
+                                    {fmtDate(h.edited_at)}
+                                  </div>
+                                  <div className="text-[11px] text-slate-500">
+                                    {"Changed by: " +
+                                      (h.edited_by_email ?? "Unknown editor")}
+                                  </div>
+                                </div>
+                                <div className="text-[11px] text-slate-500">
+                                  {h.field_name === "expense_category_id"
+                                    ? "Category"
+                                    : "Amount"}
+                                </div>
+                              </div>
+
+                              <div className="mt-1 text-sm text-slate-800">
+                                <span className="font-semibold">{oldV}</span>
+                                <span className="mx-2 text-slate-800">
+                                  changed to
+                                </span>
+                                <span className="font-semibold">{newV}</span>
+                              </div>
+
+                              {h.reason ? (
+                                <div className="mt-1 text-xs text-slate-600">
+                                  Reason: {h.reason}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t px-6 py-4 shrink-0">
+              <button
+                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                onClick={() => setEditOpen(false)}
+                disabled={savingEdit}
+              >
+                Cancel
+              </button>
+
+              <button
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
+                  savingEdit ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
+                }`}
+                onClick={saveEditedExpense}
+                disabled={savingEdit}
+              >
+                {savingEdit ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Post publication modal */}
+      {adjOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-3xl max-h-[90vh] rounded-3xl bg-white shadow-xl flex flex-col overflow-hidden">
+            <div className="border-b px-6 py-4 shrink-0">
+              <div className="text-sm font-semibold">Post-publication entry</div>
+              <div className="text-xs text-slate-600">
+                Adds a missed entry into an already-published batch. Logged.
+              </div>
+            </div>
+
+            <div className="px-6 py-6 space-y-4 overflow-y-auto">
               <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                This will post a <span className="font-semibold">negative</span>{" "}
-                amount to correct an earlier mistake. For missing expenses, add
-                a new draft entry and publish normally.
+                This entry will be marked <span className="font-semibold">Post-publication</span>{" "}
+                and shown in reports under this service date, but it was added after publishing.
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
@@ -900,11 +1232,11 @@ export default function ExpensePublishedPage() {
 
               <div>
                 <div className="mb-1 text-xs font-semibold text-slate-600">
-                  Amount (will be negative) *
+                  Amount *
                 </div>
                 <div className="flex">
                   <div className="flex items-center rounded-l-2xl border border-r-0 bg-slate-50 px-4 text-sm font-semibold text-slate-700">
-                    −$
+                    $
                   </div>
                   <input
                     className="w-full rounded-r-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
@@ -920,13 +1252,13 @@ export default function ExpensePublishedPage() {
 
               <div>
                 <div className="mb-1 text-xs font-semibold text-slate-600">
-                  Reason / Note (optional)
+                  Reason 
                 </div>
                 <input
                   className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                   value={adjNote}
                   onChange={(e) => setAdjNote(e.target.value)}
-                  placeholder="e.g., Removed duplicated entry"
+                  placeholder="e.g., Added missed entry"
                 />
               </div>
 
@@ -952,7 +1284,7 @@ export default function ExpensePublishedPage() {
                 disabled={postingAdj}
                 onClick={postAdjustment}
               >
-                {postingAdj ? "Posting…" : "Post negative adjustment"}
+                {postingAdj ? "Posting…" : "Post entry"}
               </button>
             </div>
           </div>

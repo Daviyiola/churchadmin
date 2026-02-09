@@ -190,7 +190,7 @@ export default function FirstTimersPage() {
 
   // ===== List page state =====
   const [q, setQ] = useState("");
-  const [show, setShow] = useState<ShowFilter>("all");
+  const [show, setShow] = useState<ShowFilter>("new");
 
   const [rows, setRows] = useState<VisitorRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -439,6 +439,10 @@ export default function FirstTimersPage() {
   useEffect(() => {
     openMenuIdRef.current = menu?.id ?? null;
   }, [menu]);
+
+  useEffect(() => {
+    setShow("new");
+  }, [tab]);
 
   // NEW: if user clicked “Download” from table, auto-download after modal renders
   useEffect(() => {
@@ -747,7 +751,9 @@ export default function FirstTimersPage() {
         throw new Error("Days must be a valid number.");
 
       if (days >= 31)
-        throw new Error("Maximum allowed expiration is 30 days to prevent stale links. Please choose a shorter duration.");
+        throw new Error(
+          "Maximum allowed expiration is 30 days to prevent stale links. Please choose a shorter duration.",
+        );
 
       const res = await fetch("/api/intake/campaign/create", {
         method: "POST",
@@ -836,12 +842,11 @@ export default function FirstTimersPage() {
         [
           "id,org_id,first_name,last_name,email,phone,status,created_at",
           "gender,age_group,segment,address,marital_status,children_count",
-          "membership_stage,profile_complete",
-          "visitor_details(first_visit_at,follow_up_status,next_follow_up_at,follow_up_notes,how_heard,prayer_request_tags)",
+          "membership_stage,profile_complete,joined_at",
+          "visitor_details!inner(first_visit_at,follow_up_status,next_follow_up_at,follow_up_notes,how_heard,prayer_request_tags)",
         ].join(","),
       )
       .eq("org_id", orgId)
-      .eq("membership_stage", "visitor")
       .eq("status", tab)
       .order("created_at", { ascending: false });
 
@@ -1121,57 +1126,68 @@ export default function FirstTimersPage() {
     }
   };
 
-const setJoined = async (memberId: string, joined: boolean) => {
-  if (!isAdmin) {
-    showToast("Only admins can change joined status.");
-    return;
-  }
-
-  const next = joined ? "joined" : "new";
-  const nowIso = todayISODate(); 
-
-  // 1) visitor_details
-  const { error: vdErr } = await supabase.from("visitor_details").upsert(
-    {
-      member_id: memberId,
-      follow_up_status: next,
-      updated_at: nowIso,
-    },
-    { onConflict: "member_id" },
-  );
-  if (vdErr) {
-    showToast(vdErr.message);
-    return;
-  }
-
-  // 2) members.joined_at
-  if (joined) {
-    const { error: mErr } = await supabase
-      .from("members")
-      .update({ joined_at: nowIso, updated_at: nowIso })
-      .eq("id", memberId);
-
-    if (mErr) {
-      showToast(`Marked joined, but failed to set joined_at: ${mErr.message}`);
+  const setJoined = async (memberId: string, joined: boolean) => {
+    if (!isAdmin) {
+      showToast("Only admins can change joined status.");
       return;
     }
-  } else {
-    // optional: clear it if you unmark joined
-    const { error: mErr } = await supabase
-      .from("members")
-      .update({ joined_at: null, updated_at: nowIso })
-      .eq("id", memberId);
 
-    if (mErr) {
-      showToast(`Unmarked joined, but failed to clear joined_at: ${mErr.message}`);
+    const next = joined ? "joined" : "new";
+    const nowIso = todayISODate();
+
+    // 1) visitor_details
+    const { error: vdErr } = await supabase.from("visitor_details").upsert(
+      {
+        member_id: memberId,
+        follow_up_status: next,
+        updated_at: nowIso,
+      },
+      { onConflict: "member_id" },
+    );
+    if (vdErr) {
+      showToast(vdErr.message);
       return;
     }
-  }
 
-  showToast(joined ? "Marked joined" : "Unmarked joined");
-  await load();
-};
+    // 2) members.joined_at
+    if (joined) {
+      const { error: mErr } = await supabase
+        .from("members")
+        .update({
+          membership_stage: "member",
+          joined_at: nowIso,
+          updated_at: nowIso,
+        })
+        .eq("id", memberId);
 
+      if (mErr) {
+        showToast(
+          `Marked joined, but failed to set joined_at: ${mErr.message}`,
+        );
+        return;
+      }
+    } else {
+      // optional: clear it if you unmark joined
+      const { error: mErr } = await supabase
+        .from("members")
+        .update({
+          membership_stage: "visitor",
+          joined_at: nowIso,
+          updated_at: nowIso,
+        })
+        .eq("id", memberId);
+
+      if (mErr) {
+        showToast(
+          `Unmarked joined, but failed to clear joined_at: ${mErr.message}`,
+        );
+        return;
+      }
+    }
+
+    showToast(joined ? "Marked joined" : "Unmarked joined");
+    await load();
+  };
 
   const openNote = (r: VisitorRow) => {
     setNoteMemberId(r.id);
@@ -1921,7 +1937,7 @@ const setJoined = async (memberId: string, joined: boolean) => {
         </div>
       ) : null}
 
-            {/* Confirm Limits Modal */}
+      {/* Confirm Limits Modal */}
       {confirmOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
@@ -1979,7 +1995,8 @@ const setJoined = async (memberId: string, joined: boolean) => {
 
                   {insufficient ? (
                     <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                      Sorry, you don&apos;t have enough emails left to send this follow-up email
+                      Sorry, you don&apos;t have enough emails left to send this
+                      follow-up email
                       <div className="mt-2 text-xs text-amber-800">
                         Upgrade to a larger plan or wait until next month.
                       </div>

@@ -35,6 +35,10 @@ type ServiceGroupSummary = {
   namesPreview: string;
 };
 
+type ConfirmCatState =
+  | { open: false }
+  | { open: true; kind: "services" | "department"; name: string };
+
 function monthFromDate(d: Date) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -287,6 +291,20 @@ export default function AdminSchedulePage() {
   const hasCodeSet = Boolean(codeSetAt);
   const rawEditsOpen: unknown = data?.month?.edits_open;
   const editsOpen = coerceBool(rawEditsOpen, false);
+
+  const [confirmCat, setConfirmCat] = useState<ConfirmCatState>({
+    open: false,
+  });
+  const [confirmCatBusy, setConfirmCatBusy] = useState(false);
+  const [confirmCatErr, setConfirmCatErr] = useState<string>("");
+
+  function openConfirmCat(kind: "services" | "department", name: string) {
+    const clean = name.trim();
+    if (!clean) return;
+    setConfirmCatErr("");
+    setConfirmCatBusy(false);
+    setConfirmCat({ open: true, kind, name: clean });
+  }
 
   async function generateMonthCode() {
     if (!orgId) return;
@@ -703,38 +721,18 @@ export default function AdminSchedulePage() {
     const nm = addName.trim();
     if (!nm) return;
 
-    let svcId: string | null = serviceId || null;
-    let depId: string | null = deptId || null;
+    const svcId: string | null = serviceId || null;
+    const depId: string | null = deptId || null;
 
     // quick add if typed but not selected
     if (!svcId && serviceQuery.trim()) {
-      try {
-        const created = await quickAddCategory("services", serviceQuery.trim());
-        setServiceCats((cur) => [...cur, created].sort(byAlpha));
-        svcId = created.id;
-        setServiceId(created.id);
-        setServiceQuery(created.name);
-      } catch (e) {
-        setErr({
-          message: e instanceof Error ? e.message : "Failed to add service",
-        });
-        return;
-      }
+      openConfirmCat("services", serviceQuery.trim());
+      return;
     }
 
     if (!depId && deptQuery.trim()) {
-      try {
-        const created = await quickAddCategory("department", deptQuery.trim());
-        setDeptCats((cur) => [...cur, created].sort(byAlpha));
-        depId = created.id;
-        setDeptId(created.id);
-        setDeptQuery(created.name);
-      } catch (e) {
-        setErr({
-          message: e instanceof Error ? e.message : "Failed to add department",
-        });
-        return;
-      }
+      openConfirmCat("department", deptQuery.trim());
+      return;
     }
 
     try {
@@ -1427,29 +1425,11 @@ export default function AdminSchedulePage() {
                                       type="button"
                                       className="block w-full px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-slate-50"
                                       onMouseDown={(e) => e.preventDefault()}
-                                      onClick={async () => {
+                                      onClick={() => {
                                         const clean = serviceQuery.trim();
                                         if (!clean) return;
-                                        try {
-                                          const created =
-                                            await quickAddCategory(
-                                              "services",
-                                              clean,
-                                            );
-                                          setServiceCats((cur) =>
-                                            [...cur, created].sort(byAlpha),
-                                          );
-                                          setServiceId(created.id);
-                                          setServiceQuery(created.name);
-                                          setServiceOpen(false);
-                                        } catch (e) {
-                                          setErr({
-                                            message:
-                                              e instanceof Error
-                                                ? e.message
-                                                : "Failed to add service",
-                                          });
-                                        }
+                                        setServiceOpen(false);
+                                        openConfirmCat("services", clean);
                                       }}
                                     >
                                       + Add service
@@ -1561,28 +1541,11 @@ export default function AdminSchedulePage() {
                                   type="button"
                                   className="block w-full px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-slate-50"
                                   onMouseDown={(e) => e.preventDefault()}
-                                  onClick={async () => {
-                                    const clean = deptQuery.trim();
+                                  onClick={() => {
+                                    const clean = serviceQuery.trim();
                                     if (!clean) return;
-                                    try {
-                                      const created = await quickAddCategory(
-                                        "department",
-                                        clean,
-                                      );
-                                      setDeptCats((cur) =>
-                                        [...cur, created].sort(byAlpha),
-                                      );
-                                      setDeptId(created.id);
-                                      setDeptQuery(created.name);
-                                      setDeptOpen(false);
-                                    } catch (e) {
-                                      setErr({
-                                        message:
-                                          e instanceof Error
-                                            ? e.message
-                                            : "Failed to add department",
-                                      });
-                                    }
+                                    setServiceOpen(false);
+                                    openConfirmCat("services", clean);
                                   }}
                                 >
                                   + Add department
@@ -1951,6 +1914,99 @@ export default function AdminSchedulePage() {
         </div>
       ) : null}
 
+      {/* confirm add category modal */}
+      {confirmCat.open ? (
+        <div
+          className="fixed inset-0 z-[120] grid place-items-center bg-black/40 backdrop-blur-sm p-4"
+          onClick={() =>
+            confirmCatBusy ? null : setConfirmCat({ open: false })
+          }
+        >
+          <div
+            className="w-full max-w-md rounded-3xl bg-white shadow-xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b px-6 py-4">
+              <div className="text-lg font-semibold">
+                Create new{" "}
+                {confirmCat.kind === "services" ? "service" : "department"}?
+              </div>
+              <div className="mt-1 text-sm text-slate-600">
+                This will add it to your church’s categories and make it
+                selectable going forward.
+              </div>
+            </div>
+
+            <div className="px-6 py-5 space-y-3">
+              {confirmCatErr ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {confirmCatErr}
+                </div>
+              ) : null}
+
+              <div className="rounded-2xl border bg-slate-50 px-4 py-3">
+                <div className="text-xs font-semibold text-slate-600">Name</div>
+                <div className="mt-1 font-semibold text-slate-900">
+                  {confirmCat.name}
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={confirmCatBusy}
+                  onClick={() => setConfirmCat({ open: false })}
+                  className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  disabled={confirmCatBusy}
+                  onClick={async () => {
+                    setConfirmCatErr("");
+                    setConfirmCatBusy(true);
+                    try {
+                      const created = await quickAddCategory(
+                        confirmCat.kind,
+                        confirmCat.name,
+                      );
+
+                      if (confirmCat.kind === "services") {
+                        setServiceCats((cur) =>
+                          [...cur, created].sort(byAlpha),
+                        );
+                        setServiceId(created.id);
+                        setServiceQuery(created.name);
+                      } else {
+                        setDeptCats((cur) => [...cur, created].sort(byAlpha));
+                        setDeptId(created.id);
+                        setDeptQuery(created.name);
+                      }
+
+                      setConfirmCat({ open: false });
+                    } catch (e) {
+                      setConfirmCatErr(
+                        e instanceof Error
+                          ? e.message
+                          : "Failed to create category",
+                      );
+                    } finally {
+                      setConfirmCatBusy(false);
+                    }
+                  }}
+                  className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/85 disabled:opacity-50"
+                >
+                  {confirmCatBusy ? "Creating…" : "Create"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* public link modal */}
       {publicOpen ? (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/40 backdrop-blur-sm p-4"

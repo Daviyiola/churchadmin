@@ -509,17 +509,17 @@ export default function CommunicationsPage() {
     setBodyHtml(`
     <p>
       We’re glad you’re here. Here are a few updates and ways to stay connected.
+      You are a valued part of our church family, and we believe every person has a place in this community.
     </p>
 
-    <p><ol>
+   <p><ol>
       <li>Sunday Service - 10:00 AM</li>
       <li>Midweek Prayer - Wednesday, 7:00 PM</li>
       <li>Small Groups - Friday</li>
     </ol></p>
-
     <p>
-      Yours in Christ,</p>
-     <p> <strong>${escapeHtml(orgName)}</strong>
+      Yours in Christ,<br/>
+     <strong>${escapeHtml(orgName)}</strong>
     </p>
   `);
   }, [orgName]);
@@ -963,6 +963,7 @@ export default function CommunicationsPage() {
             mode: "broadcast",
             campaign_id: campaignId,
             to_email: to,
+            reply_to: previewReplyTo,
           }),
         });
 
@@ -1398,7 +1399,7 @@ export default function CommunicationsPage() {
                                 setSendMap((cur) => ({ ...cur, [m.id]: !send }))
                               }
                             />
-                             <span>{send ? "Will send" : "Skip"}</span>
+                            <span>{send ? "Will send" : "Skip"}</span>
                           </label>
                         </div>
                       </div>

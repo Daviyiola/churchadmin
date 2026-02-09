@@ -445,6 +445,18 @@ export default function DashboardPage() {
   const [incomeColor, setIncomeColor] = useState<string>("rgb(0,0,0)");
   const [expenseColor, setExpenseColor] = useState<string>("rgb(0,0,0)");
 
+  const USD0 = new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  });
+
+  function formatUsd(value: unknown): string {
+    const n = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(n)) return "";
+    return USD0.format(n);
+  }
+
   useEffect(() => {
     const primaryRgb = getComputedPrimaryRgb();
     if (!primaryRgb) return;
@@ -1254,8 +1266,12 @@ export default function DashboardPage() {
                   <ResponsiveContainer width="100%" height={320}>
                     <LineChart data={financeChartData}>
                       <XAxis dataKey="monthLabel" />
-                      <YAxis />
-                      <Tooltip labelFormatter={tooltipLabelFormatter} />
+                      <YAxis tickFormatter={formatUsd} />
+                      <Tooltip
+                        labelFormatter={tooltipLabelFormatter}
+                        formatter={(value) => formatUsd(value)}
+                      />
+
                       <Legend />
 
                       <Line
@@ -1325,8 +1341,9 @@ export default function DashboardPage() {
                     <BarChart data={financeTopBars}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="label" />
-                      <YAxis />
-                      <Tooltip />
+                      <YAxis tickFormatter={formatUsd} />
+                      <Tooltip formatter={(value) => formatUsd(value)} />
+
                       <Bar
                         dataKey="value"
                         fill={incomeColor}

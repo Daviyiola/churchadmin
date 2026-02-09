@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
+import FloatingXScroll from "@/components/FloatingXScroll";
 
 type Role = "owner" | "admin" | "finance" | "viewer" | "member";
 type CategoryType = "income" | "expense" | "services";
@@ -33,6 +34,10 @@ type PublishedSession = {
   published_at: string | null;
   deleted_at: string | null;
   deleted_by: string | null;
+
+  revision: number;
+  last_edited_at: string | null;
+  last_edited_by: string | null;
 };
 
 type AttendanceEntry = {
@@ -107,15 +112,26 @@ export default function AttendancePublishedPage() {
   const [members, setMembers] = useState<MemberRow[]>([]);
 
   const [sessions, setSessions] = useState<PublishedSession[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
+    null,
+  );
   const selectedSession = useMemo(
     () => sessions.find((s) => s.id === selectedSessionId) ?? null,
-    [sessions, selectedSessionId]
+    [sessions, selectedSessionId],
   );
 
   const [entries, setEntries] = useState<AttendanceEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+
+  const [busy, setBusy] = useState<null | "revert" | "delete">(null);
+
+  function fmtDateTime(iso: string | null | undefined) {
+    if (!iso) return "—";
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return iso;
+    return dt.toLocaleString();
+  }
 
   // Filters (session list)
   const [serviceFilter, setServiceFilter] = useState<string>("all");
@@ -124,7 +140,9 @@ export default function AttendancePublishedPage() {
     d.setDate(d.getDate() - 30);
     return toISODateInput(d);
   });
-  const [dateTo, setDateTo] = useState<string>(() => toISODateInput(new Date()));
+  const [dateTo, setDateTo] = useState<string>(() =>
+    toISODateInput(new Date()),
+  );
   const [showDeleted, setShowDeleted] = useState(false);
 
   const serviceNameById = useMemo(() => {
@@ -164,15 +182,20 @@ export default function AttendancePublishedPage() {
         .order("first_name", { ascending: true }),
       supabase
         .from("attendance_sessions")
-        .select("id,org_id,service_category_id,session_date,status,created_at,updated_at,published_by,published_at,deleted_at,deleted_by")
+        .select(
+          "id,org_id,service_category_id,session_date,status,created_at,updated_at,published_by,published_at,deleted_at,deleted_by,revision,last_edited_at,last_edited_by",
+        )
         .eq("org_id", orgId)
         .eq("status", "published")
         .order("published_at", { ascending: false }),
     ]);
 
-    if (catsRes.error) return setErr(catsRes.error.message), setLoading(false);
-    if (membersRes.error) return setErr(membersRes.error.message), setLoading(false);
-    if (sessionsRes.error) return setErr(sessionsRes.error.message), setLoading(false);
+    if (catsRes.error)
+      return (setErr(catsRes.error.message), setLoading(false));
+    if (membersRes.error)
+      return (setErr(membersRes.error.message), setLoading(false));
+    if (sessionsRes.error)
+      return (setErr(sessionsRes.error.message), setLoading(false));
 
     setServiceCats((catsRes.data ?? []) as CategoryRow[]);
     setMembers((membersRes.data ?? []) as MemberRow[]);
@@ -190,7 +213,7 @@ export default function AttendancePublishedPage() {
     const res = await supabase
       .from("attendance_entries")
       .select(
-        "id,org_id,session_id,service_category_id,session_date,entry_source,member_id,gender,age_group,segment,count,note,published_by,published_at"
+        "id,org_id,session_id,service_category_id,session_date,entry_source,member_id,gender,age_group,segment,count,note,published_by,published_at",
       )
       .eq("org_id", orgId)
       .eq("session_id", sessionId)
@@ -222,7 +245,8 @@ export default function AttendancePublishedPage() {
 
     return sessions.filter((s) => {
       if (!showDeleted && s.deleted_at) return false;
-      if (serviceFilter !== "all" && s.service_category_id !== serviceFilter) return false;
+      if (serviceFilter !== "all" && s.service_category_id !== serviceFilter)
+        return false;
 
       if (from || to) {
         const d = new Date(s.session_date + "T12:00:00");
@@ -236,10 +260,13 @@ export default function AttendancePublishedPage() {
 
   useEffect(() => {
     if (!selectedSessionId) return;
-    const stillVisible = filteredSessions.some((s) => s.id === selectedSessionId);
+    const stillVisible = filteredSessions.some(
+      (s) => s.id === selectedSessionId,
+    );
     if (stillVisible) return;
 
-    if (filteredSessions.length > 0) setSelectedSessionId(filteredSessions[0].id);
+    if (filteredSessions.length > 0)
+      setSelectedSessionId(filteredSessions[0].id);
     else setSelectedSessionId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serviceFilter, dateFrom, dateTo, showDeleted, sessions]);
@@ -247,12 +274,21 @@ export default function AttendancePublishedPage() {
   // Summary: bucket by segment + age_group + gender
   const summaryRows = useMemo(() => {
     const key = (g: string, ag: string, seg: string) => `${seg}__${ag}__${g}`;
-    const map = new Map<string, { segment: string; age_group: string; gender: string; count: number }>();
+    const map = new Map<
+      string,
+      { segment: string; age_group: string; gender: string; count: number }
+    >();
 
     for (const e of entries) {
       const k = key(e.gender, e.age_group, e.segment);
       const prev = map.get(k);
-      if (!prev) map.set(k, { segment: e.segment, age_group: e.age_group, gender: e.gender, count: e.count });
+      if (!prev)
+        map.set(k, {
+          segment: e.segment,
+          age_group: e.age_group,
+          gender: e.gender,
+          count: e.count,
+        });
       else prev.count += e.count;
     }
 
@@ -267,23 +303,65 @@ export default function AttendancePublishedPage() {
     return arr;
   }, [entries]);
 
-  const totalCount = useMemo(() => entries.reduce((s, e) => s + e.count, 0), [entries]);
+  const totalCount = useMemo(
+    () => entries.reduce((s, e) => s + e.count, 0),
+    [entries],
+  );
 
   const softDelete = async () => {
     if (!selectedSession) return;
     if (!isAdmin) return setErr("Admin only.");
 
-    const ok = confirm("Soft-delete this published attendance session? It will be hidden but retained for audit.");
+    const ok = confirm(
+      "Soft-delete this published attendance session? It will be hidden but retained for audit.",
+    );
     if (!ok) return;
 
+    setBusy("delete");
     setErr("");
-    const { error } = await supabase.rpc("soft_delete_attendance_session", { p_session_id: selectedSession.id });
+
+    const { error } = await supabase.rpc("soft_delete_attendance_session", {
+      p_session_id: selectedSession.id,
+    });
+
+    setBusy(null);
+
     if (error) return setErr(error.message);
 
     await loadAll();
   };
 
-  if (!orgId) return <div className="p-6 text-slate-700">No active organization selected.</div>;
+  const revertToDraft = async () => {
+    if (!selectedSession) return;
+    if (!isAdmin) return setErr("Admin only.");
+    if (selectedSession.deleted_at)
+      return setErr("Cannot revert a deleted session.");
+
+    const ok = confirm(
+      "Revert this published attendance back to draft?\n\nThis will remove the published entries and reopen the draft for edits.",
+    );
+    if (!ok) return;
+
+    setBusy("revert");
+    setErr("");
+
+    const { error } = await supabase.rpc("revert_attendance_session_to_draft", {
+      p_session_id: selectedSession.id,
+    });
+
+    setBusy(null);
+
+    if (error) return setErr(error.message);
+
+    // Session is now draft, so it will disappear from this page's list
+    await loadAll();
+    setSelectedSessionId(null);
+  };
+
+  if (!orgId)
+    return (
+      <div className="p-6 text-slate-700">No active organization selected.</div>
+    );
   if (loading) return <div className="p-10 text-slate-700">Loading…</div>;
 
   return (
@@ -292,10 +370,15 @@ export default function AttendancePublishedPage() {
         <div className="flex items-center justify-between px-6 py-4">
           <div>
             <div className="text-xl font-semibold">Attendance • Published</div>
-            <div className="text-sm text-slate-600">Immutable entries (member roll OR headcount)</div>
+            <div className="text-sm text-slate-600">
+              Immutable entries (member roll OR headcount)
+            </div>
           </div>
           <div className="flex items-center gap-2">
-            <a href="/app/attendance" className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50">
+            <a
+              href="/app/attendance"
+              className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+            >
               Back to drafts
             </a>
           </div>
@@ -303,7 +386,9 @@ export default function AttendancePublishedPage() {
 
         {err ? (
           <div className="px-6 pb-5">
-            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{err}</div>
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {err}
+            </div>
           </div>
         ) : null}
       </div>
@@ -315,14 +400,18 @@ export default function AttendancePublishedPage() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-semibold">Published Sessions</div>
-                <div className="mt-1 text-xs text-slate-600">{filteredSessions.length} shown</div>
+                <div className="mt-1 text-xs text-slate-600">
+                  {filteredSessions.length} shown
+                </div>
               </div>
               <Pill>v1</Pill>
             </div>
 
             <div className="mt-4 space-y-3">
               <div>
-                <div className="mb-1 text-xs font-semibold text-slate-600">Service</div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Service
+                </div>
                 <select
                   className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                   value={serviceFilter}
@@ -339,7 +428,9 @@ export default function AttendancePublishedPage() {
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">From</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    From
+                  </div>
                   <input
                     type="date"
                     className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
@@ -348,7 +439,9 @@ export default function AttendancePublishedPage() {
                   />
                 </div>
                 <div>
-                  <div className="mb-1 text-xs font-semibold text-slate-600">To</div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    To
+                  </div>
                   <input
                     type="date"
                     className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
@@ -369,12 +462,18 @@ export default function AttendancePublishedPage() {
                 />
               </div> */}
 
-              {!isAdmin ? <div className="text-xs text-slate-500">Deleted sessions are visible to admins only.</div> : null}
+              {!isAdmin ? (
+                <div className="text-xs text-slate-500">
+                  Deleted sessions are visible to admins only.
+                </div>
+              ) : null}
             </div>
 
             <div className="mt-4 space-y-2">
               {filteredSessions.length === 0 ? (
-                <div className="rounded-2xl border bg-primary/15 p-4 text-sm text-slate-700">No sessions match your filters.</div>
+                <div className="rounded-2xl border bg-primary/15 p-4 text-sm text-slate-700">
+                  No sessions match your filters.
+                </div>
               ) : (
                 filteredSessions.map((s) => {
                   const active = s.id === selectedSessionId;
@@ -384,15 +483,29 @@ export default function AttendancePublishedPage() {
                       key={s.id}
                       onClick={() => setSelectedSessionId(s.id)}
                       className={`w-full rounded-2xl px-4 py-3 text-left text-sm ${
-                        active ?"bg-primary text-white": "hover:bg-slate-50"
+                        active ? "bg-primary text-white" : "hover:bg-slate-50"
                       }`}
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="font-medium truncate">{label}</div>
-                          <div className={`font-medium truncate ${active ? "text-white" : ""}`}>
-                            Published {s.published_at ? fmtDate(s.published_at) : "—"}
-                            {s.deleted_at ? <span className="ml-2 text-red-600">• Deleted {fmtDate(s.deleted_at)}</span> : null}
+                          <div
+                            className={`font-medium truncate ${active ? "text-white" : ""}`}
+                          >
+                            Published{" "}
+                            {s.published_at ? fmtDate(s.published_at) : "—"}
+                            {s.deleted_at ? (
+                              <span className="ml-2 text-red-600">
+                                • Deleted {fmtDate(s.deleted_at)}
+                              </span>
+                            ) : null}
+                          </div>
+
+                          <div
+                            className={`text-xs truncate ${active ? "text-white/90" : "text-slate-600"}`}
+                          >
+                            Rev {s.revision ?? 0} • Last edit{" "}
+                            {s.last_edited_at ? fmtDate(s.last_edited_at) : "—"}
                           </div>
                         </div>
                         <div className="shrink-0">
@@ -409,53 +522,115 @@ export default function AttendancePublishedPage() {
           {/* Right: entries + summary */}
           <div className="rounded-3xl border p-5 lg:col-span-8">
             {!selectedSession ? (
-              <div className="rounded-2xl border bg-primary/15 p-4 text-sm text-slate-700">Select a published session.</div>
+              <div className="rounded-2xl border bg-primary/15 p-4 text-sm text-slate-700">
+                Select a published session.
+              </div>
             ) : (
               <>
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <div className="text-sm font-semibold">
-                      {serviceNameById.get(selectedSession.service_category_id) ?? "Service"} — {fmtDate(selectedSession.session_date)}
+                      {serviceNameById.get(
+                        selectedSession.service_category_id,
+                      ) ?? "Service"}{" "}
+                      — {fmtDate(selectedSession.session_date)}
                     </div>
                     <div className="mt-1 text-xs text-slate-600">
-                      {entries.length} published rows • Total count: <b>{totalCount}</b>
-                      {selectedSession.deleted_at ? <span className="ml-2 text-red-600">• Deleted</span> : null}
+                      {entries.length} published rows • Total count:{" "}
+                      <b>{totalCount}</b>
+                      {selectedSession.deleted_at ? (
+                        <span className="ml-2 text-red-600">• Deleted</span>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Pill>Rev {selectedSession.revision ?? 0}</Pill>
+                      <div className="text-xs text-slate-500">
+                        Last edited{" "}
+                        {selectedSession.last_edited_at
+                          ? fmtDateTime(selectedSession.last_edited_at)
+                          : "—"}
+                      </div>
                     </div>
                   </div>
 
                   <div className="flex gap-2">
                     <button
-                      className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                        !isAdmin || !!selectedSession.deleted_at ? "bg-slate-300" : "bg-primary hover:bg-primary/85"
+                      className={`rounded-2xl border px-4 py-2 text-sm font-semibold ${
+                        !isAdmin || !!selectedSession.deleted_at || busy
+                          ? "text-slate-400 border-slate-200"
+                          : "text-slate-800 hover:bg-slate-50"
                       }`}
-                      disabled={!isAdmin || !!selectedSession.deleted_at}
-                      onClick={softDelete}
-                      title={!isAdmin ? "Admin only" : selectedSession.deleted_at ? "Already deleted" : "Soft delete"}
+                      disabled={
+                        !isAdmin || !!selectedSession.deleted_at || !!busy
+                      }
+                      onClick={revertToDraft}
+                      title={
+                        !isAdmin
+                          ? "Admin only"
+                          : selectedSession.deleted_at
+                            ? "Already deleted"
+                            : "Send back to draft"
+                      }
                     >
-                      Soft delete
+                      {busy === "revert" ? "Reverting…" : "Revert to draft"}
+                    </button>
+
+                    <button
+                      className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
+                        !isAdmin || !!selectedSession.deleted_at || busy
+                          ? "bg-slate-300"
+                          : "bg-primary hover:bg-primary/85"
+                      }`}
+                      disabled={
+                        !isAdmin || !!selectedSession.deleted_at || !!busy
+                      }
+                      onClick={softDelete}
+                      title={
+                        !isAdmin
+                          ? "Admin only"
+                          : selectedSession.deleted_at
+                            ? "Already deleted"
+                            : "Soft delete"
+                      }
+                    >
+                      {busy === "delete" ? "Deleting…" : "Delete"}
                     </button>
                   </div>
                 </div>
 
                 {/* Summary table */}
                 <div className="mt-5 rounded-3xl border bg-white">
-                  <div className="border-b bg-slate-50 px-5 py-3 text-xs font-semibold text-slate-600">Computed summary (from published entries)</div>
+                  <div className="border-b bg-slate-50 px-5 py-3 text-xs font-semibold text-slate-600">
+                    Computed summary (from published entries)
+                  </div>
                   {summaryRows.length === 0 ? (
-                    <div className="p-6 text-sm text-slate-600">No summary available.</div>
+                    <div className="p-6 text-sm text-slate-600">
+                      No summary available.
+                    </div>
                   ) : (
                     <div className="divide-y">
                       {summaryRows.map((r, idx) => (
-                        <div key={idx} className="grid grid-cols-12 items-center px-5 py-3 text-sm">
-                          <div className="col-span-4 font-semibold">{r.segment}</div>
+                        <div
+                          key={idx}
+                          className="grid grid-cols-12 items-center px-5 py-3 text-sm"
+                        >
+                          <div className="col-span-4 font-semibold">
+                            {r.segment}
+                          </div>
                           <div className="col-span-4 text-slate-700">
                             {r.age_group} • {r.gender}
                           </div>
-                          <div className="col-span-4 text-right font-semibold">{r.count}</div>
+                          <div className="col-span-4 text-right font-semibold">
+                            {r.count}
+                          </div>
                         </div>
                       ))}
                       <div className="grid grid-cols-12 items-center px-5 py-4 text-sm bg-slate-50">
                         <div className="col-span-8 font-semibold">Total</div>
-                        <div className="col-span-4 text-right font-semibold">{totalCount}</div>
+                        <div className="col-span-4 text-right font-semibold">
+                          {totalCount}
+                        </div>
                       </div>
                     </div>
                   )}
@@ -463,7 +638,7 @@ export default function AttendancePublishedPage() {
 
                 {/* Raw entries */}
                 <div className="mt-4 rounded-3xl border bg-white overflow-hidden">
-                  <div className="overflow-x-auto">
+                  <FloatingXScroll forceShow={true} onlyWhenOverflow={false}>
                     <div className="min-w-[1100px]">
                       <div className="grid grid-cols-12 border-b bg-primary px-5 py-3 text-xs font-semibold text-slate-100 rounded-t-3xl">
                         <div className="col-span-2">Source</div>
@@ -476,14 +651,23 @@ export default function AttendancePublishedPage() {
                       </div>
 
                       {entries.length === 0 ? (
-                        <div className="p-6 text-sm text-slate-600">No entries loaded.</div>
+                        <div className="p-6 text-sm text-slate-600">
+                          No entries loaded.
+                        </div>
                       ) : (
                         <div className="divide-y">
                           {entries.map((e) => (
-                            <div key={e.id} className="grid grid-cols-12 items-center px-5 py-4 text-sm">
+                            <div
+                              key={e.id}
+                              className="grid grid-cols-12 items-center px-5 py-4 text-sm"
+                            >
                               <div className="col-span-2">{e.entry_source}</div>
                               <div className="col-span-4 font-semibold">
-                                {e.member_id ? memberLabelById.get(e.member_id) ?? "—" : <span className="text-slate-500">—</span>}
+                                {e.member_id ? (
+                                  (memberLabelById.get(e.member_id) ?? "—")
+                                ) : (
+                                  <span className="text-slate-500">—</span>
+                                )}
                               </div>
                               <div className="col-span-2">{e.gender}</div>
                               <div className="col-span-2">{e.age_group}</div>
@@ -495,7 +679,7 @@ export default function AttendancePublishedPage() {
                         </div>
                       )}
                     </div>
-                  </div>
+                  </FloatingXScroll>
                 </div>
 
                 {/* <div className="mt-4 text-xs text-slate-500">
