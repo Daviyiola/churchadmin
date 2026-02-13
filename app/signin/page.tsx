@@ -6,12 +6,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { signInWithOrg } from "@/lib/auth";
 import BrandLogo from "@/components/BrandLogo";
+import { supabase } from "@/lib/supabaseClient";
 
 type Org = { id: string; name: string; slug: string };
 //const [selectedOrgId, setSelectedOrgId] = useState<string>("");
 
 export default function SignInPage() {
   const [open, setOpen] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetMsg, setResetMsg] = useState<string>("");
 
   // Stepper
   const [step, setStep] = useState<1 | 2>(1);
@@ -80,8 +83,12 @@ export default function SignInPage() {
           <Link href="/" className="flex items-center gap-3">
             <BrandLogo size={45} className="" />
             <div>
-              <div className="text-lg font-semibold leading-tight">Church Admin</div>
-              <div className="text-sm text-slate-500">Church Operations Simplified</div>
+              <div className="text-lg font-semibold leading-tight">
+                Church Admin
+              </div>
+              <div className="text-sm text-slate-500">
+                Church Operations Simplified
+              </div>
             </div>
           </Link>
 
@@ -124,7 +131,9 @@ export default function SignInPage() {
         <div className="mt-8 rounded-3xl border p-6">
           {step === 1 ? (
             <>
-              <label className="block text-sm font-medium">Organization name</label>
+              <label className="block text-sm font-medium">
+                Organization name
+              </label>
               <input
                 value={orgQuery}
                 onChange={(e) => setOrgQuery(e.target.value)}
@@ -152,8 +161,8 @@ export default function SignInPage() {
                         key={org.id}
                         onClick={() => {
                           setSelectedOrgId(org.id);
-                        setOrgName(org.name);
-                            setOrgQuery(org.name);
+                          setOrgName(org.name);
+                          setOrgQuery(org.name);
                         }}
                         className={`w-full px-4 py-3 text-left text-sm hover:bg-slate-50 ${
                           orgName === org.name ? "bg-slate-50" : ""
@@ -205,51 +214,102 @@ export default function SignInPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 placeholder="you@example.com"
-                />
+              />
 
               <label className="mt-4 block text-sm font-medium">Password</label>
-                <input
+              <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 placeholder="••••••••"
-                />
+              />
 
               <button
                 onClick={async () => {
-                    setAuthError("");
-                    setAuthLoading(true);
+                  setAuthError("");
+                  setAuthLoading(true);
 
-                    const res = await signInWithOrg(email.trim(), password, selectedOrgId);
+                  const res = await signInWithOrg(
+                    email.trim(),
+                    password,
+                    selectedOrgId,
+                  );
 
-                    setAuthLoading(false);
+                  setAuthLoading(false);
 
-                    if (!res.ok) {
+                  if (!res.ok) {
                     setAuthError(res.message);
                     return;
-                    }
+                  }
 
-                    router.push("/app");
+                  router.push("/app");
                 }}
-                disabled={authLoading || !email.trim() || !password || !selectedOrgId}
+                disabled={
+                  authLoading || !email.trim() || !password || !selectedOrgId
+                }
                 className="mt-6 w-full rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-white hover:opacity-95 disabled:opacity-50"
-                >
+              >
                 {authLoading ? "Signing in..." : "Sign in"}
-                </button>
+              </button>
 
               {authError ? (
                 <div className="mt-3 text-sm text-red-600">{authError}</div>
-                ) : null}
+              ) : null}
+              <div className="mt-3 flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setResetMsg("");
+                    const e = email.trim();
+                    if (!e) {
+                      setResetMsg(
+                        "Enter your email first, then click “Forgot password?”",
+                      );
+                      return;
+                    }
+                    if (!selectedOrgId) {
+                      setResetMsg("Select your organization first.");
+                      return;
+                    }
 
-              <div className="mt-4 text-center text-xs text-slate-500">
-                Forgot password and SSO come later.
+                    setResetLoading(true);
+                    try {
+                      const res = await fetch("/api/auth/send-reset", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          email: e,
+                          orgId: selectedOrgId,
+                        }),
+                      });
+
+                      if (!res.ok) {
+                        setResetMsg("Couldn’t send reset email. Try again.");
+                      } else {
+                        // Important: don't reveal whether the email exists
+                        setResetMsg(
+                          "If that email exists, a reset link has been sent.",
+                        );
+                      }
+                    } finally {
+                      setResetLoading(false);
+                    }
+                  }}
+                  disabled={resetLoading || !email.trim()}
+                  className="text-xs font-medium text-slate-700 underline underline-offset-4 hover:text-slate-900 disabled:opacity-60"
+                >
+                  {resetLoading ? "Sending reset email…" : "Forgot password?"}
+                </button>
               </div>
+
+              {resetMsg ? (
+                <div className="mt-2 text-xs text-slate-600">{resetMsg}</div>
+              ) : null}
             </>
           )}
         </div>
       </section>
-
     </main>
   );
 }

@@ -28,7 +28,7 @@ type MemberRow = {
   gender?: "male" | "female";
   age_group?: "1-12" | "13-17" | "18-35" | "36+";
   segment?: "men" | "women" | "boys" | "girls";
-  membership_stage?: "member" ;
+  membership_stage?: "member";
 };
 
 type DraftBatch = {
@@ -1255,10 +1255,29 @@ export default function IncomePage() {
         showToast("Updated");
       }
 
-      setItemOpen(false);
-      resetItemForm();
+      // Refresh table + batch metadata
       await loadItems(selectedBatch.id);
       await loadAll(); // keep batch list "updated_at" fresh
+
+      if (itemMode === "create") {
+        setAmount("");
+
+        if (paymentMethod === "cheque") {
+          setChequeNumber("");
+        }
+
+        setItemErr("");
+        setMemberSuggestOpen(false);
+        setIncomeCatSuggestOpen(false);
+
+        // Focus amount for rapid entry
+        window.setTimeout(() => amountRef.current?.focus(), 50);
+        return;
+      }
+
+      // Edit mode: close after saving
+      setItemOpen(false);
+      resetItemForm();
     } finally {
       setSavingItem(false);
     }
