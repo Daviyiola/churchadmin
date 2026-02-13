@@ -13,9 +13,9 @@ export async function POST(req: Request) {
     const cleanEmail = email.trim().toLowerCase();
     const cleanOrgId = typeof orgId === "string" ? orgId : "";
 
-    const origin =
-      process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ||
-      new URL(req.url).origin;
+    const reqOrigin = new URL(req.url).origin;
+
+    const origin = reqOrigin.replace(/\/$/, "");
 
     const next = `/auth/update-password?orgId=${encodeURIComponent(
       cleanOrgId,
@@ -43,7 +43,7 @@ export async function POST(req: Request) {
     await resend.emails.send({
       from: process.env.RESEND_FROM!,
       to: cleanEmail,
-      subject: "Reset your Church Admin password 7",
+      subject: "Reset your Church Admin password 9",
       html: `
         <div style="font-family:ui-sans-serif,system-ui;line-height:1.5">
           <h2 style="margin:0 0 12px">Reset your password</h2>
