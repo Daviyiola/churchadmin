@@ -6,14 +6,15 @@ const TOC = [
   { id: "collect", label: "2. Information We Collect" },
   { id: "children", label: "3. Children’s Information" },
   { id: "use", label: "4. How We Use Information" },
-  { id: "security", label: "5. Data Storage & Security" },
-  { id: "retention", label: "6. Data Retention" },
-  { id: "global", label: "7. Global Users" },
-  { id: "cookies", label: "8. Cookies & Tracking" },
-  { id: "ownership", label: "9. Data Ownership" },
-  { id: "liability", label: "10. Limitation of Liability" },
-  { id: "changes", label: "11. Changes to This Policy" },
-  { id: "contact", label: "12. Contact" },
+  { id: "nosale", label: "5. No Sale or Monetization of Data" },
+  { id: "security", label: "6. Data Storage & Security" },
+  { id: "retention", label: "7. Data Retention" },
+  { id: "global", label: "8. Global Users" },
+  { id: "cookies", label: "9. Cookies & Tracking" },
+  { id: "ownership", label: "10. Data Ownership" },
+  { id: "liability", label: "11. Limitation of Liability" },
+  { id: "changes", label: "12. Changes to This Policy" },
+  { id: "contact", label: "13. Contact" },
 ];
 
 export default function PrivacyContent() {
@@ -27,8 +28,8 @@ export default function PrivacyContent() {
             <span className="font-medium">Effective Date:</span> [Insert Date]
           </div>
           <div>
-            <span className="font-medium">Entity:</span> Church Admin, LLC (to be
-            incorporated in Texas, United States)
+            <span className="font-medium">Entity:</span> Church Admin, LLC (Texas
+            Limited Liability Company)
           </div>
         </div>
       }
@@ -70,7 +71,9 @@ export default function PrivacyContent() {
           authentication services. We do not store plaintext passwords.
         </P>
 
-        <P className="font-medium">B. Member &amp; People Records (Provided by Churches)</P>
+        <P className="font-medium">
+          B. Member &amp; People Records (Provided by Churches)
+        </P>
         <P>Churches may store the following data within the platform:</P>
         <Ul>
           <Li>First name (required)</Li>
@@ -95,7 +98,7 @@ export default function PrivacyContent() {
           <Li>Online payment credentials</Li>
         </Ul>
 
-        <P>Payment methods recorded are limited to:</P>
+        <P>Payment methods recorded are limited to classification labels only:</P>
         <Ul>
           <Li>Cash</Li>
           <Li>Cheque</Li>
@@ -138,16 +141,41 @@ export default function PrivacyContent() {
           We may send product updates or feature announcements in the future.
           Users may opt out of non-essential communications where required by law.
         </P>
+        <P>
+          We do not use church data for advertising purposes or for purposes
+          unrelated to providing the platform.
+        </P>
       </Section>
 
       <Divider />
 
-      <Section id="security" title="5. Data Storage & Security">
+      <Section id="nosale" title="5. No Sale or Monetization of Data">
+        <P>
+          Church Admin does not sell, rent, trade, or monetize church data,
+          member records, donation records, or personal information.
+        </P>
+        <P>
+          We do not share personal information with third parties for their
+          marketing or advertising purposes.
+        </P>
+        <P>
+          Service providers (such as hosting and email delivery) may process data
+          on our behalf to operate the platform, subject to appropriate safeguards.
+        </P>
+      </Section>
+
+      <Divider />
+
+      <Section id="security" title="6. Data Storage & Security">
         <Ul>
           <Li>Data is hosted in the United States.</Li>
           <Li>Infrastructure is provided by Supabase (PostgreSQL database).</Li>
           <Li>Access controls are enforced at the application and role level.</Li>
-          <Li>We use industry-standard technical safeguards.</Li>
+          <Li>
+            We implement reasonable administrative, technical, and organizational
+            safeguards designed to protect data against unauthorized access,
+            alteration, disclosure, or destruction.
+          </Li>
         </Ul>
         <P>
           While we take reasonable security measures, no system can be guaranteed
@@ -161,7 +189,7 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="retention" title="6. Data Retention">
+      <Section id="retention" title="7. Data Retention">
         <P className="font-medium">Active Subscription</P>
         <P>Data retention varies by subscription tier:</P>
         <Ul>
@@ -182,7 +210,7 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="global" title="7. Global Users">
+      <Section id="global" title="8. Global Users">
         <P>
           Church Admin is operated from the United States but may be accessed
           globally. By using the platform, you consent to the transfer and storage
@@ -192,7 +220,7 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="cookies" title="8. Cookies & Tracking">
+      <Section id="cookies" title="9. Cookies & Tracking">
         <P>
           At this time, we do not use third-party analytics or tracking tools.
           If analytics are implemented in the future, this policy will be updated
@@ -202,7 +230,7 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="ownership" title="9. Data Ownership">
+      <Section id="ownership" title="10. Data Ownership">
         <P>Churches retain ownership of the data they enter into the platform.</P>
         <P>
           Church Admin does not claim ownership of member records, donation
@@ -212,7 +240,7 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="liability" title="10. Limitation of Liability">
+      <Section id="liability" title="11. Limitation of Liability">
         <P>
           Church Admin is a bookkeeping and administrative software platform. We
           do not provide accounting, tax, legal, or financial advice.
@@ -228,7 +256,7 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="changes" title="11. Changes to This Policy">
+      <Section id="changes" title="12. Changes to This Policy">
         <P>
           We may update this Privacy Policy from time to time. Material changes
           will be posted on our website with an updated effective date.
@@ -237,7 +265,7 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="contact" title="12. Contact">
+      <Section id="contact" title="13. Contact">
         <P>
           Church Admin, LLC
           <br />
