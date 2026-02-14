@@ -33,7 +33,6 @@ type MemberRow = {
   born_again: boolean | null;
   born_again_date: string | null;
 
-  // ✅ Department
   department_category_id: string | null;
 };
 
@@ -48,6 +47,8 @@ type DupCandidate = {
   dob: string | null;
   status: "active" | "archived" | null;
 };
+
+type KpiKey = "total" | "kids" | "teens" | "young" | "adults";
 
 function isYesNo(v: string): v is YesNo {
   return v === "" || v === "yes" || v === "no";
@@ -340,6 +341,14 @@ export default function MembersPage() {
   const [deptQuery, setDeptQuery] = useState<string>("");
   const [deptSuggestOpen, setDeptSuggestOpen] = useState(false);
   const clearedDeptOnFocusRef = useRef(false);
+  const [openKpi, setOpenKpi] = useState<KpiKey | null>(null);
+  const [hoverKpi, setHoverKpi] = useState<KpiKey | null>(null);
+  const isKpiOpen = (key: KpiKey) => openKpi === key || hoverKpi === key;
+
+  const toggleKpi = (key: KpiKey, filterValue: AgeGroup | null) => {
+    setOpenKpi((cur) => (cur === key ? null : key));
+    setAgeGroupFilter(filterValue);
+  };
 
   // quick add department modal
   const [quickDeptOpen, setQuickDeptOpen] = useState(false);
@@ -602,6 +611,11 @@ export default function MembersPage() {
 
   useEffect(() => {
     setAgeGroupFilter(null);
+  }, [tab, orgId]);
+
+  useEffect(() => {
+    setOpenKpi(null);
+    setHoverKpi(null);
   }, [tab, orgId]);
 
   const openQuickAddDeptFromQuery = (query: string) => {
@@ -1007,7 +1021,10 @@ export default function MembersPage() {
                     <button
                       type="button"
                       className="rounded-xl border px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                      onClick={() => setAgeGroupFilter(null)}
+                      onClick={() => {
+                        setAgeGroupFilter(null);
+                        setOpenKpi(null);
+                      }}
                       title="Clear age filter"
                     >
                       Clear filter ✕
@@ -1023,7 +1040,12 @@ export default function MembersPage() {
                   {/* Total */}
                   <button
                     type="button"
-                    onClick={() => setAgeGroupFilter(null)}
+                    onClick={() => toggleKpi("total", null)}
+                    onMouseEnter={() => setHoverKpi("total")}
+                    onMouseLeave={() => setHoverKpi(null)}
+                    onFocus={() => setHoverKpi("total")}
+                    onBlur={() => setHoverKpi(null)}
+                    aria-expanded={openKpi === "total"}
                     className={`rounded-2xl border px-4 py-3 text-left transition ${
                       ageGroupFilter === null
                         ? "bg-white border-primary"
@@ -1037,16 +1059,19 @@ export default function MembersPage() {
                       <div className="text-2xl font-semibold text-slate-900">
                         {kpis.total.all}
                       </div>
-                      <div className="text-[11px] text-slate-600 flex gap-3">
-                        <span>
-                          <span className="font-semibold">Female</span>:{" "}
-                          {kpis.total.female}
-                        </span>
-                        <span>
-                          <span className="font-semibold">Male</span>:{" "}
-                          {kpis.total.male}
-                        </span>
-                      </div>
+
+                      {isKpiOpen("total") ? (
+                        <div className="text-[11px] text-slate-600 flex gap-3">
+                          <span>
+                            <span className="font-semibold">Female</span>:{" "}
+                            {kpis.total.female}
+                          </span>
+                          <span>
+                            <span className="font-semibold">Male</span>:{" "}
+                            {kpis.total.male}
+                          </span>
+                        </div>
+                      ) : null}
                     </div>
                   </button>
 
@@ -1054,10 +1079,16 @@ export default function MembersPage() {
                   <button
                     type="button"
                     onClick={() =>
-                      setAgeGroupFilter((cur) =>
-                        cur === "1-12" ? null : "1-12",
+                      toggleKpi(
+                        "kids",
+                        ageGroupFilter === "1-12" ? null : "1-12",
                       )
                     }
+                    onMouseEnter={() => setHoverKpi("kids")}
+                    onMouseLeave={() => setHoverKpi(null)}
+                    onFocus={() => setHoverKpi("kids")}
+                    onBlur={() => setHoverKpi(null)}
+                    aria-expanded={openKpi === "kids"}
                     className={`rounded-2xl border px-4 py-3 text-left transition ${
                       ageGroupFilter === "1-12"
                         ? "bg-primary/15 border-primary"
@@ -1071,16 +1102,19 @@ export default function MembersPage() {
                       <div className="text-2xl font-semibold text-slate-900">
                         {kpis.kids.all}
                       </div>
-                      <div className="text-[11px] text-slate-600 flex gap-3">
-                        <span>
-                          <span className="font-semibold">Female</span>:{" "}
-                          {kpis.kids.female}
-                        </span>
-                        <span>
-                          <span className="font-semibold">Male</span>:{" "}
-                          {kpis.kids.male}
-                        </span>
-                      </div>
+
+                      {isKpiOpen("kids") ? (
+                        <div className="text-[11px] text-slate-600 flex gap-3">
+                          <span>
+                            <span className="font-semibold">Female</span>:{" "}
+                            {kpis.kids.female}
+                          </span>
+                          <span>
+                            <span className="font-semibold">Male</span>:{" "}
+                            {kpis.kids.male}
+                          </span>
+                        </div>
+                      ) : null}
                     </div>
                   </button>
 
@@ -1088,10 +1122,16 @@ export default function MembersPage() {
                   <button
                     type="button"
                     onClick={() =>
-                      setAgeGroupFilter((cur) =>
-                        cur === "13-17" ? null : "13-17",
+                      toggleKpi(
+                        "teens",
+                        ageGroupFilter === "13-17" ? null : "13-17",
                       )
                     }
+                    onMouseEnter={() => setHoverKpi("teens")}
+                    onMouseLeave={() => setHoverKpi(null)}
+                    onFocus={() => setHoverKpi("teens")}
+                    onBlur={() => setHoverKpi(null)}
+                    aria-expanded={openKpi === "teens"}
                     className={`rounded-2xl border px-4 py-3 text-left transition ${
                       ageGroupFilter === "13-17"
                         ? "bg-primary/15 border-primary"
@@ -1105,16 +1145,19 @@ export default function MembersPage() {
                       <div className="text-2xl font-semibold text-slate-900">
                         {kpis.teens.all}
                       </div>
-                      <div className="text-[11px] text-slate-600 flex gap-3">
-                        <span>
-                          <span className="font-semibold">Female</span>:{" "}
-                          {kpis.teens.female}
-                        </span>
-                        <span>
-                          <span className="font-semibold">Male</span>:{" "}
-                          {kpis.teens.male}
-                        </span>
-                      </div>
+
+                      {isKpiOpen("teens") ? (
+                        <div className="text-[11px] text-slate-600 flex gap-3">
+                          <span>
+                            <span className="font-semibold">Female</span>:{" "}
+                            {kpis.teens.female}
+                          </span>
+                          <span>
+                            <span className="font-semibold">Male</span>:{" "}
+                            {kpis.teens.male}
+                          </span>
+                        </div>
+                      ) : null}
                     </div>
                   </button>
 
@@ -1122,10 +1165,16 @@ export default function MembersPage() {
                   <button
                     type="button"
                     onClick={() =>
-                      setAgeGroupFilter((cur) =>
-                        cur === "18-35" ? null : "18-35",
+                      toggleKpi(
+                        "young",
+                        ageGroupFilter === "18-35" ? null : "18-35",
                       )
                     }
+                    onMouseEnter={() => setHoverKpi("young")}
+                    onMouseLeave={() => setHoverKpi(null)}
+                    onFocus={() => setHoverKpi("young")}
+                    onBlur={() => setHoverKpi(null)}
+                    aria-expanded={openKpi === "young"}
                     className={`rounded-2xl border px-4 py-3 text-left transition ${
                       ageGroupFilter === "18-35"
                         ? "bg-primary/15 border-primary"
@@ -1139,16 +1188,19 @@ export default function MembersPage() {
                       <div className="text-2xl font-semibold text-slate-900">
                         {kpis.young.all}
                       </div>
-                      <div className="text-[11px] text-slate-600 flex gap-3">
-                        <span>
-                          <span className="font-semibold">Female</span>:{" "}
-                          {kpis.young.female}
-                        </span>
-                        <span>
-                          <span className="font-semibold">Male</span>:{" "}
-                          {kpis.young.male}
-                        </span>
-                      </div>
+
+                      {isKpiOpen("young") ? (
+                        <div className="text-[11px] text-slate-600 flex gap-3">
+                          <span>
+                            <span className="font-semibold">Female</span>:{" "}
+                            {kpis.young.female}
+                          </span>
+                          <span>
+                            <span className="font-semibold">Male</span>:{" "}
+                            {kpis.young.male}
+                          </span>
+                        </div>
+                      ) : null}
                     </div>
                   </button>
 
@@ -1156,8 +1208,16 @@ export default function MembersPage() {
                   <button
                     type="button"
                     onClick={() =>
-                      setAgeGroupFilter((cur) => (cur === "36+" ? null : "36+"))
+                      toggleKpi(
+                        "adults",
+                        ageGroupFilter === "36+" ? null : "36+",
+                      )
                     }
+                    onMouseEnter={() => setHoverKpi("adults")}
+                    onMouseLeave={() => setHoverKpi(null)}
+                    onFocus={() => setHoverKpi("adults")}
+                    onBlur={() => setHoverKpi(null)}
+                    aria-expanded={openKpi === "adults"}
                     className={`rounded-2xl border px-4 py-3 text-left transition ${
                       ageGroupFilter === "36+"
                         ? "bg-primary/15 border-primary"
@@ -1171,16 +1231,19 @@ export default function MembersPage() {
                       <div className="text-2xl font-semibold text-slate-900">
                         {kpis.adults.all}
                       </div>
-                      <div className="text-[11px] text-slate-600 flex gap-3">
-                        <span>
-                          <span className="font-semibold">Female</span>:{" "}
-                          {kpis.adults.female}
-                        </span>
-                        <span>
-                          <span className="font-semibold">Male</span>:{" "}
-                          {kpis.adults.male}
-                        </span>
-                      </div>
+
+                      {isKpiOpen("adults") ? (
+                        <div className="text-[11px] text-slate-600 flex gap-3">
+                          <span>
+                            <span className="font-semibold">Female</span>:{" "}
+                            {kpis.adults.female}
+                          </span>
+                          <span>
+                            <span className="font-semibold">Male</span>:{" "}
+                            {kpis.adults.male}
+                          </span>
+                        </div>
+                      ) : null}
                     </div>
                   </button>
                 </div>

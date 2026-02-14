@@ -16,8 +16,17 @@ export default function SettingsHomePage() {
       desc: "Invite people, manage roles, and remove access.",
       href: "/app/settings/users",
     },
+    {
+      title: "Terms & Privacy",
+      desc: "Privacy policy, terms of service, and platform policies.",
+      href: "/app/settings/legal",
+    },
+    {
+      title: "Support",
+      desc: "Contact support and get help.",
+      href: "/app/settings/support",
+    },
   ];
-
 
   return (
     <>
@@ -52,7 +61,9 @@ export default function SettingsHomePage() {
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <div className="text-sm font-semibold">{it.title}</div>
-                      <div className="mt-1 text-sm text-slate-600">{it.desc}</div>
+                      <div className="mt-1 text-sm text-slate-600">
+                        {it.desc}
+                      </div>
                     </div>
                     <div className="text-sm text-slate-500">›</div>
                   </div>

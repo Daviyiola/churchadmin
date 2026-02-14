@@ -2,17 +2,16 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-// import { supabase } from "@/lib/supabaseClient";
+
 import { useRouter } from "next/navigation";
 import { signInWithOrg } from "@/lib/auth";
 import BrandLogo from "@/components/BrandLogo";
-import { supabase } from "@/lib/supabaseClient";
+
 
 type Org = { id: string; name: string; slug: string };
 //const [selectedOrgId, setSelectedOrgId] = useState<string>("");
 
 export default function SignInPage() {
-  const [open, setOpen] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
   const [resetMsg, setResetMsg] = useState<string>("");
 
@@ -96,7 +95,7 @@ export default function SignInPage() {
             href="/"
             className="rounded-2xl border px-4 py-2 text-sm font-medium hover:bg-slate-50"
           >
-            Landing Page
+            Back
           </Link>
         </div>
       </header>
