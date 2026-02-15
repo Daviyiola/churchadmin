@@ -38,6 +38,7 @@ type PublishedSession = {
   revision: number;
   last_edited_at: string | null;
   last_edited_by: string | null;
+  last_edited_by_email: string | null;
 };
 
 type AttendanceEntry = {
@@ -183,7 +184,7 @@ export default function AttendancePublishedPage() {
       supabase
         .from("attendance_sessions")
         .select(
-          "id,org_id,service_category_id,session_date,status,created_at,updated_at,published_by,published_at,deleted_at,deleted_by,revision,last_edited_at,last_edited_by",
+          "id,org_id,service_category_id,session_date,status,created_at,updated_at,published_by,published_at,deleted_at,deleted_by,revision,last_edited_at,last_edited_by,last_edited_by_email",
         )
         .eq("org_id", orgId)
         .eq("status", "published")
@@ -504,8 +505,8 @@ export default function AttendancePublishedPage() {
                           <div
                             className={`text-xs truncate ${active ? "text-white/90" : "text-slate-600"}`}
                           >
-                            Rev {s.revision ?? 0} • Last edit{" "}
-                            {s.last_edited_at ? fmtDate(s.last_edited_at) : "—"}
+                            Rev {s.revision ?? 0} • Last edit {s.last_edited_at ? fmtDate(s.last_edited_at) : "—"} • By {s.last_edited_by_email ?? "—"}
+
                           </div>
                         </div>
                         <div className="shrink-0">
