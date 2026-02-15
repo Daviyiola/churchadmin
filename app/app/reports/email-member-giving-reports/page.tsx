@@ -124,7 +124,7 @@ type JobStatus = "queued" | "running" | "paused" | "done" | "error";
 type ReportPumpOk = {
   ok: true;
   status: JobStatus;
-  paused_reason?: string;
+  paused_reason?: string | null;
   total: number;
   sent_success: number;
   sent_failure: number;
@@ -273,21 +273,43 @@ function isReportStartOk(v: unknown): v is ReportStartOk {
 
 function isReportPumpOk(v: unknown): v is ReportPumpOk {
   if (!isObject(v)) return false;
-  return (
-    v.ok === true &&
-    (v.status === "queued" ||
-      v.status === "running" ||
-      v.status === "paused" ||
-      v.status === "done" ||
-      v.status === "error") &&
-    typeof v.total === "number" &&
-    typeof v.sent_success === "number" &&
-    typeof v.sent_failure === "number" &&
-    typeof v.processed_now === "number" &&
-    typeof v.done === "boolean" &&
-    (v.paused_reason === undefined || typeof v.paused_reason === "string")
-  );
+
+  // narrow once
+  const obj = v as Record<string, unknown>;
+
+  if (obj.ok !== true) return false;
+
+  if (
+    obj.status !== "queued" &&
+    obj.status !== "running" &&
+    obj.status !== "paused" &&
+    obj.status !== "done" &&
+    obj.status !== "error"
+  ) {
+    return false;
+  }
+
+  if (
+    typeof obj.total !== "number" ||
+    typeof obj.sent_success !== "number" ||
+    typeof obj.sent_failure !== "number" ||
+    typeof obj.processed_now !== "number" ||
+    typeof obj.done !== "boolean"
+  ) {
+    return false;
+  }
+  if (
+    obj.paused_reason !== undefined &&
+    obj.paused_reason !== null &&
+    typeof obj.paused_reason !== "string"
+  ) {
+    return false;
+  }
+
+  return true;
 }
+
+
 
 function isReportStatusOk(v: unknown): v is ReportStatusOk {
   if (!isObject(v)) return false;
@@ -363,8 +385,7 @@ function clampEmailImages(html: string, maxWidthPx: number): string {
         return `<img${attrsWithWidth.replace(
           styleRe,
           (_styleMatch: string, styleValue: string): string => {
-            const extra =
-              `width:100%;max-width:${maxWidthPx}px;height:auto;display:block;`;
+            const extra = `width:100%;max-width:${maxWidthPx}px;height:auto;display:block;`;
 
             const nextStyle = `${styleValue};${extra}`.replace(/;;+/g, ";");
 
@@ -377,7 +398,6 @@ function clampEmailImages(html: string, maxWidthPx: number): string {
     },
   );
 }
-
 
 function escapeHtml(s: string) {
   return s
@@ -1106,6 +1126,22 @@ export default function CommunicationsPage() {
     }
   }
 
+  async function readJsonOrThrow(res: Response) {
+    const text = await res.text(); // always read raw first
+
+    let parsed: unknown = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      throw new Error(
+        `Non-JSON response (${res.status}). ` +
+          `First 200 chars: ${text.slice(0, 200)}`,
+      );
+    }
+
+    return { parsed, text };
+  }
+
   async function pumpOnce(job_id: string) {
     if (!orgId) return;
 
@@ -1122,31 +1158,34 @@ export default function CommunicationsPage() {
       body: JSON.stringify({
         organization_id: orgId,
         job_id,
-        batch_size: 25,
+        batch_size: 3,
       }),
     });
 
-    const json: unknown = await res.json().catch(() => null);
+    const { parsed, text } = await readJsonOrThrow(res);
 
+    // If server returned an error (400/403/etc), show its message
     if (!res.ok) {
       const msg =
-        isObject(json) && typeof json.error === "string"
-          ? json.error
-          : "Pump failed";
+        isObject(parsed) && typeof parsed.error === "string"
+          ? parsed.error
+          : `Pump failed (${res.status}). Body: ${text.slice(0, 200)}`;
       throw new Error(msg);
     }
 
-    if (!isReportPumpOk(json)) {
-      throw new Error("Pump failed: unexpected response shape");
+    // Success must match ReportPumpOk
+    if (!isReportPumpOk(parsed)) {
+      throw new Error(
+        `Pump failed: unexpected response shape. Body: ${text.slice(0, 200)}`,
+      );
     }
 
-    setJobStatus(json.status);
-    setPausedReason(json.paused_reason ?? null);
-    setJobTotal(json.total);
-    setSentOk(json.sent_success);
-    setSentFail(json.sent_failure);
+    setJobStatus(parsed.status);
+    setPausedReason(parsed.paused_reason ?? null);
+    setJobTotal(parsed.total);
+    setSentOk(parsed.sent_success);
+    setSentFail(parsed.sent_failure);
 
-    // refresh status/recent after pump (cheap + keeps UI fresh)
     await refreshStatus(job_id);
   }
 
@@ -1173,15 +1212,24 @@ export default function CommunicationsPage() {
       )}&job_id=${encodeURIComponent(job_id)}`,
       { headers: { Authorization: `Bearer ${jwt}` } },
     );
-    const json: unknown = await res.json().catch(() => null);
+
+    const { parsed, text } = await readJsonOrThrow(res);
 
     if (!res.ok) {
       const msg =
-        isObject(json) && typeof json.error === "string"
-          ? json.error
-          : "Status failed";
+        isObject(parsed) && typeof parsed.error === "string"
+          ? parsed.error
+          : `Status failed (${res.status}). Body: ${text.slice(0, 200)}`;
       throw new Error(msg);
     }
+
+    if (!isStatusResponse(parsed)) {
+      // don’t crash UI, but don’t silently swallow either
+      console.warn("Status unexpected shape:", parsed);
+      return;
+    }
+
+    const json = parsed;
 
     if (!isStatusResponse(json)) return;
 

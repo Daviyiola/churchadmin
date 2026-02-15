@@ -15,10 +15,7 @@ import {
 
 import type { Browser, Page } from "puppeteer-core";
 
-import type {
-  RunMemberGivingBody,
-  PaymentMethod,
-} from "@/lib/reports/members/types";
+import type { RunMemberGivingBody, PaymentMethod } from "@/lib/reports/members/types";
 import { renderMemberGivingHtml } from "@/lib/server/reports/memberGivingHtml";
 import { runMemberGivingReportAsAdmin } from "@/lib/server/reports/memberGivingAdmin";
 import { launchBrowser } from "@/lib/server/pdf/launchBrowser";
@@ -40,7 +37,7 @@ type OkJson = {
 type Body = {
   organization_id?: string;
   job_id?: string;
-  batch_size?: number; // default 3
+  batch_size?: number;
 };
 
 type UploadRow = {
@@ -65,9 +62,7 @@ function formatFrom(displayName: string, fromEmail: string) {
 }
 
 async function downloadFileBase64(bucket: string, path: string) {
-  const { data, error } = await supabaseAdmin.storage
-    .from(bucket)
-    .download(path);
+  const { data, error } = await supabaseAdmin.storage.from(bucket).download(path);
   if (error) throw new Error(error.message);
   const buf = Buffer.from(await data.arrayBuffer());
   return buf.toString("base64");
@@ -84,9 +79,7 @@ function rewriteInlineImages(html: string, uploads: UploadRow[]) {
     if (u.upload_mode !== "inline" || !u.inline_cid) continue;
 
     const reById = new RegExp(
-      `(<img\\b[^>]*\\bdata-upload-id=["']${escapeRegExp(
-        u.id,
-      )}["'][^>]*\\bsrc=["'])([^"']*)(["'])`,
+      `(<img\\b[^>]*\\bdata-upload-id=["']${escapeRegExp(u.id)}["'][^>]*\\bsrc=["'])([^"']*)(["'])`,
       "gi",
     );
     out = out.replace(reById, `$1cid:${u.inline_cid}$3`);
@@ -132,7 +125,7 @@ async function pdfBase64UsingPage(page: Page, html: string): Promise<string> {
   await withRetry(async () => {
     await page.setContent(html, { waitUntil: "load", timeout: 30_000 });
     await page.emulateMediaType("screen");
-    await new Promise((r) => setTimeout(r, 150)); // settle layout/fonts
+    await new Promise((r) => setTimeout(r, 150));
   }, 2);
 
   const pdf = await withRetry(
@@ -140,12 +133,7 @@ async function pdfBase64UsingPage(page: Page, html: string): Promise<string> {
       page.pdf({
         format: "Letter",
         printBackground: true,
-        margin: {
-          top: "0.4in",
-          bottom: "0.4in",
-          left: "0.4in",
-          right: "0.4in",
-        },
+        margin: { top: "0.4in", bottom: "0.4in", left: "0.4in", right: "0.4in" },
       }),
     2,
   );
@@ -155,16 +143,13 @@ async function pdfBase64UsingPage(page: Page, html: string): Promise<string> {
 
 function buildFiltersLine(body: Omit<RunMemberGivingBody, "mode">): string {
   const parts: string[] = [];
-  if (body.service_ids?.length)
-    parts.push(`Services: ${body.service_ids.length}`);
-  if (body.category_ids?.length)
-    parts.push(`Categories: ${body.category_ids.length}`);
-  if (body.payment_methods?.length)
-    parts.push(`Methods: ${body.payment_methods.join(", ")}`);
+  if (body.service_ids?.length) parts.push(`Services: ${body.service_ids.length}`);
+  if (body.category_ids?.length) parts.push(`Categories: ${body.category_ids.length}`);
+  if (body.payment_methods?.length) parts.push(`Methods: ${body.payment_methods.join(", ")}`);
   return parts.join(" • ");
 }
 
-async function computeJobCounts(job_id: string) {
+async function computeCounts(job_id: string) {
   const { data, error } = await supabaseAdmin
     .from("report_email_job_recipients")
     .select("status")
@@ -174,75 +159,48 @@ async function computeJobCounts(job_id: string) {
 
   let ok = 0;
   let fail = 0;
+  let skipped = 0;
   let pending = 0;
   let processing = 0;
-  let skipped = 0;
 
   for (const r of data ?? []) {
     if (r.status === "success") ok++;
     else if (r.status === "failure") fail++;
+    else if (r.status === "skipped") skipped++;
     else if (r.status === "pending") pending++;
     else if (r.status === "processing") processing++;
-    else if (r.status === "skipped") skipped++;
   }
 
-  const doneNow = pending === 0 && processing === 0;
-  return { ok, fail, skipped, pending, processing, doneNow };
+  return { ok, fail, skipped, pending, processing, doneNow: pending === 0 && processing === 0 };
 }
 
 export async function POST(req: Request) {
-  // For releasing lock in finally
-  let lockOwner: string | null = null;
-  let organization_id = "";
-  let job_id = "";
-
   try {
     const u = await requireUser(req);
-    if (!u.ok) {
-      return NextResponse.json<ErrorJson>(
-        { error: u.error },
-        { status: u.status },
-      );
-    }
+    if (!u.ok) return NextResponse.json<ErrorJson>({ error: u.error }, { status: u.status });
 
     const body = (await req.json().catch(() => null)) as Body | null;
 
-    organization_id = String(body?.organization_id ?? "").trim();
-    job_id = String(body?.job_id ?? "").trim();
+    const organization_id = String(body?.organization_id ?? "").trim();
+    const job_id = String(body?.job_id ?? "").trim();
 
     const batch_size_raw = Number(body?.batch_size ?? 3);
     const batch_size = Number.isFinite(batch_size_raw)
       ? Math.min(10, Math.max(1, Math.floor(batch_size_raw)))
       : 3;
 
-    if (!organization_id) {
-      return NextResponse.json<ErrorJson>(
-        { error: "organization_id required" },
-        { status: 400 },
-      );
-    }
-    if (!job_id) {
-      return NextResponse.json<ErrorJson>(
-        { error: "job_id required" },
-        { status: 400 },
-      );
-    }
+    if (!organization_id) return NextResponse.json({ error: "organization_id required" }, { status: 400 });
+    if (!job_id) return NextResponse.json({ error: "job_id required" }, { status: 400 });
 
     const authz = await requireOrgOwnerOrAdmin(organization_id, u.userId);
-    if (!authz.ok) {
-      return NextResponse.json<ErrorJson>(
-        { error: authz.error },
-        { status: authz.status },
-      );
-    }
+    if (!authz.ok) return NextResponse.json({ error: authz.error }, { status: authz.status });
 
-    // Load job (includes lock columns)
+    // Load job
     const { data: job, error: jobErr } = await supabaseAdmin
       .from("report_email_jobs")
       .select(
         "id, org_id, campaign_id, status, paused_reason, total, sent_success, sent_failure, start_date, end_date, service_ids, category_ids, payment_methods, attach_summary, attach_detailed, reply_to",
       )
-
       .eq("id", job_id)
       .eq("org_id", organization_id)
       .maybeSingle<{
@@ -262,21 +220,14 @@ export async function POST(req: Request) {
         attach_summary: boolean;
         attach_detailed: boolean;
         reply_to: string | null;
-        pump_locked_at: string | null;
-        pump_locked_by: string | null;
       }>();
 
     if (jobErr) throw new Error(jobErr.message);
-    if (!job) {
-      return NextResponse.json<ErrorJson>(
-        { error: "Job not found" },
-        { status: 404 },
-      );
-    }
+    if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 });
 
-    // If already done, return computed truth (so UI never lies)
+    // If job already done, return truthful counts
     if (job.status === "done") {
-      const counts = await computeJobCounts(job_id);
+      const counts = await computeCounts(job_id);
       return NextResponse.json<OkJson>({
         ok: true,
         status: "done",
@@ -289,43 +240,7 @@ export async function POST(req: Request) {
       });
     }
 
-    // -----------------------------
-    // DB LOCK (prevents concurrent pumps on Vercel → stops ETXTBSY)
-    // -----------------------------
-    lockOwner = `${process.env.VERCEL_REGION ?? "local"}:${process.pid}:${Date.now()}`;
-    const staleIso = new Date(Date.now() - 2 * 60_000).toISOString(); // 2 min stale
-
-    const { data: locked, error: lockErr } = await supabaseAdmin
-      .from("report_email_jobs")
-      .update({
-        pump_locked_at: new Date().toISOString(),
-        pump_locked_by: lockOwner,
-      })
-      .eq("id", job_id)
-      .eq("org_id", organization_id)
-      // acquire if unlocked OR stale
-      .or(`pump_locked_at.is.null,pump_locked_at.lt.${staleIso}`)
-      .select("id")
-      .maybeSingle<{ id: string }>();
-
-    if (lockErr) throw new Error(lockErr.message);
-
-    // Someone else is pumping right now — return current truth without doing work
-    if (!locked) {
-      const counts = await computeJobCounts(job_id);
-      return NextResponse.json<OkJson>({
-        ok: true,
-        status: counts.doneNow ? "done" : "running",
-        paused_reason: null,
-        total: Number(job.total ?? 0),
-        sent_success: counts.ok,
-        sent_failure: counts.fail + counts.skipped,
-        processed_now: 0,
-        done: counts.doneNow,
-      });
-    }
-
-    // Fetch campaign (subject/body)
+    // campaign
     const { data: campaign, error: campErr } = await supabaseAdmin
       .from("communication_campaigns")
       .select("id, subject, body_html")
@@ -334,14 +249,9 @@ export async function POST(req: Request) {
       .maybeSingle<{ id: string; subject: string; body_html: string }>();
 
     if (campErr) throw new Error(campErr.message);
-    if (!campaign) {
-      return NextResponse.json<ErrorJson>(
-        { error: "Campaign not found" },
-        { status: 404 },
-      );
-    }
+    if (!campaign) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
 
-    // Org name (From:)
+    // org for From:
     const { data: org, error: orgErr } = await supabaseAdmin
       .from("organizations")
       .select("name")
@@ -353,12 +263,10 @@ export async function POST(req: Request) {
     const orgName = String(org?.name ?? "Our Church").trim() || "Our Church";
     const from = formatFrom(orgName, process.env.RESEND_FROM!);
 
-    // Uploads (inline images + attachments)
+    // uploads
     const { data: uploads, error: upErr } = await supabaseAdmin
       .from("message_uploads")
-      .select(
-        "id, bucket, path, filename, content_type, upload_mode, inline_cid, preview_url",
-      )
+      .select("id, bucket, path, filename, content_type, upload_mode, inline_cid, preview_url")
       .eq("campaign_id", job.campaign_id);
 
     if (upErr) throw new Error(upErr.message);
@@ -376,11 +284,9 @@ export async function POST(req: Request) {
           ...(file.content_type ? { contentType: file.content_type } : {}),
         };
 
-        // inline images need contentId for cid:
         if (file.upload_mode === "inline" && file.inline_cid) {
           return { ...common, contentId: file.inline_cid };
         }
-
         return common;
       }),
     );
@@ -392,10 +298,9 @@ export async function POST(req: Request) {
       contentId?: string;
     }>;
 
-    // Rewrite inline images once per pump
     const htmlWithCid = rewriteInlineImages(campaign.body_html, uploadRows);
 
-    // Find next pending recipients
+    // targets
     const { data: pending, error: pErr } = await supabaseAdmin
       .from("report_email_job_recipients")
       .select("idx, member_id, to_email, display_name, status")
@@ -414,9 +319,8 @@ export async function POST(req: Request) {
       status: string;
     }>;
 
-    // No targets → finalize using computed truth
     if (!targets.length) {
-      const counts = await computeJobCounts(job_id);
+      const counts = await computeCounts(job_id);
 
       await supabaseAdmin
         .from("report_email_jobs")
@@ -441,7 +345,6 @@ export async function POST(req: Request) {
       });
     }
 
-    // If paused, attempt resume automatically
     if (job.status === "paused") {
       await supabaseAdmin
         .from("report_email_jobs")
@@ -450,14 +353,11 @@ export async function POST(req: Request) {
         .eq("org_id", organization_id);
     }
 
-    // Use singleton browser; never close it here
     const browser: Browser = await launchBrowser();
-
     let processedNow = 0;
 
     for (const r of targets) {
-      // claim row
-      const { data: claimed, error: claimErr } = await supabaseAdmin
+      const { data: claimed } = await supabaseAdmin
         .from("report_email_job_recipients")
         .update({ status: "processing" })
         .eq("job_id", job_id)
@@ -466,31 +366,22 @@ export async function POST(req: Request) {
         .select("idx")
         .maybeSingle<{ idx: number }>();
 
-      if (claimErr) throw new Error(claimErr.message);
       if (!claimed) continue;
 
       processedNow += 1;
 
-      const to = String(r.to_email ?? "")
-        .trim()
-        .toLowerCase();
+      const to = String(r.to_email ?? "").trim().toLowerCase();
 
       try {
-        // validate email
         if (!to || !isValidEmail(to)) {
           await supabaseAdmin
             .from("report_email_job_recipients")
-            .update({
-              status: "skipped",
-              error: "Invalid email",
-              sent_at: new Date().toISOString(),
-            })
+            .update({ status: "skipped", error: "Invalid email", sent_at: new Date().toISOString() })
             .eq("job_id", job_id)
             .eq("idx", r.idx);
           continue;
         }
 
-        // Burst / quota checks (per recipient)
         const burst = await assertBurstLimit(organization_id, 1);
         if (!burst.ok) {
           await supabaseAdmin
@@ -506,7 +397,7 @@ export async function POST(req: Request) {
             .eq("idx", r.idx)
             .eq("status", "processing");
 
-          const counts = await computeJobCounts(job_id);
+          const counts = await computeCounts(job_id);
           return NextResponse.json<OkJson>({
             ok: true,
             status: "paused",
@@ -534,7 +425,7 @@ export async function POST(req: Request) {
             .eq("idx", r.idx)
             .eq("status", "processing");
 
-          const counts = await computeJobCounts(job_id);
+          const counts = await computeCounts(job_id);
           return NextResponse.json<OkJson>({
             ok: true,
             status: "paused",
@@ -556,26 +447,19 @@ export async function POST(req: Request) {
           end_date: job.end_date,
           service_ids: job.service_ids ?? undefined,
           category_ids: job.category_ids ?? undefined,
-          payment_methods:
-            (job.payment_methods as PaymentMethod[] | null) ?? undefined,
+          payment_methods: (job.payment_methods as PaymentMethod[] | null) ?? undefined,
         };
 
         const filtersLine = buildFiltersLine(baseBody);
 
         const attachments = [...uploadAttachments];
 
-        // Make ONE page per recipient; reuse for summary + detailed
         let page: Page | null = null;
         try {
           page = await browser.newPage();
-          page.setDefaultTimeout(30_000);
-          page.setDefaultNavigationTimeout(30_000);
 
           if (job.attach_summary) {
-            const rep = await runMemberGivingReportAsAdmin({
-              ...baseBody,
-              mode: "summary",
-            });
+            const rep = await runMemberGivingReportAsAdmin({ ...baseBody, mode: "summary" });
             const repHtml = renderMemberGivingHtml(rep, filtersLine);
             const pdfBase64 = await pdfBase64UsingPage(page, repHtml);
             const memberPart = safeFilePart(rep.member.name || "member");
@@ -587,10 +471,7 @@ export async function POST(req: Request) {
           }
 
           if (job.attach_detailed) {
-            const rep = await runMemberGivingReportAsAdmin({
-              ...baseBody,
-              mode: "detailed",
-            });
+            const rep = await runMemberGivingReportAsAdmin({ ...baseBody, mode: "detailed" });
             const repHtml = renderMemberGivingHtml(rep, filtersLine);
             const pdfBase64 = await pdfBase64UsingPage(page, repHtml);
             const memberPart = safeFilePart(rep.member.name || "member");
@@ -624,56 +505,39 @@ export async function POST(req: Request) {
 
           await supabaseAdmin
             .from("report_email_job_recipients")
-            .update({
-              status: "failure",
-              sent_at: new Date().toISOString(),
-              error: msg,
-            })
+            .update({ status: "failure", sent_at: new Date().toISOString(), error: msg })
             .eq("job_id", job_id)
             .eq("idx", r.idx);
 
-          // best-effort bookkeeping
           try {
-            await supabaseAdmin
-              .from("communication_campaign_recipients")
-              .insert({
-                campaign_id: campaign.id,
-                to_email: to,
-                success: false,
-                error: msg,
-                provider: "resend",
-                provider_id: providerId,
-              });
-            await supabaseAdmin.rpc("increment_campaign_failure", {
-              p_campaign_id: campaign.id,
+            await supabaseAdmin.from("communication_campaign_recipients").insert({
+              campaign_id: campaign.id,
+              to_email: to,
+              success: false,
+              error: msg,
+              provider: "resend",
+              provider_id: providerId,
             });
+            await supabaseAdmin.rpc("increment_campaign_failure", { p_campaign_id: campaign.id });
           } catch {}
         } else {
           await supabaseAdmin
             .from("report_email_job_recipients")
-            .update({
-              status: "success",
-              sent_at: new Date().toISOString(),
-              error: null,
-            })
+            .update({ status: "success", sent_at: new Date().toISOString(), error: null })
             .eq("job_id", job_id)
             .eq("idx", r.idx);
 
-          // best-effort bookkeeping + quota consumption
           try {
-            await supabaseAdmin
-              .from("communication_campaign_recipients")
-              .insert({
-                campaign_id: campaign.id,
-                to_email: to,
-                success: true,
-                error: null,
-                provider: "resend",
-                provider_id: providerId,
-              });
-            await supabaseAdmin.rpc("increment_campaign_success", {
-              p_campaign_id: campaign.id,
+            await supabaseAdmin.from("communication_campaign_recipients").insert({
+              campaign_id: campaign.id,
+              to_email: to,
+              success: true,
+              error: null,
+              provider: "resend",
+              provider_id: providerId,
             });
+            await supabaseAdmin.rpc("increment_campaign_success", { p_campaign_id: campaign.id });
+
             await consumeBurst(organization_id, 1);
             await consumeMonthlyQuota(organization_id, 1);
           } catch {}
@@ -683,18 +547,13 @@ export async function POST(req: Request) {
 
         await supabaseAdmin
           .from("report_email_job_recipients")
-          .update({
-            status: "failure",
-            sent_at: new Date().toISOString(),
-            error: msg,
-          })
+          .update({ status: "failure", sent_at: new Date().toISOString(), error: msg })
           .eq("job_id", job_id)
           .eq("idx", r.idx);
       }
     }
 
-    // After processing batch, compute truth + update job
-    const counts = await computeJobCounts(job_id);
+    const counts = await computeCounts(job_id);
 
     await supabaseAdmin
       .from("report_email_jobs")
@@ -722,17 +581,5 @@ export async function POST(req: Request) {
       { error: e instanceof Error ? e.message : "Error" },
       { status: 400 },
     );
-  } finally {
-    // Release lock only if we own it
-    if (lockOwner && organization_id && job_id) {
-      try {
-        await supabaseAdmin
-          .from("report_email_jobs")
-          .update({ pump_locked_at: null, pump_locked_by: null })
-          .eq("id", job_id)
-          .eq("org_id", organization_id)
-          .eq("pump_locked_by", lockOwner);
-      } catch {}
-    }
   }
 }
