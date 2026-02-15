@@ -9,9 +9,7 @@ let cachedExecPath: string | null = null;
 
 async function ensureAlive(b: Browser): Promise<boolean> {
   try {
-    // Fast check
-    if (!b.isConnected()) return false;
-    // Stronger check (sometimes isConnected is true but transport is dead)
+    // isConnected() is deprecated in newer puppeteer types, so just rely on a real call:
     await b.version();
     return true;
   } catch {
@@ -22,25 +20,23 @@ async function ensureAlive(b: Browser): Promise<boolean> {
 export async function launchBrowser(): Promise<Browser> {
   if (cachedBrowser && (await ensureAlive(cachedBrowser))) return cachedBrowser;
 
-  // cachedBrowser exists but dead
   cachedBrowser = null;
 
   if (isServerless) {
     const remotePack = process.env.CHROMIUM_REMOTE_EXEC_PATH;
-    if (!remotePack) {
-      throw new Error("Missing CHROMIUM_REMOTE_EXEC_PATH in production.");
-    }
+    if (!remotePack) throw new Error("Missing CHROMIUM_REMOTE_EXEC_PATH.");
 
-    if (!cachedExecPath) cachedExecPath = await chromium.executablePath(remotePack);
+    if (!cachedExecPath) {
+      cachedExecPath = await chromium.executablePath(remotePack);
+    }
 
     cachedBrowser = await puppeteerCore.launch({
       args: chromium.args,
       executablePath: cachedExecPath,
-      headless: true,
-      defaultViewport: { width: 1280, height: 720 },
+      headless: true, // chromium-min doesn't expose chromium.headless
+      defaultViewport: { width: 1280, height: 720 }, // chromium-min doesn't expose defaultViewport
     });
 
-    // Auto-reset if it disconnects
     cachedBrowser.on("disconnected", () => {
       cachedBrowser = null;
     });
@@ -48,10 +44,13 @@ export async function launchBrowser(): Promise<Browser> {
     return cachedBrowser;
   }
 
+  // Local dev: use full puppeteer (bundles Chrome)
   const puppeteer = await import("puppeteer");
   cachedBrowser = await puppeteer.launch({ headless: true });
+
   cachedBrowser.on("disconnected", () => {
     cachedBrowser = null;
   });
+
   return cachedBrowser;
 }

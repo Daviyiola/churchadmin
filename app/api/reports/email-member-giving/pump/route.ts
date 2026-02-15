@@ -13,7 +13,7 @@ import {
   consumeMonthlyQuota,
 } from "@/lib/server/communicationsLimits";
 
-import puppeteer, { type Browser } from "puppeteer-core";
+import type { Browser, Page } from "puppeteer-core";
 
 import type {
   RunMemberGivingBody,
@@ -84,7 +84,9 @@ function rewriteInlineImages(html: string, uploads: UploadRow[]) {
     if (u.upload_mode !== "inline" || !u.inline_cid) continue;
 
     const reById = new RegExp(
-      `(<img\\b[^>]*\\bdata-upload-id=["']${escapeRegExp(u.id)}["'][^>]*\\bsrc=["'])([^"']*)(["'])`,
+      `(<img\\b[^>]*\\bdata-upload-id=["']${escapeRegExp(
+        u.id,
+      )}["'][^>]*\\bsrc=["'])([^"']*)(["'])`,
       "gi",
     );
     out = out.replace(reById, `$1cid:${u.inline_cid}$3`);
@@ -113,29 +115,64 @@ function safeFilePart(s: string) {
   return s.replace(/[^\w\-]+/g, "_").slice(0, 80);
 }
 
+async function withRetry<T>(fn: () => Promise<T>, tries = 2) {
+  let lastErr: unknown;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, 200 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * IMPORTANT on Vercel:
+ * - launchBrowser() should return a singleton browser (to avoid ETXTBSY).
+ * - Do NOT close the browser here.
+ * - Always close the page.
+ */
 async function renderPdfBase64FromHtml(html: string): Promise<string> {
   let browser: Browser | null = null;
+  let page: Page | null = null;
 
   try {
     browser = await launchBrowser();
+    page = await browser.newPage();
 
-    const page = await browser.newPage();
+    page.setDefaultTimeout(30_000);
+    page.setDefaultNavigationTimeout(30_000);
+
     await page.setContent(html, { waitUntil: "load", timeout: 30_000 });
+    // Let fonts/layout settle (helps reduce frame-detached flakiness)
     await new Promise((r) => setTimeout(r, 150));
+    await page.emulateMediaType("screen");
 
-    const pdf = await page.pdf({
-      format: "Letter",
-      printBackground: true,
-      margin: { top: "0.4in", bottom: "0.4in", left: "0.4in", right: "0.4in" },
-    });
+    const pdf = await withRetry(
+      () =>
+        page!.pdf({
+          format: "Letter",
+          printBackground: true,
+          margin: {
+            top: "0.4in",
+            bottom: "0.4in",
+            left: "0.4in",
+            right: "0.4in",
+          },
+        }),
+      2,
+    );
 
     return Buffer.from(pdf).toString("base64");
   } finally {
-    if (browser) {
+    if (page) {
       try {
-        await browser.close();
+        await page.close();
       } catch {}
     }
+    // DO NOT close browser (singleton)
   }
 }
 
@@ -270,6 +307,7 @@ export async function POST(req: Request) {
 
     const uploadRows = (uploads ?? []) as UploadRow[];
 
+    // NOTE: This is parallel; OK because it's just storage downloads.
     const uploadAttachmentsRaw = await Promise.all(
       uploadRows.map(async (file) => {
         if (!file.bucket || !file.path || !file.filename) return null;
@@ -353,6 +391,7 @@ export async function POST(req: Request) {
     let processedNow = 0;
     let sentSuccess = sentSuccess0;
     let sentFailure = sentFailure0;
+
     for (const r of targets) {
       // --- CLAIM THIS ROW ---
       const { data: claimed, error: claimErr } = await supabaseAdmin
@@ -371,11 +410,9 @@ export async function POST(req: Request) {
         .trim()
         .toLowerCase();
 
-      // Track whether the provider send already succeeded (so we never mark failure after success)
       let providerSent = false;
 
       try {
-        // validate email
         if (!to || !isValidEmail(to)) {
           await supabaseAdmin
             .from("report_email_job_recipients")
@@ -388,7 +425,6 @@ export async function POST(req: Request) {
             .eq("idx", r.idx);
 
           sentFailure += 1;
-          // No continue; just finish try and let finally run
         } else {
           // Quota checks (per recipient)
           const burst = await assertBurstLimit(organization_id, 1);
@@ -459,7 +495,6 @@ export async function POST(req: Request) {
           };
 
           const filtersLine = buildFiltersLine(baseBody);
-
           const attachments = [...uploadAttachments];
 
           if (job.attach_summary) {
@@ -536,7 +571,6 @@ export async function POST(req: Request) {
               console.error("bookkeeping after provider failure:", e);
             }
           } else {
-            // Provider success
             providerSent = true;
 
             await supabaseAdmin
@@ -575,10 +609,8 @@ export async function POST(req: Request) {
           }
         }
       } catch (err) {
-        // Pre-send or unexpected failure
         const msg = err instanceof Error ? err.message : "Send failed";
 
-        // Only mark failure if provider did NOT already succeed
         if (!providerSent) {
           await supabaseAdmin
             .from("report_email_job_recipients")
