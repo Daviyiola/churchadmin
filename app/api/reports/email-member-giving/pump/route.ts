@@ -65,7 +65,9 @@ function formatFrom(displayName: string, fromEmail: string) {
 }
 
 async function downloadFileBase64(bucket: string, path: string) {
-  const { data, error } = await supabaseAdmin.storage.from(bucket).download(path);
+  const { data, error } = await supabaseAdmin.storage
+    .from(bucket)
+    .download(path);
   if (error) throw new Error(error.message);
   const buf = Buffer.from(await data.arrayBuffer());
   return buf.toString("base64");
@@ -138,7 +140,12 @@ async function pdfBase64UsingPage(page: Page, html: string): Promise<string> {
       page.pdf({
         format: "Letter",
         printBackground: true,
-        margin: { top: "0.4in", bottom: "0.4in", left: "0.4in", right: "0.4in" },
+        margin: {
+          top: "0.4in",
+          bottom: "0.4in",
+          left: "0.4in",
+          right: "0.4in",
+        },
       }),
     2,
   );
@@ -148,9 +155,12 @@ async function pdfBase64UsingPage(page: Page, html: string): Promise<string> {
 
 function buildFiltersLine(body: Omit<RunMemberGivingBody, "mode">): string {
   const parts: string[] = [];
-  if (body.service_ids?.length) parts.push(`Services: ${body.service_ids.length}`);
-  if (body.category_ids?.length) parts.push(`Categories: ${body.category_ids.length}`);
-  if (body.payment_methods?.length) parts.push(`Methods: ${body.payment_methods.join(", ")}`);
+  if (body.service_ids?.length)
+    parts.push(`Services: ${body.service_ids.length}`);
+  if (body.category_ids?.length)
+    parts.push(`Categories: ${body.category_ids.length}`);
+  if (body.payment_methods?.length)
+    parts.push(`Methods: ${body.payment_methods.join(", ")}`);
   return parts.join(" • ");
 }
 
@@ -189,7 +199,10 @@ export async function POST(req: Request) {
   try {
     const u = await requireUser(req);
     if (!u.ok) {
-      return NextResponse.json<ErrorJson>({ error: u.error }, { status: u.status });
+      return NextResponse.json<ErrorJson>(
+        { error: u.error },
+        { status: u.status },
+      );
     }
 
     const body = (await req.json().catch(() => null)) as Body | null;
@@ -203,23 +216,33 @@ export async function POST(req: Request) {
       : 3;
 
     if (!organization_id) {
-      return NextResponse.json<ErrorJson>({ error: "organization_id required" }, { status: 400 });
+      return NextResponse.json<ErrorJson>(
+        { error: "organization_id required" },
+        { status: 400 },
+      );
     }
     if (!job_id) {
-      return NextResponse.json<ErrorJson>({ error: "job_id required" }, { status: 400 });
+      return NextResponse.json<ErrorJson>(
+        { error: "job_id required" },
+        { status: 400 },
+      );
     }
 
     const authz = await requireOrgOwnerOrAdmin(organization_id, u.userId);
     if (!authz.ok) {
-      return NextResponse.json<ErrorJson>({ error: authz.error }, { status: authz.status });
+      return NextResponse.json<ErrorJson>(
+        { error: authz.error },
+        { status: authz.status },
+      );
     }
 
     // Load job (includes lock columns)
     const { data: job, error: jobErr } = await supabaseAdmin
       .from("report_email_jobs")
       .select(
-        "id, org_id, campaign_id, status, paused_reason, total, sent_success, sent_failure, start_date, end_date, service_ids, category_ids, payment_methods, attach_summary, attach_detailed, reply_to, pump_locked_at, pump_locked_by",
+        "id, org_id, campaign_id, status, paused_reason, total, sent_success, sent_failure, start_date, end_date, service_ids, category_ids, payment_methods, attach_summary, attach_detailed, reply_to",
       )
+
       .eq("id", job_id)
       .eq("org_id", organization_id)
       .maybeSingle<{
@@ -245,7 +268,10 @@ export async function POST(req: Request) {
 
     if (jobErr) throw new Error(jobErr.message);
     if (!job) {
-      return NextResponse.json<ErrorJson>({ error: "Job not found" }, { status: 404 });
+      return NextResponse.json<ErrorJson>(
+        { error: "Job not found" },
+        { status: 404 },
+      );
     }
 
     // If already done, return computed truth (so UI never lies)
@@ -271,7 +297,10 @@ export async function POST(req: Request) {
 
     const { data: locked, error: lockErr } = await supabaseAdmin
       .from("report_email_jobs")
-      .update({ pump_locked_at: new Date().toISOString(), pump_locked_by: lockOwner })
+      .update({
+        pump_locked_at: new Date().toISOString(),
+        pump_locked_by: lockOwner,
+      })
       .eq("id", job_id)
       .eq("org_id", organization_id)
       // acquire if unlocked OR stale
@@ -306,7 +335,10 @@ export async function POST(req: Request) {
 
     if (campErr) throw new Error(campErr.message);
     if (!campaign) {
-      return NextResponse.json<ErrorJson>({ error: "Campaign not found" }, { status: 404 });
+      return NextResponse.json<ErrorJson>(
+        { error: "Campaign not found" },
+        { status: 404 },
+      );
     }
 
     // Org name (From:)
@@ -324,7 +356,9 @@ export async function POST(req: Request) {
     // Uploads (inline images + attachments)
     const { data: uploads, error: upErr } = await supabaseAdmin
       .from("message_uploads")
-      .select("id, bucket, path, filename, content_type, upload_mode, inline_cid, preview_url")
+      .select(
+        "id, bucket, path, filename, content_type, upload_mode, inline_cid, preview_url",
+      )
       .eq("campaign_id", job.campaign_id);
 
     if (upErr) throw new Error(upErr.message);
@@ -437,7 +471,9 @@ export async function POST(req: Request) {
 
       processedNow += 1;
 
-      const to = String(r.to_email ?? "").trim().toLowerCase();
+      const to = String(r.to_email ?? "")
+        .trim()
+        .toLowerCase();
 
       try {
         // validate email
@@ -520,7 +556,8 @@ export async function POST(req: Request) {
           end_date: job.end_date,
           service_ids: job.service_ids ?? undefined,
           category_ids: job.category_ids ?? undefined,
-          payment_methods: (job.payment_methods as PaymentMethod[] | null) ?? undefined,
+          payment_methods:
+            (job.payment_methods as PaymentMethod[] | null) ?? undefined,
         };
 
         const filtersLine = buildFiltersLine(baseBody);
@@ -535,7 +572,10 @@ export async function POST(req: Request) {
           page.setDefaultNavigationTimeout(30_000);
 
           if (job.attach_summary) {
-            const rep = await runMemberGivingReportAsAdmin({ ...baseBody, mode: "summary" });
+            const rep = await runMemberGivingReportAsAdmin({
+              ...baseBody,
+              mode: "summary",
+            });
             const repHtml = renderMemberGivingHtml(rep, filtersLine);
             const pdfBase64 = await pdfBase64UsingPage(page, repHtml);
             const memberPart = safeFilePart(rep.member.name || "member");
@@ -547,7 +587,10 @@ export async function POST(req: Request) {
           }
 
           if (job.attach_detailed) {
-            const rep = await runMemberGivingReportAsAdmin({ ...baseBody, mode: "detailed" });
+            const rep = await runMemberGivingReportAsAdmin({
+              ...baseBody,
+              mode: "detailed",
+            });
             const repHtml = renderMemberGivingHtml(rep, filtersLine);
             const pdfBase64 = await pdfBase64UsingPage(page, repHtml);
             const memberPart = safeFilePart(rep.member.name || "member");
@@ -591,15 +634,19 @@ export async function POST(req: Request) {
 
           // best-effort bookkeeping
           try {
-            await supabaseAdmin.from("communication_campaign_recipients").insert({
-              campaign_id: campaign.id,
-              to_email: to,
-              success: false,
-              error: msg,
-              provider: "resend",
-              provider_id: providerId,
+            await supabaseAdmin
+              .from("communication_campaign_recipients")
+              .insert({
+                campaign_id: campaign.id,
+                to_email: to,
+                success: false,
+                error: msg,
+                provider: "resend",
+                provider_id: providerId,
+              });
+            await supabaseAdmin.rpc("increment_campaign_failure", {
+              p_campaign_id: campaign.id,
             });
-            await supabaseAdmin.rpc("increment_campaign_failure", { p_campaign_id: campaign.id });
           } catch {}
         } else {
           await supabaseAdmin
@@ -614,15 +661,19 @@ export async function POST(req: Request) {
 
           // best-effort bookkeeping + quota consumption
           try {
-            await supabaseAdmin.from("communication_campaign_recipients").insert({
-              campaign_id: campaign.id,
-              to_email: to,
-              success: true,
-              error: null,
-              provider: "resend",
-              provider_id: providerId,
+            await supabaseAdmin
+              .from("communication_campaign_recipients")
+              .insert({
+                campaign_id: campaign.id,
+                to_email: to,
+                success: true,
+                error: null,
+                provider: "resend",
+                provider_id: providerId,
+              });
+            await supabaseAdmin.rpc("increment_campaign_success", {
+              p_campaign_id: campaign.id,
             });
-            await supabaseAdmin.rpc("increment_campaign_success", { p_campaign_id: campaign.id });
             await consumeBurst(organization_id, 1);
             await consumeMonthlyQuota(organization_id, 1);
           } catch {}
