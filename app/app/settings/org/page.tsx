@@ -490,7 +490,7 @@ export default function OrgSettingsPage() {
                   <div>
                     <div className="text-lg font-semibold">Logo</div>
                     <div className="mt-1 text-sm text-slate-600">
-                      PNG, JPG/JPEG, or SVG. Max 150 KB.
+                      PNG, JPG/JPEG, or SVG. Max 2 MB.
                     </div>
                   </div>
                 </div>
@@ -528,7 +528,7 @@ export default function OrgSettingsPage() {
                       onChange={(e) =>
                         handlePickFile(e.target.files?.[0] ?? null)
                       }
-                      className="text-sm"
+                      className="text-sm underline text-blue-900 hover:text-blue-700 transition-opacity disabled:opacity-50"
                     />
 
                     {pendingFile ? (
