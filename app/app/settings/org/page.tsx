@@ -249,9 +249,9 @@ export default function OrgSettingsPage() {
 
     if (!file) return;
 
-    const maxBytes = 150 * 1024; // 150kb
+    const maxBytes = 2000 * 1024; // 150kb
     if (file.size > maxBytes) {
-      showToast("Logo too large. Max 150 KB.");
+      showToast("Logo too large. Max 2MB.");
       return;
     }
 
