@@ -771,21 +771,40 @@ export default function DashboardPage() {
         const newMtdMale = newMtd.filter((m) => m.gender === "male").length;
 
         // Attendance entries for year (used for charts + month KPIs)
-        const attRes = await supabase
-          .from("attendance_entries")
-          .select(
-            "org_id,service_category_id,session_date,gender,age_group,segment,count",
-          )
-          .eq("org_id", orgId)
-          .gte("session_date", isoDate(y0))
-          .lt("session_date", isoDate(y1));
-
-        if (attRes.error) throw attRes.error;
-        const att = (attRes.data ?? []) as AttendanceEntryRow[];
+        const att = await fetchAllAttendanceEntries(
+          orgId,
+          isoDate(y0),
+          isoDate(y1),
+        );
 
         const scoped = effectiveServiceId
           ? att.filter((r) => r.service_category_id === effectiveServiceId)
           : att;
+
+        console.log("peopleServiceScope", peopleServiceScope);
+        console.log("effectiveServiceId", effectiveServiceId);
+        console.log("services", services);
+
+        console.log(
+          "selected service object",
+          services.find((s) => s.id === effectiveServiceId),
+        );
+
+        console.log(
+          "april sunday rows",
+          att.filter(
+            (r) =>
+              r.session_date === "2026-04-12" &&
+              r.service_category_id === effectiveServiceId,
+          ),
+        );
+
+        console.log("scoped length", scoped.length);
+
+        console.log(
+          "mtd rows",
+          scoped.filter((r) => inRangeDate(r.session_date, m0, m1)),
+        );
 
         // Avg Attendance MTD (overall + male/female), average per session_date
         const mtdRows = scoped.filter((r) =>
@@ -1498,6 +1517,39 @@ export default function DashboardPage() {
 }
 
 /** ========= Helpers used above ========= */
+
+async function fetchAllAttendanceEntries(
+  orgId: string,
+  fromIso: string,
+  toIso: string,
+): Promise<AttendanceEntryRow[]> {
+  const pageSize = 1000;
+  let from = 0;
+  const all: AttendanceEntryRow[] = [];
+
+  while (true) {
+    const { data, error } = await supabase
+      .from("attendance_entries")
+      .select(
+        "org_id,service_category_id,session_date,gender,age_group,segment,count",
+      )
+      .eq("org_id", orgId)
+      .gte("session_date", fromIso)
+      .lt("session_date", toIso)
+      .order("session_date", { ascending: true })
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+
+    const rows = (data ?? []) as AttendanceEntryRow[];
+    all.push(...rows);
+
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return all;
+}
 
 function avgAttendancePerSession(
   rows: AttendanceEntryRow[],
