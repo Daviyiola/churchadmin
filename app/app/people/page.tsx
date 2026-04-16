@@ -101,11 +101,28 @@ export default function PeopleHomePage() {
         requiresAdmin: true,
       },
       {
+        title: "Community Groups",
+        desc: "Organize people into ministries and fellowship communities like Virtous Women, Men of Valor, and more.",
+        href: "/app/people/community-groups",
+        badge: "Coming soon",
+        requiresAdmin: false,
+        disabled: true, // not built yet
+      },
+      {
+        title: "Worker Departments",
+        desc: "Manage church workers by department such as Choir, Ushering, Media, Protocol, and others.",
+        href: "/app/people/worker-departments",
+        badge: "Coming soon",
+        requiresAdmin: false,
+        disabled: true, // not built yet
+      },
+      
+      {
         title: "SMS communications",
         desc: "Text message campaigns and reminders (coming soon).",
         href: "/app/people/sms-communications",
         badge: "Coming soon",
-        requiresAdmin: true,
+        requiresAdmin: false,
         disabled: true, // not built yet
       },
     ],
@@ -132,7 +149,9 @@ export default function PeopleHomePage() {
         <div className="max-w-7xl">
           <div className="rounded-3xl border bg-white">
             <div className="border-b px-5 py-4">
-              <div className="text-sm font-semibold">WHAT WOULD YOU LIKE TO MANAGE?</div>
+              <div className="text-sm font-semibold">
+                WHAT WOULD YOU LIKE TO MANAGE?
+              </div>
             </div>
 
             <div className="divide-y">
@@ -166,7 +185,9 @@ export default function PeopleHomePage() {
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <div className="text-sm font-semibold">{it.title}</div>
+                          <div className="text-sm font-semibold">
+                            {it.title}
+                          </div>
 
                           {it.requiresAdmin ? (
                             <span
@@ -218,9 +239,7 @@ export default function PeopleHomePage() {
             </div>
           </div>
 
-          <div className="mt-4 text-xs text-slate-500">
-           
-          </div>
+          <div className="mt-4 text-xs text-slate-500"></div>
         </div>
       </div>
     </>
