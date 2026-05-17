@@ -74,7 +74,7 @@ export default function PrivacyContent() {
         </Ul>
 
         <P>
-          Church Admin does not store full payment card numbers, bank account
+          Church Admin does not store payment card numbers, bank account
           credentials, or other highly sensitive payment authentication data.
         </P>
 

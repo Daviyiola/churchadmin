@@ -176,7 +176,8 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
 
   const logoUrl = useMemo(() => {
     if (!logoPath) return null;
-    return supabase.storage.from("org-logos").getPublicUrl(logoPath).data.publicUrl;
+    return supabase.storage.from("org-logos").getPublicUrl(logoPath).data
+      .publicUrl;
   }, [logoPath]);
 
   useEffect(() => {
@@ -190,7 +191,7 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
 
       try {
         const res = await fetch(
-          `/api/intake/campaign/lookup?slug=${encodeURIComponent(slug)}`
+          `/api/intake/campaign/lookup?slug=${encodeURIComponent(slug)}`,
         );
 
         const json = (await res.json().catch(() => null)) as
@@ -199,7 +200,9 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
           | null;
 
         if (!res.ok) {
-          throw new Error(json && "error" in json ? json.error : "Invalid or expired link.");
+          throw new Error(
+            json && "error" in json ? json.error : "Invalid or expired link.",
+          );
         }
 
         if (!json || !("ok" in json) || json.ok !== true) {
@@ -217,7 +220,8 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
         // shared campaign: do NOT prefill prayer tags
         setPrayerItems(toPrayerItems(null));
       } catch (e) {
-        if (!cancelled) setPageErr(e instanceof Error ? e.message : "Invalid link.");
+        if (!cancelled)
+          setPageErr(e instanceof Error ? e.message : "Invalid link.");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -240,11 +244,9 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
     if (!phone.trim()) return false;
     if (!gender) return false;
     if (!ageGroup) return false;
-    if (!address.trim()) return false;
-    if (!maritalStatus.trim()) return false;
 
-    const cc = childrenCount.trim() === "" ? NaN : Number(childrenCount);
-    if (!Number.isFinite(cc) || cc < 0) return false;
+    const cc = childrenCount.trim() === "" ? null : Number(childrenCount);
+    if (cc !== null && (!Number.isFinite(cc) || cc < 0)) return false;
 
     return true;
   }, [
@@ -256,8 +258,6 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
     phone,
     gender,
     ageGroup,
-    address,
-    maritalStatus,
     childrenCount,
   ]);
 
@@ -274,11 +274,10 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
     if (!phone.trim()) return setSaveErr("Phone is required.");
     if (!gender) return setSaveErr("Gender is required.");
     if (!ageGroup) return setSaveErr("Age group is required.");
-    if (!address.trim()) return setSaveErr("Home address is required.");
-    if (!maritalStatus.trim()) return setSaveErr("Marital status is required.");
 
-    const cc = childrenCount.trim() === "" ? NaN : Number(childrenCount);
-    if (!Number.isFinite(cc) || cc < 0) {
+    const cc = childrenCount.trim() === "" ? null : Number(childrenCount);
+
+    if (cc !== null && (!Number.isFinite(cc) || cc < 0)) {
       return setSaveErr("Children count must be a valid non-negative number.");
     }
 
@@ -349,7 +348,11 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
           </Link>
 
           <div className="text-sm text-slate-600">
-            {campaignName ? campaignName : orgName ? "We’re glad you’re here." : ""}
+            {campaignName
+              ? campaignName
+              : orgName
+                ? "We’re glad you’re here."
+                : ""}
           </div>
         </div>
       </header>
@@ -361,13 +364,17 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
         </section>
       ) : pageErr ? (
         <section className="mx-auto max-w-md px-6 pt-14 pb-16">
-          <h1 className="text-3xl font-semibold tracking-tight">Link not valid</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">
+            Link not valid
+          </h1>
           <p className="mt-2 text-slate-600">{pageErr}</p>
         </section>
       ) : done ? (
         <section className="mx-auto max-w-md px-6 pt-14 pb-16">
           <h1 className="text-3xl font-semibold tracking-tight">Thank you!</h1>
-          <p className="mt-2 text-slate-600">Your form has been submitted successfully.</p>
+          <p className="mt-2 text-slate-600">
+            Your form has been submitted successfully.
+          </p>
         </section>
       ) : (
         <section className="mx-auto max-w-2xl px-6 pt-12 pb-16 mt-10">
@@ -375,7 +382,8 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
             Thank you for joining us today!
           </h1>
           <p className="mt-2 text-slate-600">
-            Your presence was truly refreshing. Please take a few minutes to complete your details.
+            Your presence was truly refreshing. Please take a few minutes to
+            complete your details.
           </p>
 
           <div className="mt-8 rounded-3xl border bg-white/80 p-6 shadow-sm backdrop-blur">
@@ -417,8 +425,12 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
                   inputMode="email"
                   disabled={disabledEmail}
                 />
-                {!disabledEmail && email.trim().length > 0 && !isValidEmail(email) ? (
-                  <div className="mt-2 text-sm text-red-600">Enter a valid email.</div>
+                {!disabledEmail &&
+                email.trim().length > 0 &&
+                !isValidEmail(email) ? (
+                  <div className="mt-2 text-sm text-red-600">
+                    Enter a valid email.
+                  </div>
                 ) : null}
               </div>
 
@@ -439,7 +451,9 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
                 <Label>Gender *</Label>
                 <Select
                   value={gender}
-                  onChange={(v) => setGender(v === "" ? "" : isGender(v) ? v : "")}
+                  onChange={(v) =>
+                    setGender(v === "" ? "" : isGender(v) ? v : "")
+                  }
                 >
                   <option value="">Select…</option>
                   <option value="male">Male</option>
@@ -451,7 +465,9 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
                 <Label>Age group *</Label>
                 <Select
                   value={ageGroup}
-                  onChange={(v) => setAgeGroup(v === "" ? "" : isAgeGroup(v) ? v : "")}
+                  onChange={(v) =>
+                    setAgeGroup(v === "" ? "" : isAgeGroup(v) ? v : "")
+                  }
                 >
                   <option value="">Select…</option>
                   <option value="1-12">1 to 12</option>
@@ -464,7 +480,7 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
 
             {/* Address */}
             <div className="mt-6">
-              <Label>Home address *</Label>
+              <Label>Home address</Label>
               <Input
                 value={address}
                 onChange={setAddress}
@@ -476,7 +492,7 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
             {/* Family */}
             <div className="mt-6 grid gap-4 sm:grid-cols-2">
               <div>
-                <Label>Marital status *</Label>
+                <Label>Marital status</Label>
                 <Input
                   value={maritalStatus}
                   onChange={setMaritalStatus}
@@ -485,7 +501,7 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
               </div>
 
               <div>
-                <Label>Children count *</Label>
+                <Label>Children count</Label>
                 <Input
                   value={childrenCount}
                   onChange={setChildrenCount}
@@ -510,14 +526,19 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
               <div className="flex items-end justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium">Prayer requests</div>
-                  <div className="mt-1 text-sm text-slate-600">Add as many as you’d like.</div>
+                  <div className="mt-1 text-sm text-slate-600">
+                    Add as many as you’d like.
+                  </div>
                 </div>
 
                 <button
                   type="button"
                   className="text-sm font-semibold text-primary hover:opacity-90"
                   onClick={() =>
-                    setPrayerItems((cur) => [...cur, { id: makeId(), text: "" }])
+                    setPrayerItems((cur) => [
+                      ...cur,
+                      { id: makeId(), text: "" },
+                    ])
                   }
                 >
                   + New prayer request
@@ -532,10 +553,14 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
                         value={it.text}
                         onChange={(v) =>
                           setPrayerItems((cur) =>
-                            cur.map((x) => (x.id === it.id ? { ...x, text: v } : x))
+                            cur.map((x) =>
+                              x.id === it.id ? { ...x, text: v } : x,
+                            ),
                           )
                         }
-                        placeholder={idx === 0 ? "Family" : "Add a prayer request…"}
+                        placeholder={
+                          idx === 0 ? "Family" : "Add a prayer request…"
+                        }
                       />
                     </div>
 
@@ -544,7 +569,9 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
                         type="button"
                         className="text-xs text-slate-500 hover:text-slate-900"
                         onClick={() =>
-                          setPrayerItems((cur) => cur.filter((x) => x.id !== it.id))
+                          setPrayerItems((cur) =>
+                            cur.filter((x) => x.id !== it.id),
+                          )
                         }
                         title="Remove"
                       >
@@ -565,7 +592,9 @@ export default function CampaignIntakeClient({ slug }: { slug: string }) {
               {saving ? "Submitting…" : "Submit"}
             </button>
 
-            <div className="mt-4 text-xs text-slate-500">This is a shared campaign link.</div>
+            <div className="mt-4 text-xs text-slate-500">
+              This is a shared campaign link.
+            </div>
           </div>
         </section>
       )}

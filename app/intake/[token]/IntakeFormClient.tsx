@@ -252,11 +252,8 @@ export default function IntakeFormClient({ token }: { token: string }) {
     if (!gender) return false;
     if (!ageGroup) return false;
 
-    if (!address.trim()) return false;
-    if (!maritalStatus.trim()) return false;
-
-    const cc = childrenCount.trim() === "" ? NaN : Number(childrenCount);
-    if (!Number.isFinite(cc) || cc < 0) return false;
+    const cc = childrenCount.trim() === "" ? null : Number(childrenCount);
+    if (cc !== null && (!Number.isFinite(cc) || cc < 0)) return false;
 
     return true;
   }, [
@@ -267,8 +264,6 @@ export default function IntakeFormClient({ token }: { token: string }) {
     phone,
     gender,
     ageGroup,
-    address,
-    maritalStatus,
     childrenCount,
   ]);
 
@@ -281,11 +276,10 @@ export default function IntakeFormClient({ token }: { token: string }) {
     if (!phone.trim()) return setSaveErr("Phone is required.");
     if (!gender) return setSaveErr("Gender is required.");
     if (!ageGroup) return setSaveErr("Age group is required.");
-    if (!address.trim()) return setSaveErr("Home address is required.");
-    if (!maritalStatus.trim()) return setSaveErr("Marital status is required.");
 
-    const cc = childrenCount.trim() === "" ? NaN : Number(childrenCount);
-    if (!Number.isFinite(cc) || cc < 0) {
+    const cc = childrenCount.trim() === "" ? null : Number(childrenCount);
+
+    if (cc !== null && (!Number.isFinite(cc) || cc < 0)) {
       return setSaveErr("Children count must be a valid non-negative number.");
     }
 
@@ -496,7 +490,7 @@ export default function IntakeFormClient({ token }: { token: string }) {
 
             {/* Address */}
             <div className="mt-6">
-              <Label>Home address *</Label>
+              <Label>Home address</Label>
               <Input
                 value={address}
                 onChange={setAddress}
@@ -508,7 +502,7 @@ export default function IntakeFormClient({ token }: { token: string }) {
             {/* Family */}
             <div className="mt-6 grid gap-4 sm:grid-cols-2">
               <div>
-                <Label>Marital status *</Label>
+                <Label>Marital status</Label>
                 <Input
                   value={maritalStatus}
                   onChange={setMaritalStatus}
@@ -517,7 +511,7 @@ export default function IntakeFormClient({ token }: { token: string }) {
               </div>
 
               <div>
-                <Label>Children count *</Label>
+                <Label>Children count</Label>
                 <Input
                   value={childrenCount}
                   onChange={setChildrenCount}
@@ -542,7 +536,6 @@ export default function IntakeFormClient({ token }: { token: string }) {
               <div className="flex items-end justify-between gap-3">
                 <div>
                   <div className="text-lg font-medium">Prayer requests</div>
-                  
                 </div>
 
                 <button
