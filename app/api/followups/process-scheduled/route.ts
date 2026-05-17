@@ -18,6 +18,7 @@ type ScheduledFollowupRow = {
   id: string;
   org_id: string;
   member_id: string;
+  followup_label: string;
   subject: string;
   body: string;
   reply_to: string | null;
@@ -163,7 +164,9 @@ async function processOne(f: ScheduledFollowupRow) {
     return { id: f.id, status: "failed", reason: "org_mismatch" };
   }
 
-  const to = String(member.email ?? "").trim().toLowerCase();
+  const to = String(member.email ?? "")
+    .trim()
+    .toLowerCase();
 
   if (!to || !isValidEmail(to)) {
     await markScheduledFollowup(f.id, {
@@ -173,7 +176,9 @@ async function processOne(f: ScheduledFollowupRow) {
     return { id: f.id, status: "failed", reason: "invalid_recipient" };
   }
 
-  const replyTo = String(f.reply_to ?? "").trim().toLowerCase();
+  const replyTo = String(f.reply_to ?? "")
+    .trim()
+    .toLowerCase();
 
   if (replyTo && !isValidEmail(replyTo)) {
     await markScheduledFollowup(f.id, {
@@ -263,10 +268,25 @@ async function processOne(f: ScheduledFollowupRow) {
     })
     .eq("id", f.id);
 
+  const sentDate = nowIso.slice(0, 10);
+  const noteLine = `Scheduled follow-up sent on ${sentDate}: ${
+    f.followup_label || f.subject || "Follow-up email"
+  }`;
+
+  const { data: existingDetails } = await supabaseAdmin
+    .from("visitor_details")
+    .select("follow_up_notes")
+    .eq("member_id", f.member_id)
+    .maybeSingle<{ follow_up_notes: string | null }>();
+
+  const prevNotes = String(existingDetails?.follow_up_notes ?? "").trim();
+  const nextNotes = prevNotes ? `${prevNotes}\n${noteLine}` : noteLine;
+
   await supabaseAdmin.from("visitor_details").upsert(
     {
       member_id: f.member_id,
       follow_up_status: "contacted",
+      follow_up_notes: nextNotes,
       updated_at: nowIso,
     },
     { onConflict: "member_id" },
@@ -290,7 +310,10 @@ async function processOne(f: ScheduledFollowupRow) {
 
 export async function GET(req: Request) {
   if (!isCronAuthorized(req)) {
-    return NextResponse.json<ErrorJson>({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json<ErrorJson>(
+      { error: "Unauthorized" },
+      { status: 401 },
+    );
   }
 
   const url = new URL(req.url);
@@ -303,14 +326,19 @@ export async function GET(req: Request) {
 
   const { data, error } = await supabaseAdmin
     .from("scheduled_followups")
-    .select("id,org_id,member_id,subject,body,reply_to,scheduled_for,status")
+    .select(
+      "id,org_id,member_id,followup_label,subject,body,reply_to,scheduled_for,status",
+    )
     .eq("status", "pending")
     .lte("scheduled_for", nowIso)
     .order("scheduled_for", { ascending: true })
     .limit(limit);
 
   if (error) {
-    return NextResponse.json<ErrorJson>({ error: error.message }, { status: 400 });
+    return NextResponse.json<ErrorJson>(
+      { error: error.message },
+      { status: 400 },
+    );
   }
 
   const due = (data ?? []) as ScheduledFollowupRow[];
@@ -337,7 +365,9 @@ export async function GET(req: Request) {
 
   const sent = results.filter((r) => r.status === "sent").length;
   const failed = results.filter((r) => r.status === "failed").length;
-  const blocked_quota = results.filter((r) => r.status === "blocked_quota").length;
+  const blocked_quota = results.filter(
+    (r) => r.status === "blocked_quota",
+  ).length;
   const pending = results.filter((r) => r.status === "pending").length;
 
   return NextResponse.json({
