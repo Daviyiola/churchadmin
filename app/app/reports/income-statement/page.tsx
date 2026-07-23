@@ -75,6 +75,8 @@ export default function IncomeStatementPage() {
 
   const [authChecked, setAuthChecked] = useState(false);
   const [isAllowed, setIsAllowed] = useState(false);
+  const [role, setRole] = useState<Role | null>(null);
+  const [financeCutoff, setFinanceCutoff] = useState("");
 
   const [loadErr, setLoadErr] = useState("");
 
@@ -89,13 +91,21 @@ export default function IncomeStatementPage() {
 
       // --- AUTH GATE ---
       const role = await getMyRoleForOrg(orgId);
-      const allowed = role === "owner" || role === "admin";
+      const allowed = role === "owner" || role === "admin" || role === "finance";
 
       if (!alive) return;
       setIsAllowed(allowed);
+      setRole(role);
       setAuthChecked(true);
 
       if (!allowed) return; // stop here
+
+      if (role === "finance") {
+        const { data: cutoff, error: cutoffError } = await supabase.rpc("finance_window_start");
+        if (cutoffError || typeof cutoff !== "string") throw new Error(cutoffError?.message ?? "Unable to load the finance window.");
+        setFinanceCutoff(cutoff);
+        setStart((value) => value < cutoff ? cutoff : value);
+      }
 
       // --- NORMAL LOAD ---
       const [svcs, inc, exp] = await Promise.all([
@@ -134,6 +144,8 @@ export default function IncomeStatementPage() {
     if (!start || !end) return alert("Please select a start and end date.");
     if (end < start)
       return alert("End date cannot be earlier than start date.");
+    if (role === "finance" && financeCutoff && start < financeCutoff)
+      return alert(`The 90-day finance window begins ${financeCutoff}.`);
 
     const url = buildIncomeStatementPrintUrl({
       start_date: start,
@@ -212,6 +224,7 @@ export default function IncomeStatementPage() {
 
                   <input
                     type="date"
+                    min={role === "finance" ? financeCutoff || undefined : undefined}
                     value={start}
                     onChange={(e) => setStart(e.target.value)}
                     className="rounded-lg border px-4 py-2 text-xs outline-none focus:border-slate-400"
@@ -221,6 +234,7 @@ export default function IncomeStatementPage() {
 
                   <input
                     type="date"
+                    min={role === "finance" ? financeCutoff || undefined : undefined}
                     value={end}
                     onChange={(e) => setEnd(e.target.value)}
                     className="rounded-lg border px-4 py-2 text-xs outline-none focus:border-slate-400"
@@ -233,6 +247,11 @@ export default function IncomeStatementPage() {
               {loadErr ? (
                 <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                   {loadErr}
+                </div>
+              ) : null}
+              {role === "finance" && financeCutoff ? (
+                <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  Finance access uses the 90-day finance window. Earliest permitted date: {financeCutoff}.
                 </div>
               ) : null}
 

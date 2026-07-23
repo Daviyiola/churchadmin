@@ -2,11 +2,19 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  getBearerToken,
+  getReportRequestContext,
+  reportErrorStatus,
+  requireFinanceDateWindow,
+  requireReportRoles,
+  requireValidReportDateRange,
+} from "@/lib/server/reports/requestSupabase";
 import type {
   RunIncomeStatementBody,
   IncomeStatementReport,
   ErrorResponse,
-  Role,
   Branding,
 } from "@/lib/reports/income-statement/types";
 
@@ -19,8 +27,6 @@ type OrgSettingsRow = {
   report_header_text: string | null;
   report_subheader_text: string | null;
 };
-
-type UserOrgRow = { role: string };
 
 type CategoryRow = {
   id: string;
@@ -45,12 +51,6 @@ type ExpenseEntryRow = {
   expense_date: string; // date
 };
 
-function asRole(raw: unknown): Role {
-  const v = String(raw);
-  if (v === "owner" || v === "admin" || v === "finance" || v === "member") return v;
-  return "member";
-}
-
 function isNonEmptyArray<T>(v: T[] | undefined | null): v is T[] {
   return Array.isArray(v) && v.length > 0;
 }
@@ -63,8 +63,11 @@ function isNonZero(n: number, eps = 1e-9): boolean {
   return Math.abs(n) > eps;
 }
 
-async function getBranding(orgId: string): Promise<Branding> {
-  const { data: org, error: orgErr } = await supabaseAdmin
+async function getBranding(
+  supabase: SupabaseClient,
+  orgId: string,
+): Promise<Branding> {
+  const { data: org, error: orgErr } = await supabase
     .from("organizations")
     .select("id,name")
     .eq("id", orgId)
@@ -72,7 +75,7 @@ async function getBranding(orgId: string): Promise<Branding> {
 
   if (orgErr) throw new Error(orgErr.message);
 
-  const { data: s, error: sErr } = await supabaseAdmin
+  const { data: s, error: sErr } = await supabase
     .from("organization_settings")
     .select("organization_id,logo_path,use_default_logo,report_header_text,report_subheader_text")
     .eq("organization_id", orgId)
@@ -101,8 +104,8 @@ async function getBranding(orgId: string): Promise<Branding> {
   };
 }
 
-async function getCategoryMaps(orgId: string) {
-  const { data, error } = await supabaseAdmin
+async function getCategoryMaps(supabase: SupabaseClient, orgId: string) {
+  const { data, error } = await supabase
     .from("categories")
     .select("id,name,type,status")
     .eq("org_id", orgId);
@@ -133,38 +136,26 @@ export async function POST(req: Request) {
       );
     }
 
-    // ---- Auth ----
-    const authHeader = req.headers.get("authorization") || "";
-    const accessToken = authHeader.startsWith("Bearer ")
-      ? authHeader.slice("Bearer ".length)
-      : null;
+    const accessToken = getBearerToken(req);
 
     if (!accessToken) return NextResponse.json({ error: "Unauthorized" } satisfies ErrorResponse, { status: 401 });
 
-    const { data: userRes, error: userErr } = await supabaseAdmin.auth.getUser(accessToken);
-    if (userErr || !userRes?.user) return NextResponse.json({ error: "Unauthorized" } satisfies ErrorResponse, { status: 401 });
+    requireValidReportDateRange(body.start_date, body.end_date);
 
-    const userId = userRes.user.id;
+    const { supabase, role } = await getReportRequestContext(
+      accessToken,
+      body.organization_id,
+    );
+    requireReportRoles(role, ["owner", "admin", "finance"]);
+    requireFinanceDateWindow(role, body.start_date);
 
-    const { data: membership, error: memErr } = await supabaseAdmin
-      .from("user_organizations")
-      .select("role")
-      .eq("organization_id", body.organization_id)
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    if (memErr) return NextResponse.json({ error: memErr.message } satisfies ErrorResponse, { status: 400 });
-    if (!membership) return NextResponse.json({ error: "Forbidden" } satisfies ErrorResponse, { status: 403 });
-
-    const role = asRole((membership as UserOrgRow).role);
-
-    const branding = await getBranding(body.organization_id);
-    const { byId } = await getCategoryMaps(body.organization_id);
+    const branding = await getBranding(supabase, body.organization_id);
+    const { byId } = await getCategoryMaps(supabase, body.organization_id);
 
     // ======================
     // INCOME side
     // ======================
-    let incomeQ = supabaseAdmin
+    let incomeQ = supabase
       .from("income_entries")
       .select("income_category_id,service_category_id,payment_method,amount_cents,entry_type,session_date")
       .eq("org_id", body.organization_id)
@@ -190,7 +181,7 @@ export async function POST(req: Request) {
     // ======================
     // EXPENSE side
     // ======================
-    let expenseQ = supabaseAdmin
+    let expenseQ = supabase
       .from("expense_entries")
       .select("expense_category_id,amount_cents,entry_type,expense_date")
       .eq("org_id", body.organization_id)
@@ -249,6 +240,9 @@ export async function POST(req: Request) {
     return NextResponse.json(resp);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return NextResponse.json({ error: msg } satisfies ErrorResponse, { status: 400 });
+    return NextResponse.json(
+      { error: msg } satisfies ErrorResponse,
+      { status: reportErrorStatus(e) },
+    );
   }
 }

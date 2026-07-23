@@ -37,6 +37,7 @@ type PeopleNavItem = {
   href: string;
   badge?: "" | "New" | "Coming soon";
   requiresAdmin: boolean; // owner/admin
+  financeAllowed?: boolean;
   disabled?: boolean; // hard disabled (e.g., not built)
 };
 
@@ -99,6 +100,7 @@ export default function PeopleHomePage() {
         href: "/app/people/email-communications",
         badge: "",
         requiresAdmin: true,
+        financeAllowed: true,
       },
       {
         title: "Community Groups",
@@ -157,14 +159,19 @@ export default function PeopleHomePage() {
             <div className="divide-y">
               {items.map((it) => {
                 const locked =
-                  it.requiresAdmin && roleLoaded && !canManagePeople;
+                  it.requiresAdmin &&
+                  roleLoaded &&
+                  !canManagePeople &&
+                  !(role === "finance" && it.financeAllowed);
 
                 const blocked = it.disabled || locked;
 
                 const tooltip = it.disabled
                   ? "Coming soon."
                   : locked
-                    ? "Admins/Owners only. Ask an admin to grant access."
+                    ? it.financeAllowed
+                      ? "Finance/Admins/Owners only."
+                      : "Admins/Owners only. Ask an admin to grant access."
                     : "";
 
                 return (
@@ -198,7 +205,11 @@ export default function PeopleHomePage() {
                                   : "border-slate-200 bg-slate-50 text-slate-600",
                               ].join(" ")}
                             >
-                              {blocked && locked ? "Locked" : "Admin"}
+                              {blocked && locked
+                                ? "Locked"
+                                : it.financeAllowed
+                                  ? "Finance+"
+                                  : "Admin"}
                             </span>
                           ) : null}
 

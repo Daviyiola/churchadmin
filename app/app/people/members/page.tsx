@@ -36,6 +36,51 @@ type MemberRow = {
   department_category_id: string | null;
 };
 
+type MergeMember = MemberRow & {
+  marital_status: string | null;
+  children_count: number | null;
+};
+
+type MergePreview = {
+  member_a: MergeMember;
+  member_b: MergeMember;
+  relationships: Record<string, number>;
+};
+
+type MemberMerge = {
+  id: string;
+  survivor_name: string;
+  duplicate_name: string;
+  merged_by_email: string | null;
+  merged_at: string;
+  reason: string;
+  field_sources: { use_b?: string[] };
+  relationship_counts: Record<string, number>;
+};
+
+const MERGE_PREVIEW_RELATIONSHIPS = [
+  { key: "prior_merges", label: "Prior merges" },
+  { key: "income_entries", label: "Income entries" },
+  { key: "followup_emails", label: "Follow-up emails" },
+  { key: "visitor_details", label: "Visitor details" },
+  { key: "report_recipients", label: "Report recipients" },
+  { key: "scheduled_followups", label: "Scheduled follow-ups" },
+  { key: "attendance_published_rows", label: "Attendance published rows" },
+  {
+    key: "attendance_published_overlaps",
+    label: "Attendance published overlaps",
+  },
+] as const;
+
+const MERGE_HISTORY_RELATIONSHIPS = [
+  { key: "income_entries", label: "Income entries" },
+  { key: "report_recipients", label: "Report recipients" },
+  {
+    key: "attendance_published_reassigned",
+    label: "Attendance published reassigned",
+  },
+] as const;
+
 type DeptCat = { id: string; name: string };
 
 type DupCandidate = {
@@ -60,10 +105,10 @@ function isAgeGroup(v: string): v is AgeGroup | "" {
   );
 }
 
-async function isAdminForActiveOrg(orgId: string): Promise<boolean> {
+async function getRoleForActiveOrg(orgId: string): Promise<Role | null> {
   const { data: sessionRes } = await supabase.auth.getSession();
   const userId = sessionRes.session?.user?.id;
-  if (!userId) return false;
+  if (!userId) return null;
 
   const { data, error } = await supabase
     .from("user_organizations")
@@ -72,10 +117,9 @@ async function isAdminForActiveOrg(orgId: string): Promise<boolean> {
     .eq("user_id", userId)
     .maybeSingle();
 
-  if (error) return false;
+  if (error) return null;
 
-  const r = (data?.role as Role | undefined) ?? "member";
-  return r === "admin" || r === "owner";
+  return (data?.role as Role | undefined) ?? null;
 }
 
 function normalizeName(s: string) {
@@ -293,13 +337,32 @@ function isPostgresUniqueViolation(err: unknown): boolean {
 export default function MembersPage() {
   const orgId = getActiveOrgId();
 
-  const [tab, setTab] = useState<"active" | "archived">("active");
+  const [tab, setTab] = useState<"active" | "archived" | "merged">("active");
   const [q, setQ] = useState("");
   const [ageGroupFilter, setAgeGroupFilter] = useState<AgeGroup | null>(null);
 
   const [rows, setRows] = useState<MemberRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [role, setRole] = useState<Role | null>(null);
+  const isAdmin = role === "admin" || role === "owner";
+  const canManageMembers =
+    role === "finance" || role === "admin" || role === "owner";
+
+  const [mergeRows, setMergeRows] = useState<MemberMerge[]>([]);
+  const [expandedMergeId, setExpandedMergeId] = useState<string | null>(null);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeStep, setMergeStep] = useState<1 | 2 | 3>(1);
+  const [mergeCandidates, setMergeCandidates] = useState<MergeMember[]>([]);
+  const [mergeALabel, setMergeALabel] = useState("");
+  const [mergeBLabel, setMergeBLabel] = useState("");
+  const [mergeAOpen, setMergeAOpen] = useState(false);
+  const [mergeBOpen, setMergeBOpen] = useState(false);
+  const [mergePreview, setMergePreview] = useState<MergePreview | null>(null);
+  const [mergeUseB, setMergeUseB] = useState<string[]>([]);
+  const [mergeReason, setMergeReason] = useState("");
+  const [mergeConfirmed, setMergeConfirmed] = useState(false);
+  const [mergeErr, setMergeErr] = useState("");
+  const [mergeBusy, setMergeBusy] = useState(false);
 
   // Departments (typeahead + quick add)
   const [deptCats, setDeptCats] = useState<DeptCat[]>([]);
@@ -383,7 +446,7 @@ export default function MembersPage() {
   const canSave =
     requiredOk &&
     segment !== "" &&
-    (mode === "create" || (mode === "edit" ? isAdmin : true));
+    (mode === "create" || (mode === "edit" ? canManageMembers : true));
 
   const deptNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -530,8 +593,22 @@ export default function MembersPage() {
     setErr("");
     setDeptErr("");
 
-    const [adminFlag, deptRes, memRes] = await Promise.all([
-      isAdminForActiveOrg(orgId),
+    const memberRequest =
+      tab === "merged"
+        ? Promise.resolve({ data: [], error: null })
+        : supabase
+            .from("members")
+            .select(
+              "id,first_name,last_name,email,phone,joined_at,status,created_at,gender,dob,age_group,segment,address,notes,baptized,baptism_date,born_again,born_again_date,department_category_id",
+            )
+            .eq("org_id", orgId)
+            .eq("membership_stage", "member")
+            .eq("status", tab)
+            .order("last_name", { ascending: true })
+            .order("first_name", { ascending: true });
+
+    const [activeRole, deptRes, memRes, mergesRes] = await Promise.all([
+      getRoleForActiveOrg(orgId),
       supabase
         .from("categories")
         .select("id,name")
@@ -539,19 +616,17 @@ export default function MembersPage() {
         .eq("status", "active")
         .eq("type", "department")
         .order("name", { ascending: true }),
+      memberRequest,
       supabase
-        .from("members")
+        .from("member_merges")
         .select(
-          "id,first_name,last_name,email,phone,joined_at,status,created_at,gender,dob,age_group,segment,address,notes,baptized,baptism_date,born_again,born_again_date,department_category_id",
+          "id,survivor_name,duplicate_name,merged_by_email,merged_at,reason,field_sources,relationship_counts",
         )
         .eq("org_id", orgId)
-        .eq("membership_stage", "member")
-        .eq("status", tab)
-        .order("last_name", { ascending: true })
-        .order("first_name", { ascending: true }),
+        .order("merged_at", { ascending: false }),
     ]);
 
-    setIsAdmin(adminFlag);
+    setRole(activeRole);
 
     if (deptRes.error) {
       setDeptErr(deptRes.error.message);
@@ -599,6 +674,13 @@ export default function MembersPage() {
       }));
 
       setRows(safe);
+    }
+
+    if (mergesRes.error) {
+      setErr(mergesRes.error.message);
+      setMergeRows([]);
+    } else {
+      setMergeRows((mergesRes.data ?? []) as MemberMerge[]);
     }
 
     setLoading(false);
@@ -870,8 +952,8 @@ export default function MembersPage() {
     }
 
     // Edit
-    if (!isAdmin) {
-      setErr("Only admins can edit member info.");
+    if (!canManageMembers) {
+      setErr("Only finance, admins, and owners can edit member info.");
       setSaving(false);
       return;
     }
@@ -912,8 +994,8 @@ export default function MembersPage() {
   };
 
   const setStatus = async (id: string, next: "active" | "archived") => {
-    if (!isAdmin) {
-      setErr("Only admins can archive/restore members.");
+    if (!canManageMembers) {
+      setErr("Only finance, admins, and owners can archive/restore members.");
       return;
     }
     setErr("");
@@ -924,6 +1006,187 @@ export default function MembersPage() {
 
     if (error) setErr(error.message);
     else await load();
+  };
+
+  const mergeCandidateLabel = (member: MergeMember) => {
+    const contact = member.email || member.phone || "No contact";
+    return `${member.first_name} ${member.last_name} • ${contact} • ${member.id.slice(0, 8)}`;
+  };
+
+  const selectedMergeCandidate = (label: string) =>
+    mergeCandidates.find((member) => mergeCandidateLabel(member) === label) ??
+    null;
+
+  const filteredMergeCandidates = (query: string, excludedLabel: string) => {
+    const selected = selectedMergeCandidate(query);
+    const excluded = selectedMergeCandidate(excludedLabel);
+    const needle = selected ? "" : query.trim().toLowerCase();
+
+    return mergeCandidates
+      .filter((member) => member.id !== excluded?.id)
+      .filter((member) => {
+        if (!needle) return true;
+        return [
+          member.first_name,
+          member.last_name,
+          member.email ?? "",
+          member.phone ?? "",
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(needle);
+      })
+      .slice(0, 12);
+  };
+
+  const openMerge = async () => {
+    if (!orgId || !isAdmin) return;
+    setMergeOpen(true);
+    setMergeStep(1);
+    setMergeALabel("");
+    setMergeBLabel("");
+    setMergeAOpen(false);
+    setMergeBOpen(false);
+    setMergePreview(null);
+    setMergeUseB([]);
+    setMergeReason("");
+    setMergeConfirmed(false);
+    setMergeErr("");
+
+    const { data, error } = await supabase
+      .from("members")
+      .select(
+        "id,first_name,last_name,email,phone,joined_at,status,created_at,gender,dob,age_group,segment,address,notes,baptized,baptism_date,born_again,born_again_date,department_category_id,marital_status,children_count",
+      )
+      .eq("org_id", orgId)
+      .eq("membership_stage", "member")
+      .in("status", ["active", "archived"])
+      .order("last_name", { ascending: true })
+      .order("first_name", { ascending: true });
+
+    if (error) return setMergeErr(error.message);
+    setMergeCandidates((data ?? []) as MergeMember[]);
+  };
+
+  const previewMerge = async () => {
+    const memberA = selectedMergeCandidate(mergeALabel);
+    const memberB = selectedMergeCandidate(mergeBLabel);
+    if (!memberA || !memberB)
+      return setMergeErr("Select Member A and Member B from the list.");
+    if (memberA.id === memberB.id)
+      return setMergeErr("Select two different members.");
+
+    setMergeBusy(true);
+    setMergeErr("");
+    const { data, error } = await supabase.rpc("preview_member_merge", {
+      p_member_a_id: memberA.id,
+      p_member_b_id: memberB.id,
+    });
+    setMergeBusy(false);
+    if (error) return setMergeErr(error.message);
+    setMergePreview(data as MergePreview);
+    setMergeUseB([]);
+    setMergeStep(2);
+  };
+
+  const executeMerge = async () => {
+    if (!mergePreview) return;
+    if (!mergeReason.trim() || !mergeConfirmed)
+      return setMergeErr("Enter a reason and confirm the irreversible merge.");
+
+    setMergeBusy(true);
+    setMergeErr("");
+    const { error } = await supabase.rpc("merge_members", {
+      p_member_a_id: mergePreview.member_a.id,
+      p_member_b_id: mergePreview.member_b.id,
+      p_use_b_fields: mergeUseB,
+      p_reason: mergeReason.trim(),
+      p_confirmed: true,
+    });
+    setMergeBusy(false);
+    if (error) return setMergeErr(error.message);
+
+    setMergeOpen(false);
+    setTab("merged");
+    await load();
+  };
+
+  const mergeFieldRows = () => {
+    if (!mergePreview) return [];
+    const a = mergePreview.member_a;
+    const b = mergePreview.member_b;
+    const show = (value: unknown) => {
+      if (value === null || value === undefined || value === "") return "—";
+      if (typeof value === "boolean") return value ? "Yes" : "No";
+      return String(value);
+    };
+    const department = (id: string | null) =>
+      id ? deptNameById.get(id) || id : "—";
+    return [
+      {
+        key: "first_name",
+        label: "First name",
+        a: show(a.first_name),
+        b: show(b.first_name),
+      },
+      {
+        key: "last_name",
+        label: "Last name",
+        a: show(a.last_name),
+        b: show(b.last_name),
+      },
+      { key: "email", label: "Email", a: show(a.email), b: show(b.email) },
+      { key: "phone", label: "Phone", a: show(a.phone), b: show(b.phone) },
+      {
+        key: "joined_at",
+        label: "Joined date",
+        a: show(a.joined_at),
+        b: show(b.joined_at),
+      },
+      {
+        key: "address",
+        label: "Address",
+        a: show(a.address),
+        b: show(b.address),
+      },
+      {
+        key: "demographics",
+        label: "Demographics",
+        a: `${show(a.gender)} • ${show(a.dob || a.age_group)}`,
+        b: `${show(b.gender)} • ${show(b.dob || b.age_group)}`,
+      },
+      {
+        key: "marital_status",
+        label: "Marital status",
+        a: show(a.marital_status),
+        b: show(b.marital_status),
+      },
+      {
+        key: "children_count",
+        label: "Children",
+        a: show(a.children_count),
+        b: show(b.children_count),
+      },
+      {
+        key: "baptism",
+        label: "Baptism",
+        a: `${show(a.baptized)} • ${show(a.baptism_date)}`,
+        b: `${show(b.baptized)} • ${show(b.baptism_date)}`,
+      },
+      {
+        key: "born_again",
+        label: "Born again",
+        a: `${show(a.born_again)} • ${show(a.born_again_date)}`,
+        b: `${show(b.born_again)} • ${show(b.born_again_date)}`,
+      },
+      { key: "status", label: "Status", a: show(a.status), b: show(b.status) },
+      {
+        key: "department_category_id",
+        label: "Department",
+        a: department(a.department_category_id),
+        b: department(b.department_category_id),
+      },
+    ].filter((field) => field.a !== field.b);
   };
 
   const deleteMember = async (id: string) => {
@@ -948,11 +1211,35 @@ export default function MembersPage() {
           <div>
             <div className="text-xl font-semibold">Members</div>
             <div className="text-sm text-slate-600">
-              {tab === "active" ? "Active members" : "Archived members"}
+              {tab === "active"
+                ? "Active members"
+                : tab === "archived"
+                  ? "Archived members"
+                  : "Merged member history"}
             </div>
           </div>
 
           <div className="flex items-center gap-2">
+            <div className="group relative">
+  <button
+    type="button"
+    className={`rounded-2xl border px-4 py-2 text-sm font-semibold ${
+      isAdmin
+        ? "hover:bg-slate-50"
+        : "cursor-not-allowed bg-slate-100 text-slate-400"
+    }`}
+    disabled={!isAdmin}
+    onClick={openMerge}
+  >
+    Merge Members
+  </button>
+
+  {!isAdmin ? (
+    <div className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 hidden w-max max-w-64 -translate-x-1/2 rounded-xl bg-slate-900 px-3 py-2 text-xs font-normal text-white shadow-lg group-hover:block">
+      This feature is only available to admins and owners.
+    </div>
+  ) : null}
+</div>
             <button
               className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/85"
               onClick={openCreate}
@@ -985,14 +1272,26 @@ export default function MembersPage() {
               >
                 Archived
               </button>
+              <button
+                className={`rounded-2xl px-4 py-2 text-sm ${
+                  tab === "merged"
+                    ? "bg-white border shadow-sm"
+                    : "text-slate-600 hover:bg-white"
+                }`}
+                onClick={() => setTab("merged")}
+              >
+                Merged
+              </button>
             </div>
 
-            <input
-              className="w-full sm:w-96 rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-              placeholder="Search name, phone, email, department…"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
+            {tab !== "merged" ? (
+              <input
+                className="w-full sm:w-96 rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                placeholder="Search name, phone, email, department…"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
+            ) : null}
           </div>
 
           {deptErr ? (
@@ -1010,387 +1309,788 @@ export default function MembersPage() {
       </div>
 
       {/* Body */}
-      <div className="p-6">
-        <div className="rounded-3xl border bg-white overflow-hidden">
-          <div className="overflow-x-auto">
-            <div className="min-w-[1100px]">
-              {/* KPI row */}
-              <div className="border-b bg-white px-5 py-6">
-                <div className="flex items-center justify-between gap-3">
-                  {ageGroupFilter ? (
-                    <button
-                      type="button"
-                      className="rounded-xl border px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                      onClick={() => {
-                        setAgeGroupFilter(null);
-                        setOpenKpi(null);
-                      }}
-                      title="Clear age filter"
-                    >
-                      Clear filter ✕
-                    </button>
-                  ) : (
-                    <div className="text-xs text-slate-500">
-                      Click a card to filter the table.
-                    </div>
-                  )}
-                </div>
-
-                <div className="mt-2 grid gap-7 sm:grid-cols-2 lg:grid-cols-5">
-                  {/* Total */}
-                  <button
-                    type="button"
-                    onClick={() => toggleKpi("total", null)}
-                    onMouseEnter={() => setHoverKpi("total")}
-                    onMouseLeave={() => setHoverKpi(null)}
-                    onFocus={() => setHoverKpi("total")}
-                    onBlur={() => setHoverKpi(null)}
-                    aria-expanded={openKpi === "total"}
-                    className={`rounded-2xl border px-4 py-3 text-left transition ${
-                      ageGroupFilter === null
-                        ? "bg-white border-primary"
-                        : "bg-white hover:bg-slate-50"
-                    }`}
-                  >
-                    <div className="text-xs font-semibold text-slate-600">
-                      Total members
-                    </div>
-                    <div className="mt-1 flex items-end justify-between gap-3">
-                      <div className="text-2xl font-semibold text-slate-900">
-                        {kpis.total.all}
-                      </div>
-
-                      {isKpiOpen("total") ? (
-                        <div className="text-[11px] text-slate-600 flex gap-3">
-                          <span>
-                            <span className="font-semibold">Female</span>:{" "}
-                            {kpis.total.female}
-                          </span>
-                          <span>
-                            <span className="font-semibold">Male</span>:{" "}
-                            {kpis.total.male}
-                          </span>
-                        </div>
-                      ) : null}
-                    </div>
-                  </button>
-
-                  {/* Children */}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      toggleKpi(
-                        "kids",
-                        ageGroupFilter === "1-12" ? null : "1-12",
-                      )
-                    }
-                    onMouseEnter={() => setHoverKpi("kids")}
-                    onMouseLeave={() => setHoverKpi(null)}
-                    onFocus={() => setHoverKpi("kids")}
-                    onBlur={() => setHoverKpi(null)}
-                    aria-expanded={openKpi === "kids"}
-                    className={`rounded-2xl border px-4 py-3 text-left transition ${
-                      ageGroupFilter === "1-12"
-                        ? "bg-primary/15 border-primary"
-                        : "bg-white hover:bg-slate-50"
-                    }`}
-                  >
-                    <div className="text-xs font-semibold text-slate-600">
-                      Children (1–12)
-                    </div>
-                    <div className="mt-1 flex items-end justify-between gap-3">
-                      <div className="text-2xl font-semibold text-slate-900">
-                        {kpis.kids.all}
-                      </div>
-
-                      {isKpiOpen("kids") ? (
-                        <div className="text-[11px] text-slate-600 flex gap-3">
-                          <span>
-                            <span className="font-semibold">Female</span>:{" "}
-                            {kpis.kids.female}
-                          </span>
-                          <span>
-                            <span className="font-semibold">Male</span>:{" "}
-                            {kpis.kids.male}
-                          </span>
-                        </div>
-                      ) : null}
-                    </div>
-                  </button>
-
-                  {/* Teenagers */}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      toggleKpi(
-                        "teens",
-                        ageGroupFilter === "13-17" ? null : "13-17",
-                      )
-                    }
-                    onMouseEnter={() => setHoverKpi("teens")}
-                    onMouseLeave={() => setHoverKpi(null)}
-                    onFocus={() => setHoverKpi("teens")}
-                    onBlur={() => setHoverKpi(null)}
-                    aria-expanded={openKpi === "teens"}
-                    className={`rounded-2xl border px-4 py-3 text-left transition ${
-                      ageGroupFilter === "13-17"
-                        ? "bg-primary/15 border-primary"
-                        : "bg-white hover:bg-slate-50"
-                    }`}
-                  >
-                    <div className="text-xs font-semibold text-slate-600">
-                      Teenagers (13–17)
-                    </div>
-                    <div className="mt-1 flex items-end justify-between gap-3">
-                      <div className="text-2xl font-semibold text-slate-900">
-                        {kpis.teens.all}
-                      </div>
-
-                      {isKpiOpen("teens") ? (
-                        <div className="text-[11px] text-slate-600 flex gap-3">
-                          <span>
-                            <span className="font-semibold">Female</span>:{" "}
-                            {kpis.teens.female}
-                          </span>
-                          <span>
-                            <span className="font-semibold">Male</span>:{" "}
-                            {kpis.teens.male}
-                          </span>
-                        </div>
-                      ) : null}
-                    </div>
-                  </button>
-
-                  {/* Young adults */}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      toggleKpi(
-                        "young",
-                        ageGroupFilter === "18-35" ? null : "18-35",
-                      )
-                    }
-                    onMouseEnter={() => setHoverKpi("young")}
-                    onMouseLeave={() => setHoverKpi(null)}
-                    onFocus={() => setHoverKpi("young")}
-                    onBlur={() => setHoverKpi(null)}
-                    aria-expanded={openKpi === "young"}
-                    className={`rounded-2xl border px-4 py-3 text-left transition ${
-                      ageGroupFilter === "18-35"
-                        ? "bg-primary/15 border-primary"
-                        : "bg-white hover:bg-slate-50"
-                    }`}
-                  >
-                    <div className="text-xs font-semibold text-slate-600">
-                      Young adults (18–35)
-                    </div>
-                    <div className="mt-1 flex items-end justify-between gap-3">
-                      <div className="text-2xl font-semibold text-slate-900">
-                        {kpis.young.all}
-                      </div>
-
-                      {isKpiOpen("young") ? (
-                        <div className="text-[11px] text-slate-600 flex gap-3">
-                          <span>
-                            <span className="font-semibold">Female</span>:{" "}
-                            {kpis.young.female}
-                          </span>
-                          <span>
-                            <span className="font-semibold">Male</span>:{" "}
-                            {kpis.young.male}
-                          </span>
-                        </div>
-                      ) : null}
-                    </div>
-                  </button>
-
-                  {/* Adults */}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      toggleKpi(
-                        "adults",
-                        ageGroupFilter === "36+" ? null : "36+",
-                      )
-                    }
-                    onMouseEnter={() => setHoverKpi("adults")}
-                    onMouseLeave={() => setHoverKpi(null)}
-                    onFocus={() => setHoverKpi("adults")}
-                    onBlur={() => setHoverKpi(null)}
-                    aria-expanded={openKpi === "adults"}
-                    className={`rounded-2xl border px-4 py-3 text-left transition ${
-                      ageGroupFilter === "36+"
-                        ? "bg-primary/15 border-primary"
-                        : "bg-white hover:bg-slate-50"
-                    }`}
-                  >
-                    <div className="text-xs font-semibold text-slate-600">
-                      Adults (36+)
-                    </div>
-                    <div className="mt-1 flex items-end justify-between gap-3">
-                      <div className="text-2xl font-semibold text-slate-900">
-                        {kpis.adults.all}
-                      </div>
-
-                      {isKpiOpen("adults") ? (
-                        <div className="text-[11px] text-slate-600 flex gap-3">
-                          <span>
-                            <span className="font-semibold">Female</span>:{" "}
-                            {kpis.adults.female}
-                          </span>
-                          <span>
-                            <span className="font-semibold">Male</span>:{" "}
-                            {kpis.adults.male}
-                          </span>
-                        </div>
-                      ) : null}
-                    </div>
-                  </button>
-                </div>
-
-                <div className="mt-3 text-xs text-slate-500">
-                  Showing{" "}
-                  <span className="font-semibold">{displayed.length}</span>{" "}
-                  {displayed.length === 1 ? "member" : "members"}
-                  {q.trim() ? ` matching “${q.trim()}”` : ""}
-                  {ageGroupFilter
-                    ? ` in ${
-                        ageGroupFilter === "1-12"
-                          ? "Children (1–12)"
-                          : ageGroupFilter === "13-17"
-                            ? "Teenagers (13–17)"
-                            : ageGroupFilter === "18-35"
-                              ? "Young adults (18–35)"
-                              : "Adults (36+)"
-                      }`
-                    : ""}
-                </div>
-              </div>
-
-              {/* Table header */}
-              <div className="grid grid-cols-12 border-b bg-primary px-5 py-4 text-sm font-semibold text-slate-100">
-                <div className="col-span-3">Name</div>
-                <div className="col-span-2">Department</div>
-                <div className="col-span-2">Gender</div>
-                <div className="col-span-3">Contact</div>
-                <div className="col-span-2 text-right">Actions</div>
-              </div>
-
+      {tab === "merged" ? (
+        <div className="p-6">
+          <div className="rounded-3xl border bg-white p-5">
+            <div className="text-sm font-semibold">Merge history</div>
+            <div className="mt-1 text-xs text-slate-600">
+              Permanent audit summaries. Merges cannot be undone.
+            </div>
+            <div className="mt-4 space-y-3">
               {loading ? (
-                <div className="p-6 text-sm text-slate-600">Loading…</div>
-              ) : displayed.length === 0 ? (
-                <div className="p-6 text-sm text-slate-600">
-                  {ageGroupFilter ? (
-                    <>
-                      No members in{" "}
-                      <span className="font-semibold">
-                        {ageGroupFilter === "1-12"
-                          ? "Children (1–12)"
-                          : ageGroupFilter === "13-17"
-                            ? "Teenagers (13–17)"
-                            : ageGroupFilter === "18-35"
-                              ? "Young adults (18–35)"
-                              : "Adults (36+)"}
-                      </span>
-                      {q.trim() ? " for this search." : "."}
-                    </>
-                  ) : q.trim() ? (
-                    "No members match your search."
-                  ) : tab === "active" ? (
-                    "No active members yet."
-                  ) : (
-                    "No archived members."
-                  )}
+                <div className="text-sm text-slate-600">Loading…</div>
+              ) : mergeRows.length === 0 ? (
+                <div className="rounded-2xl border bg-slate-50 p-4 text-sm text-slate-600">
+                  No member merges yet.
                 </div>
               ) : (
-                <div className="divide-y">
-                  {displayed.map((m) => {
-                    const deptName = m.department_category_id
-                      ? deptNameById.get(m.department_category_id) || "—"
-                      : "—";
-
-                    return (
-                      <div
-                        key={m.id}
-                        className="grid grid-cols-12 items-center px-5 py-4 text-sm"
+                mergeRows.map((merge) => {
+                  const expanded = expandedMergeId === merge.id;
+                  const counts = MERGE_HISTORY_RELATIONSHIPS.map(
+                    ({ key, label }) => ({
+                      key,
+                      label,
+                      count: Number(merge.relationship_counts?.[key] ?? 0),
+                    }),
+                  );
+                  return (
+                    <div key={merge.id} className="rounded-2xl border p-4">
+                      <button
+                        className="w-full text-left"
+                        onClick={() =>
+                          setExpandedMergeId(expanded ? null : merge.id)
+                        }
                       >
-                        <div className="col-span-3">
-                          <div className="font-semibold capitalize">
-                            {m.first_name} {m.last_name}
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <div className="font-semibold text-slate-900">
+                              {merge.duplicate_name} → {merge.survivor_name}
+                            </div>
+                            <div className="mt-1 text-xs text-slate-600">
+                              {new Date(merge.merged_at).toLocaleString()} • By{" "}
+                              {merge.merged_by_email ?? "Unknown editor"}
+                            </div>
+                            <div className="mt-2 text-sm text-slate-700">
+                              Reason: {merge.reason}
+                            </div>
                           </div>
-                          <div className="text-xs text-slate-500">
-                            {m.status}
+                          <span className="text-xs font-semibold text-slate-500">
+                            {expanded ? "Hide details" : "View details"}
+                          </span>
+                        </div>
+                      </button>
+                      {expanded ? (
+                        <div className="mt-4 border-t pt-4">
+                          <div>
+                            <div className="text-xs font-semibold text-slate-600">
+                              Relationship changes
+                            </div>
+                            <div className="mt-1 space-y-1 text-sm text-slate-800">
+                              {counts.map(({ key, label, count }) => (
+                                <div key={key}>
+                                  {label}: {count}
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         </div>
-
-                        <div className="col-span-2 text-slate-700">
-                          {deptName}
-                        </div>
-
-                        <div className="col-span-2 text-slate-700 capitalize">
-                          {m.gender || "—"}
-                        </div>
-
-                        <div className="col-span-3 text-slate-700">
-                          {m.email || "—"}
-                          <div className="text-xs text-slate-500">
-                            {m.phone || ""}
-                          </div>
-                        </div>
-
-                        <div className="col-span-2 flex justify-end gap-2">
-                          {isAdmin ? (
-                            <>
-                              <button
-                                className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
-                                onClick={() => openEdit(m)}
-                              >
-                                Edit
-                              </button>
-
-                              {m.status === "active" ? (
-                                <button
-                                  className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
-                                  onClick={() => setStatus(m.id, "archived")}
-                                >
-                                  Archive
-                                </button>
-                              ) : (
-                                <button
-                                  className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
-                                  onClick={() => setStatus(m.id, "active")}
-                                >
-                                  Restore
-                                </button>
-                              )}
-
-                              <button
-                                className="rounded-xl border border-red-200 px-3 py-1 text-xs text-red-700 hover:bg-red-50"
-                                onClick={() => deleteMember(m.id)}
-                              >
-                                Delete
-                              </button>
-                            </>
-                          ) : (
-                            <span className="text-xs text-slate-400">—</span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      ) : null}
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>
         </div>
+      ) : (
+        <div className="p-6">
+          <div className="rounded-3xl border bg-white overflow-hidden">
+            <div className="overflow-x-auto">
+              <div className="min-w-[1100px]">
+                {/* KPI row */}
+                <div className="border-b bg-white px-5 py-6">
+                  <div className="flex items-center justify-between gap-3">
+                    {ageGroupFilter ? (
+                      <button
+                        type="button"
+                        className="rounded-xl border px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        onClick={() => {
+                          setAgeGroupFilter(null);
+                          setOpenKpi(null);
+                        }}
+                        title="Clear age filter"
+                      >
+                        Clear filter ✕
+                      </button>
+                    ) : (
+                      <div className="text-xs text-slate-500">
+                        Click a card to filter the table.
+                      </div>
+                    )}
+                  </div>
 
-        {!isAdmin ? (
-          <div className="mt-4 text-xs text-slate-500">
-            You can add members, but only admins/owners can edit,
-            archive/restore, or delete member info.
+                  <div className="mt-2 grid gap-7 sm:grid-cols-2 lg:grid-cols-5">
+                    {/* Total */}
+                    <button
+                      type="button"
+                      onClick={() => toggleKpi("total", null)}
+                      onMouseEnter={() => setHoverKpi("total")}
+                      onMouseLeave={() => setHoverKpi(null)}
+                      onFocus={() => setHoverKpi("total")}
+                      onBlur={() => setHoverKpi(null)}
+                      aria-expanded={openKpi === "total"}
+                      className={`rounded-2xl border px-4 py-3 text-left transition ${
+                        ageGroupFilter === null
+                          ? "bg-white border-primary"
+                          : "bg-white hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="text-xs font-semibold text-slate-600">
+                        Total members
+                      </div>
+                      <div className="mt-1 flex items-end justify-between gap-3">
+                        <div className="text-2xl font-semibold text-slate-900">
+                          {kpis.total.all}
+                        </div>
+
+                        {isKpiOpen("total") ? (
+                          <div className="text-[11px] text-slate-600 flex gap-3">
+                            <span>
+                              <span className="font-semibold">Female</span>:{" "}
+                              {kpis.total.female}
+                            </span>
+                            <span>
+                              <span className="font-semibold">Male</span>:{" "}
+                              {kpis.total.male}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </button>
+
+                    {/* Children */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        toggleKpi(
+                          "kids",
+                          ageGroupFilter === "1-12" ? null : "1-12",
+                        )
+                      }
+                      onMouseEnter={() => setHoverKpi("kids")}
+                      onMouseLeave={() => setHoverKpi(null)}
+                      onFocus={() => setHoverKpi("kids")}
+                      onBlur={() => setHoverKpi(null)}
+                      aria-expanded={openKpi === "kids"}
+                      className={`rounded-2xl border px-4 py-3 text-left transition ${
+                        ageGroupFilter === "1-12"
+                          ? "bg-primary/15 border-primary"
+                          : "bg-white hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="text-xs font-semibold text-slate-600">
+                        Children (1–12)
+                      </div>
+                      <div className="mt-1 flex items-end justify-between gap-3">
+                        <div className="text-2xl font-semibold text-slate-900">
+                          {kpis.kids.all}
+                        </div>
+
+                        {isKpiOpen("kids") ? (
+                          <div className="text-[11px] text-slate-600 flex gap-3">
+                            <span>
+                              <span className="font-semibold">Female</span>:{" "}
+                              {kpis.kids.female}
+                            </span>
+                            <span>
+                              <span className="font-semibold">Male</span>:{" "}
+                              {kpis.kids.male}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </button>
+
+                    {/* Teenagers */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        toggleKpi(
+                          "teens",
+                          ageGroupFilter === "13-17" ? null : "13-17",
+                        )
+                      }
+                      onMouseEnter={() => setHoverKpi("teens")}
+                      onMouseLeave={() => setHoverKpi(null)}
+                      onFocus={() => setHoverKpi("teens")}
+                      onBlur={() => setHoverKpi(null)}
+                      aria-expanded={openKpi === "teens"}
+                      className={`rounded-2xl border px-4 py-3 text-left transition ${
+                        ageGroupFilter === "13-17"
+                          ? "bg-primary/15 border-primary"
+                          : "bg-white hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="text-xs font-semibold text-slate-600">
+                        Teenagers (13–17)
+                      </div>
+                      <div className="mt-1 flex items-end justify-between gap-3">
+                        <div className="text-2xl font-semibold text-slate-900">
+                          {kpis.teens.all}
+                        </div>
+
+                        {isKpiOpen("teens") ? (
+                          <div className="text-[11px] text-slate-600 flex gap-3">
+                            <span>
+                              <span className="font-semibold">Female</span>:{" "}
+                              {kpis.teens.female}
+                            </span>
+                            <span>
+                              <span className="font-semibold">Male</span>:{" "}
+                              {kpis.teens.male}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </button>
+
+                    {/* Young adults */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        toggleKpi(
+                          "young",
+                          ageGroupFilter === "18-35" ? null : "18-35",
+                        )
+                      }
+                      onMouseEnter={() => setHoverKpi("young")}
+                      onMouseLeave={() => setHoverKpi(null)}
+                      onFocus={() => setHoverKpi("young")}
+                      onBlur={() => setHoverKpi(null)}
+                      aria-expanded={openKpi === "young"}
+                      className={`rounded-2xl border px-4 py-3 text-left transition ${
+                        ageGroupFilter === "18-35"
+                          ? "bg-primary/15 border-primary"
+                          : "bg-white hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="text-xs font-semibold text-slate-600">
+                        Young adults (18–35)
+                      </div>
+                      <div className="mt-1 flex items-end justify-between gap-3">
+                        <div className="text-2xl font-semibold text-slate-900">
+                          {kpis.young.all}
+                        </div>
+
+                        {isKpiOpen("young") ? (
+                          <div className="text-[11px] text-slate-600 flex gap-3">
+                            <span>
+                              <span className="font-semibold">Female</span>:{" "}
+                              {kpis.young.female}
+                            </span>
+                            <span>
+                              <span className="font-semibold">Male</span>:{" "}
+                              {kpis.young.male}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </button>
+
+                    {/* Adults */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        toggleKpi(
+                          "adults",
+                          ageGroupFilter === "36+" ? null : "36+",
+                        )
+                      }
+                      onMouseEnter={() => setHoverKpi("adults")}
+                      onMouseLeave={() => setHoverKpi(null)}
+                      onFocus={() => setHoverKpi("adults")}
+                      onBlur={() => setHoverKpi(null)}
+                      aria-expanded={openKpi === "adults"}
+                      className={`rounded-2xl border px-4 py-3 text-left transition ${
+                        ageGroupFilter === "36+"
+                          ? "bg-primary/15 border-primary"
+                          : "bg-white hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="text-xs font-semibold text-slate-600">
+                        Adults (36+)
+                      </div>
+                      <div className="mt-1 flex items-end justify-between gap-3">
+                        <div className="text-2xl font-semibold text-slate-900">
+                          {kpis.adults.all}
+                        </div>
+
+                        {isKpiOpen("adults") ? (
+                          <div className="text-[11px] text-slate-600 flex gap-3">
+                            <span>
+                              <span className="font-semibold">Female</span>:{" "}
+                              {kpis.adults.female}
+                            </span>
+                            <span>
+                              <span className="font-semibold">Male</span>:{" "}
+                              {kpis.adults.male}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </button>
+                  </div>
+
+                  <div className="mt-3 text-xs text-slate-500">
+                    Showing{" "}
+                    <span className="font-semibold">{displayed.length}</span>{" "}
+                    {displayed.length === 1 ? "member" : "members"}
+                    {q.trim() ? ` matching “${q.trim()}”` : ""}
+                    {ageGroupFilter
+                      ? ` in ${
+                          ageGroupFilter === "1-12"
+                            ? "Children (1–12)"
+                            : ageGroupFilter === "13-17"
+                              ? "Teenagers (13–17)"
+                              : ageGroupFilter === "18-35"
+                                ? "Young adults (18–35)"
+                                : "Adults (36+)"
+                        }`
+                      : ""}
+                  </div>
+                </div>
+
+                {/* Table header */}
+                <div className="grid grid-cols-12 border-b bg-primary px-5 py-4 text-sm font-semibold text-slate-100">
+                  <div className="col-span-3">Name</div>
+                  <div className="col-span-2">Department</div>
+                  <div className="col-span-2">Gender</div>
+                  <div className="col-span-3">Contact</div>
+                  <div className="col-span-2 text-right">Actions</div>
+                </div>
+
+                {loading ? (
+                  <div className="p-6 text-sm text-slate-600">Loading…</div>
+                ) : displayed.length === 0 ? (
+                  <div className="p-6 text-sm text-slate-600">
+                    {ageGroupFilter ? (
+                      <>
+                        No members in{" "}
+                        <span className="font-semibold">
+                          {ageGroupFilter === "1-12"
+                            ? "Children (1–12)"
+                            : ageGroupFilter === "13-17"
+                              ? "Teenagers (13–17)"
+                              : ageGroupFilter === "18-35"
+                                ? "Young adults (18–35)"
+                                : "Adults (36+)"}
+                        </span>
+                        {q.trim() ? " for this search." : "."}
+                      </>
+                    ) : q.trim() ? (
+                      "No members match your search."
+                    ) : tab === "active" ? (
+                      "No active members yet."
+                    ) : (
+                      "No archived members."
+                    )}
+                  </div>
+                ) : (
+                  <div className="divide-y">
+                    {displayed.map((m) => {
+                      const deptName = m.department_category_id
+                        ? deptNameById.get(m.department_category_id) || "—"
+                        : "—";
+
+                      return (
+                        <div
+                          key={m.id}
+                          className="grid grid-cols-12 items-center px-5 py-4 text-sm"
+                        >
+                          <div className="col-span-3">
+                            <div className="font-semibold capitalize">
+                              {m.first_name} {m.last_name}
+                            </div>
+                            <div className="text-xs text-slate-500">
+                              {m.status}
+                            </div>
+                          </div>
+
+                          <div className="col-span-2 text-slate-700">
+                            {deptName}
+                          </div>
+
+                          <div className="col-span-2 text-slate-700 capitalize">
+                            {m.gender || "—"}
+                          </div>
+
+                          <div className="col-span-3 text-slate-700">
+                            {m.email || "—"}
+                            <div className="text-xs text-slate-500">
+                              {m.phone || ""}
+                            </div>
+                          </div>
+
+                          <div className="col-span-2 flex justify-end gap-2">
+                            {canManageMembers ? (
+                              <>
+                                <button
+                                  className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
+                                  onClick={() => openEdit(m)}
+                                >
+                                  Edit
+                                </button>
+
+                                {m.status === "active" ? (
+                                  <button
+                                    className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
+                                    onClick={() => setStatus(m.id, "archived")}
+                                  >
+                                    Archive
+                                  </button>
+                                ) : (
+                                  <button
+                                    className="rounded-xl border px-3 py-1 text-xs hover:bg-slate-50"
+                                    onClick={() => setStatus(m.id, "active")}
+                                  >
+                                    Restore
+                                  </button>
+                                )}
+
+                                {isAdmin ? (
+                                  <button
+                                    className="rounded-xl border border-red-200 px-3 py-1 text-xs text-red-700 hover:bg-red-50"
+                                    onClick={() => deleteMember(m.id)}
+                                  >
+                                    Delete
+                                  </button>
+                                ) : null}
+                              </>
+                            ) : (
+                              <span className="text-xs text-slate-400">—</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-        ) : null}
-      </div>
+
+          {!canManageMembers ? (
+            <div className="mt-4 text-xs text-slate-500">
+              You can add members, but only finance/admin/owner roles can edit
+              or archive/restore them. Only admins/owners can delete member
+              records.
+            </div>
+          ) : role === "finance" ? (
+            <div className="mt-4 text-xs text-slate-500">
+              Finance can edit and archive/restore members. Only admins/owners
+              can delete member records.
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {mergeOpen ? (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
+          <div
+            className={`flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl bg-white shadow-xl ${
+              mergeStep === 1 ? "min-h-[520px]" : ""
+            }`}
+          >
+            <div className="flex items-start justify-between gap-4 border-b px-6 py-4">
+              <div>
+                <div className="text-sm font-semibold">
+                  Merge duplicate members
+                </div>
+                <div className="mt-1 text-xs text-slate-600">
+                  Step {mergeStep} of 3 • Admin/owner only • Irreversible
+                </div>
+              </div>
+              <button
+                className="rounded-xl border px-3 py-1.5 text-xs hover:bg-slate-50"
+                onClick={() => setMergeOpen(false)}
+                disabled={mergeBusy}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
+              {mergeStep === 1 ? (
+                <div className="space-y-5 pb-64">
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                    Member A survives. Member B becomes a locked merged record,
+                    and all linked history is consolidated into A.
+                  </div>
+                  <div className="grid items-end gap-3 md:grid-cols-[1fr_auto_1fr]">
+                    <div className="relative">
+                      <div className="mb-1 text-xs font-semibold text-slate-600">
+                        Member A — survivor
+                      </div>
+                      <input
+                        className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        value={mergeALabel}
+                        onChange={(e) => {
+                          setMergeALabel(e.target.value);
+                          setMergeAOpen(true);
+                          setMergeErr("");
+                        }}
+                        onFocus={() => setMergeAOpen(true)}
+                        onBlur={() =>
+                          window.setTimeout(() => setMergeAOpen(false), 120)
+                        }
+                        placeholder="Search name, email, or phone"
+                      />
+                      {mergeAOpen ? (
+                        <div className="absolute z-50 mt-2 max-h-56 w-full overflow-auto rounded-2xl border bg-white shadow-lg">
+                          {filteredMergeCandidates(mergeALabel, mergeBLabel)
+                            .length === 0 ? (
+                            <div className="px-4 py-3 text-sm text-slate-600">
+                              No matches.
+                            </div>
+                          ) : (
+                            filteredMergeCandidates(
+                              mergeALabel,
+                              mergeBLabel,
+                            ).map((member) => (
+                              <button
+                                type="button"
+                                key={member.id}
+                                className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  setMergeALabel(mergeCandidateLabel(member));
+                                  setMergeAOpen(false);
+                                  setMergeErr("");
+                                }}
+                              >
+                                <div className="font-medium text-slate-900">
+                                  {member.first_name} {member.last_name}
+                                </div>
+                                <div className="text-xs text-slate-500">
+                                  {member.email || member.phone || "No contact"}{" "}
+                                  • {member.status}
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                      onClick={() => {
+                        setMergeALabel(mergeBLabel);
+                        setMergeBLabel(mergeALabel);
+                        setMergeAOpen(false);
+                        setMergeBOpen(false);
+                      }}
+                    >
+                      Swap
+                    </button>
+                    <div className="relative">
+                      <div className="mb-1 text-xs font-semibold text-slate-600">
+                        Member B — duplicate
+                      </div>
+                      <input
+                        className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        value={mergeBLabel}
+                        onChange={(e) => {
+                          setMergeBLabel(e.target.value);
+                          setMergeBOpen(true);
+                          setMergeErr("");
+                        }}
+                        onFocus={() => setMergeBOpen(true)}
+                        onBlur={() =>
+                          window.setTimeout(() => setMergeBOpen(false), 120)
+                        }
+                        placeholder="Search name, email, or phone"
+                      />
+                      {mergeBOpen ? (
+                        <div className="absolute z-50 mt-2 max-h-56 w-full overflow-auto rounded-2xl border bg-white shadow-lg">
+                          {filteredMergeCandidates(mergeBLabel, mergeALabel)
+                            .length === 0 ? (
+                            <div className="px-4 py-3 text-sm text-slate-600">
+                              No matches.
+                            </div>
+                          ) : (
+                            filteredMergeCandidates(
+                              mergeBLabel,
+                              mergeALabel,
+                            ).map((member) => (
+                              <button
+                                type="button"
+                                key={member.id}
+                                className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  setMergeBLabel(mergeCandidateLabel(member));
+                                  setMergeBOpen(false);
+                                  setMergeErr("");
+                                }}
+                              >
+                                <div className="font-medium text-slate-900">
+                                  {member.first_name} {member.last_name}
+                                </div>
+                                <div className="text-xs text-slate-500">
+                                  {member.email || member.phone || "No contact"}{" "}
+                                  • {member.status}
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : mergeStep === 2 && mergePreview ? (
+                <div className="space-y-5">
+                  <div>
+                    <div className="text-sm font-semibold">
+                      Resolve field conflicts
+                    </div>
+                    <div className="mt-1 text-xs text-slate-600">
+                      A is selected by default. Blank A values inherit B
+                      automatically; both notes are combined.
+                    </div>
+                  </div>
+                  {mergeFieldRows().length === 0 ? (
+                    <div className="rounded-2xl border bg-slate-50 p-4 text-sm text-slate-600">
+                      No conflicting member fields were found.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {mergeFieldRows().map((field) => {
+                        const useB = mergeUseB.includes(field.key);
+                        return (
+                          <div
+                            key={field.key}
+                            className="rounded-2xl border p-4"
+                          >
+                            <div className="mb-2 text-xs font-semibold text-slate-600">
+                              {field.label}
+                            </div>
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <button
+                                className={`rounded-xl border p-3 text-left text-sm ${!useB ? "border-primary bg-primary/10" : "hover:bg-slate-50"}`}
+                                onClick={() =>
+                                  setMergeUseB((cur) =>
+                                    cur.filter((key) => key !== field.key),
+                                  )
+                                }
+                              >
+                                <div className="text-[11px] font-semibold text-slate-500">
+                                  MEMBER A
+                                </div>
+                                <div className="mt-1 break-words">
+                                  {field.a}
+                                </div>
+                              </button>
+                              <button
+                                className={`rounded-xl border p-3 text-left text-sm ${useB ? "border-primary bg-primary/10" : "hover:bg-slate-50"}`}
+                                onClick={() =>
+                                  setMergeUseB((cur) =>
+                                    Array.from(new Set([...cur, field.key])),
+                                  )
+                                }
+                              >
+                                <div className="text-[11px] font-semibold text-slate-500">
+                                  MEMBER B
+                                </div>
+                                <div className="mt-1 break-words">
+                                  {field.b}
+                                </div>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div className="rounded-2xl border bg-slate-50 p-4">
+                    <div className="text-sm font-semibold">
+                      Relationship preview
+                    </div>
+                    <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                      {MERGE_PREVIEW_RELATIONSHIPS.map(({ key, label }) => (
+                        <div
+                          key={key}
+                          className="rounded-xl bg-white px-3 py-2"
+                        >
+                          <div className="text-xs text-slate-500">{label}</div>
+                          <div className="font-semibold">
+                            {Number(mergePreview.relationships[key] ?? 0)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : mergeStep === 3 && mergePreview ? (
+                <div className="space-y-5">
+                  <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                    This cannot be undone. {mergePreview.member_b.first_name}{" "}
+                    {mergePreview.member_b.last_name} will become a locked
+                    tombstone, and Member A will own the consolidated history.
+                  </div>
+                  <div>
+                    <div className="mb-1 text-xs font-semibold text-slate-600">
+                      Reason *
+                    </div>
+                    <textarea
+                      className="min-h-24 w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      value={mergeReason}
+                      onChange={(e) => {
+                        setMergeReason(e.target.value);
+                        setMergeErr("");
+                      }}
+                      placeholder="Why are these records being merged?"
+                    />
+                  </div>
+                  <label className="flex items-start gap-3 rounded-2xl border p-4 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={mergeConfirmed}
+                      onChange={(e) => setMergeConfirmed(e.target.checked)}
+                    />
+                    <span>
+                      I understand this merge is irreversible and Member B
+                      cannot be restored.
+                    </span>
+                  </label>
+                </div>
+              ) : null}
+
+              {mergeErr ? (
+                <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {mergeErr}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
+              <button
+                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50 disabled:text-slate-400"
+                disabled={mergeBusy || mergeStep === 1}
+                onClick={() => setMergeStep(mergeStep === 3 ? 2 : 1)}
+              >
+                Back
+              </button>
+              {mergeStep === 1 ? (
+                <button
+                  className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/85 disabled:bg-slate-300"
+                  disabled={mergeBusy}
+                  onClick={previewMerge}
+                >
+                  {mergeBusy ? "Checking…" : "Compare members"}
+                </button>
+              ) : mergeStep === 2 ? (
+                <button
+                  className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/85"
+                  onClick={() => setMergeStep(3)}
+                >
+                  Review merge
+                </button>
+              ) : (
+                <button
+                  className="rounded-2xl bg-red-700 px-4 py-2 text-sm font-semibold text-white hover:bg-red-800 disabled:bg-slate-300"
+                  disabled={mergeBusy || !mergeReason.trim() || !mergeConfirmed}
+                  onClick={executeMerge}
+                >
+                  {mergeBusy ? "Merging…" : "Merge permanently"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Modal */}
       {open ? (
@@ -1403,9 +2103,9 @@ export default function MembersPage() {
               <div className="text-xs text-slate-600">
                 {mode === "create"
                   ? "Anyone can add a member."
-                  : isAdmin
-                    ? "Admin-only edit."
-                    : "Admin-only edit (you are not an admin)."}
+                  : canManageMembers
+                    ? "Available to finance, admins, and owners."
+                    : "Finance, admin, or owner access is required."}
               </div>
             </div>
 

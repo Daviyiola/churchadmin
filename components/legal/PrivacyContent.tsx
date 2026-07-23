@@ -9,12 +9,13 @@ const TOC = [
   { id: "processing", label: "5. Data Processing Role" },
   { id: "storage", label: "6. Data Storage & Retention" },
   { id: "security", label: "7. Security" },
-  { id: "children", label: "8. Children’s Data" },
-  { id: "rights", label: "9. Your Rights & Choices" },
-  { id: "international", label: "10. International Users" },
-  { id: "thirdparty", label: "11. Third-Party Services" },
-  { id: "changes", label: "12. Changes to this Privacy Policy" },
-  { id: "contact", label: "13. Contact" },
+  { id: "nikky", label: "8. Nikky AI Assistant" },
+  { id: "children", label: "9. Children’s Data" },
+  { id: "rights", label: "10. Your Rights & Choices" },
+  { id: "international", label: "11. International Users" },
+  { id: "thirdparty", label: "12. Third-Party Services" },
+  { id: "changes", label: "13. Changes to this Privacy Policy" },
+  { id: "contact", label: "14. Contact" },
 ];
 
 export default function PrivacyContent() {
@@ -211,7 +212,52 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="children" title="8. Children’s Data">
+      <Section id="nikky" title="8. Nikky AI Assistant">
+        <P>
+          Church Admin may provide an optional, read-only conversational
+          assistant called Nikky. Nikky helps authorized organization users ask
+          questions about Church Admin records and prepare supported reports.
+        </P>
+        <P>
+          Nikky uses the OpenAI API to interpret natural-language requests and
+          produce clear responses. Church Admin authenticates the user, applies
+          organization and role permissions, and executes a restricted set of
+          approved queries. OpenAI does not receive database credentials,
+          direct database access, arbitrary query access, or permission to
+          browse Church Admin records.
+        </P>
+        <P>
+          To provide a response, Church Admin may send the user&apos;s message,
+          relevant conversation context, and limited results from approved
+          queries to the OpenAI API. Church Admin does not train or fine-tune
+          Nikky on an organization&apos;s records. OpenAI states that API inputs
+          and outputs are not used to train its models by default unless an API
+          customer explicitly opts in.
+        </P>
+        <P>
+          Nikky is designed to ground organization-specific answers in current
+          Church Admin queries, but AI-generated responses may still contain
+          errors. Users should review important answers against the underlying
+          records or generated reports.
+        </P>
+        <P>
+          For more information about OpenAI&apos;s handling of business and API
+          data, review{" "}
+          <a
+            href="https://openai.com/business-data/"
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-blue-700 underline underline-offset-2"
+          >
+            OpenAI&apos;s business data privacy statement
+          </a>
+          .
+        </P>
+      </Section>
+
+      <Divider />
+
+      <Section id="children" title="9. Children’s Data">
         <P>
           Churches may choose to store information relating to minors in Church
           Admin.
@@ -230,7 +276,7 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="rights" title="9. Your Rights & Choices">
+      <Section id="rights" title="10. Your Rights & Choices">
         <P>
           Depending on your role and jurisdiction, you may have the ability to:
         </P>
@@ -252,7 +298,7 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="international" title="10. International Users">
+      <Section id="international" title="11. International Users">
         <P>Church Admin is operated from the United States.</P>
         <P>
           If you access the Platform from outside the United States, you
@@ -264,7 +310,7 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="thirdparty" title="11. Third-Party Services">
+      <Section id="thirdparty" title="12. Third-Party Services">
         <P>
           The Platform may rely on third-party providers for infrastructure,
           authentication, email delivery, analytics, or related services.
@@ -282,7 +328,7 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="changes" title="12. Changes to this Privacy Policy">
+      <Section id="changes" title="13. Changes to this Privacy Policy">
         <P>We may update this Privacy Policy from time to time.</P>
         <P>
           If we make material changes, we may provide notice through the
@@ -296,7 +342,7 @@ export default function PrivacyContent() {
 
       <Divider />
 
-      <Section id="contact" title="13. Contact">
+      <Section id="contact" title="14. Contact">
         <P>
           Church Admin, LLC
           <br />

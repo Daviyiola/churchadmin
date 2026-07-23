@@ -31,6 +31,8 @@ export async function signInWithOrg(email: string, password: string, orgId: stri
   localStorage.setItem("active_org_id", orgId);
   localStorage.setItem("active_org_role", link.role);
 
+  await syncNikkyContext(orgId);
+
   return { ok: true as const };
 }
 
@@ -60,6 +62,34 @@ export async function getUserId(): Promise<string | null> {
   return data.session?.user?.id ?? null;
 }
 
+async function syncNikkyContext(organizationId: string) {
+  const token = await getAccessToken();
+  if (!token) return;
+  try {
+    const optionsResponse = await fetch("/api/org/context/options", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!optionsResponse.ok) return;
+    const payload = (await optionsResponse.json()) as {
+      options?: Array<{ organization_id: string; selection_handle: string }>;
+    };
+    const selected = payload.options?.find(
+      (option) => option.organization_id === organizationId,
+    );
+    if (!selected) return;
+    await fetch("/api/org/context/select", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ selection_handle: selected.selection_handle }),
+    });
+  } catch {
+    // Nikky context synchronization must not break the existing sign-in flow.
+  }
+}
+
 export async function applyOrgContext(orgId: string) {
   const { data: sessionData } = await supabase.auth.getSession();
   const user = sessionData.session?.user;
@@ -86,6 +116,8 @@ export async function applyOrgContext(orgId: string) {
 
   localStorage.setItem("active_org_id", orgId);
   localStorage.setItem("active_org_role", link.role);
+
+  await syncNikkyContext(orgId);
 
   return { ok: true as const };
 }

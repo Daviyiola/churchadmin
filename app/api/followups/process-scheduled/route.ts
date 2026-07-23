@@ -98,18 +98,27 @@ function isValidEmail(v: string) {
 
 function isCronAuthorized(req: Request) {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
+
+  if (!secret) {
+    console.error("CRON_SECRET is missing");
+    return false;
+  }
 
   const auth = req.headers.get("authorization") ?? "";
   if (auth === `Bearer ${secret}`) return true;
 
-  // Vercel Cron automatically sends this header.
-  const cronHeader = req.headers.get("x-vercel-cron");
-  if (cronHeader === "1") return true;
-
-  // Helpful for localhost/manual testing.
+  // Helpful for localhost/manual browser testing.
   const url = new URL(req.url);
-  return url.searchParams.get("secret") === secret;
+  if (url.searchParams.get("secret") === secret) return true;
+
+  console.error("Cron auth failed", {
+    hasSecret: Boolean(secret),
+    hasAuthHeader: Boolean(auth),
+    hasQuerySecret: Boolean(url.searchParams.get("secret")),
+    authPrefix: auth.slice(0, 10),
+  });
+
+  return false;
 }
 
 async function markScheduledFollowup(
@@ -330,6 +339,7 @@ export async function GET(req: Request) {
       "id,org_id,member_id,followup_label,subject,body,reply_to,scheduled_for,status",
     )
     .eq("status", "pending")
+    .is("archived_at", null)
     .lte("scheduled_for", nowIso)
     .order("scheduled_for", { ascending: true })
     .limit(limit);

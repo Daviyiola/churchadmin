@@ -72,7 +72,7 @@ type UploadApiOk = {
   signed_url: string;
 };
 
-type PlanKey = "free" | "basic" | "growth" | "enterprise";
+type PlanKey = "free" | "basic" | "pro" | "enterprise";
 
 type LimitsPayload = {
   ok: true;
@@ -90,7 +90,7 @@ function isLimitsPayload(v: unknown): v is LimitsPayload {
     o.ok === true &&
     (o.plan === "free" ||
       o.plan === "basic" ||
-      o.plan === "growth" ||
+      o.plan === "pro" ||
       o.plan === "enterprise") &&
     typeof o.month_left === "number" &&
     typeof o.month_used === "number" &&

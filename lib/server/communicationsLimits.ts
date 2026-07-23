@@ -1,9 +1,9 @@
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import {
-  PLAN_MONTHLY_LIMIT,
   ORG_BURST_PER_MINUTE,
-  type PlanKey,
 } from "@/lib/serverLimits";
+import type { PlanKey } from "@/lib/plans";
+import { getOrganizationEntitlements } from "@/lib/server/planEntitlements";
 
 /* ---------------- helpers ---------------- */
 
@@ -24,14 +24,7 @@ function minuteBucketUTC(d = new Date()) {
 export async function getOrgPlan(
   organization_id: string,
 ): Promise<PlanKey> {
-  const { data, error } = await supabaseAdmin
-    .from("org_plans")
-    .select("plan")
-    .eq("organization_id", organization_id)
-    .maybeSingle<{ plan: PlanKey }>();
-
-  if (error) throw new Error(error.message);
-  return data?.plan ?? "basic";
+  return (await getOrganizationEntitlements(organization_id)).plan;
 }
 
 /* ---------------- monthly quota ---------------- */
@@ -40,8 +33,9 @@ export async function assertMonthlyQuota(
   organization_id: string,
   incrementBy: number,
 ) {
-  const plan = await getOrgPlan(organization_id);
-  const limit = PLAN_MONTHLY_LIMIT[plan];
+  const entitlements = await getOrganizationEntitlements(organization_id);
+  const plan = entitlements.plan;
+  const limit = entitlements.emailMonthlyLimit;
   const month = monthBucketUTC();
 
   const { data, error } = await supabaseAdmin

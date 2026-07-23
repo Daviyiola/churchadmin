@@ -15,6 +15,7 @@ import type {
 } from "@/lib/schedule/types";
 import { supabase } from "@/lib/supabaseClient";
 import { QRCodeCanvas } from "qrcode.react";
+import { useRouter } from "next/navigation";
 
 type UiError = { message: string } | null;
 
@@ -209,6 +210,7 @@ function byAlpha(a: CategoryLite, b: CategoryLite) {
 type PublicLinkResponse = { publicUrl: string };
 
 export default function AdminSchedulePage() {
+  const router = useRouter();
   const [orgId, setOrgId] = useState<string>("");
   const [jwt, setJwt] = useState<string>("");
 
@@ -879,6 +881,13 @@ export default function AdminSchedulePage() {
 
             {/* Right: month nav + view public link */}
             <div className="flex w-full flex-wrap items-center justify-end gap-2 lg:w-auto">
+              <button
+                type="button"
+                onClick={() => router.push("/app/schedule/coverage")}
+                className="rounded-2xl border bg-white px-4 py-2 text-sm hover:bg-slate-50"
+              >
+                Coverage requirements
+              </button>
               <button
                 type="button"
                 onClick={openPublicLinkModal}

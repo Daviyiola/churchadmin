@@ -1,0 +1,2 @@
+create index organization_plan_migration_backup_org_idx
+on public.organization_plan_migration_backup(organization_id);

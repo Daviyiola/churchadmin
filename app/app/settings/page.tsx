@@ -8,13 +8,18 @@ export default function SettingsHomePage() {
   const items = [
     {
       title: "Organization",
-      desc: "Profile, branding, and report preferences.",
+      desc: "Profile, branding, regional settings, and report preferences.",
       href: "/app/settings/org",
     },
     {
       title: "Manage users",
       desc: "Invite people, manage roles, and remove access.",
       href: "/app/settings/users",
+    },
+    {
+      title: "Nikky",
+      desc: "Configure the assistant allowance and rollout.",
+      href: "/app/settings/nikky",
     },
     {
       title: "Terms & Privacy",

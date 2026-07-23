@@ -226,6 +226,24 @@ function normHeader(h: string) {
   return (h ?? "").trim().toLowerCase().replace(/\s+/g, "_");
 }
 
+function downloadCsvTemplate(filename: string, rows: string[][]): void {
+  const escapeCell = (value: string) =>
+    /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+  const csv = rows
+    .map((row) => row.map(escapeCell).join(","))
+    .join("\r\n");
+  const url = URL.createObjectURL(
+    new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function asPaymentMethod(raw: string): PaymentMethod {
   const v = (raw ?? "").trim().toLowerCase();
   if (v === "cheque" || v === "check" || v === "cheq") return "cheque";
@@ -340,6 +358,13 @@ export default function ExpenseDraftPage() {
 
   // items
   const [items, setItems] = useState<DraftItem[]>([]);
+
+  // entry filters (within selected batch)
+  const [entrySearchQuery, setEntrySearchQuery] = useState("");
+  const [entryExpenseCatFilter, setEntryExpenseCatFilter] = useState("all");
+  const [entryMethodFilter, setEntryMethodFilter] = useState<
+    PaymentMethod | "all"
+  >("all");
 
   // ui state
   const [loading, setLoading] = useState(true);
@@ -857,7 +882,7 @@ export default function ExpenseDraftPage() {
   const draftCount = useMemo(() => batches.length, [batches]);
 
   const batchSummary = useMemo(() => {
-    const cents = items.reduce((sum, it) => sum + it.amount_cents, 0);
+    const cents = items.reduce((sum, item) => sum + item.amount_cents, 0);
     return { count: items.length, cents };
   }, [items]);
 
@@ -866,6 +891,48 @@ export default function ExpenseDraftPage() {
     for (const c of expenseCats) map.set(c.id, c.name);
     return map;
   }, [expenseCats]);
+
+  const filteredItems = useMemo(() => {
+    const query = entrySearchQuery.trim().toLowerCase();
+
+    return items.filter((item) => {
+      if (
+        entryExpenseCatFilter !== "all" &&
+        item.expense_category_id !== entryExpenseCatFilter
+      )
+        return false;
+      if (
+        entryMethodFilter !== "all" &&
+        item.payment_method !== entryMethodFilter
+      )
+        return false;
+
+      if (query) {
+        const searchableText = `${item.description ?? ""} ${
+          item.vendor ?? ""
+        }`.toLowerCase();
+        if (!searchableText.includes(query)) return false;
+      }
+
+      return true;
+    });
+  }, [
+    items,
+    entrySearchQuery,
+    entryExpenseCatFilter,
+    entryMethodFilter,
+  ]);
+
+  const filteredItemsTotalCents = useMemo(
+    () => filteredItems.reduce((sum, item) => sum + item.amount_cents, 0),
+    [filteredItems],
+  );
+
+  const clearEntryFilters = useCallback(() => {
+    setEntrySearchQuery("");
+    setEntryExpenseCatFilter("all");
+    setEntryMethodFilter("all");
+  }, []);
 
   const showToast = (t: string) => {
     setToastText(t);
@@ -1385,6 +1452,14 @@ export default function ExpenseDraftPage() {
                   <div className="flex gap-2">
                     <button
                       className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                      onClick={clearEntryFilters}
+                      title="Clear entry filters"
+                    >
+                      Clear filters
+                    </button>
+
+                    <button
+                      className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
                       onClick={openAddItem}
                     >
                       Add line
@@ -1436,6 +1511,68 @@ export default function ExpenseDraftPage() {
                   Add and edit draft expenses, then publish. Published entries cannot be deleted.
                 </div>
 
+                {/* Entry filters */}
+                <div className="mt-4 rounded-2xl border bg-slate-50 p-4">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <div>
+                      <div className="mb-1 text-xs font-semibold text-slate-600">
+                        Search
+                      </div>
+                      <input
+                        className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        value={entrySearchQuery}
+                        onChange={(e) => setEntrySearchQuery(e.target.value)}
+                        placeholder="Description or vendor…"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="mb-1 text-xs font-semibold text-slate-600">
+                        Expense category
+                      </div>
+                      <select
+                        className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        value={entryExpenseCatFilter}
+                        onChange={(e) =>
+                          setEntryExpenseCatFilter(e.target.value)
+                        }
+                      >
+                        <option value="all">All categories</option>
+                        {expenseCats.map((category) => (
+                          <option key={category.id} value={category.id}>
+                            {category.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <div className="mb-1 text-xs font-semibold text-slate-600">
+                        Method
+                      </div>
+                      <select
+                        className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        value={entryMethodFilter}
+                        onChange={(e) =>
+                          setEntryMethodFilter(
+                            e.target.value as PaymentMethod | "all",
+                          )
+                        }
+                      >
+                        <option value="all">All methods</option>
+                        <option value="cash">Cash</option>
+                        <option value="cheque">Cheque</option>
+                        <option value="online">Online</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 text-xs text-slate-600">
+                    {filteredItems.length} items shown • Total{" "}
+                    {formatMoney(filteredItemsTotalCents)}
+                  </div>
+                </div>
+
                 {/* Items table */}
                 <div className="mt-4 rounded-3xl border bg-white overflow-hidden">
                   <FloatingXScroll forceShow={true} onlyWhenOverflow={false}>
@@ -1450,13 +1587,15 @@ export default function ExpenseDraftPage() {
                         <div className="col-span-3 text-right">Actions</div>
                       </div>
 
-                      {items.length === 0 ? (
+                      {filteredItems.length === 0 ? (
                         <div className="p-6 text-sm text-slate-600">
-                          No items in this draft yet.
+                          {items.length === 0
+                            ? "No items in this draft yet."
+                            : "No items match your filters."}
                         </div>
                       ) : (
                         <div className="divide-y">
-                          {items.map((it) => (
+                          {filteredItems.map((it) => (
                             <div
                               key={it.id}
                               className="grid grid-cols-12 items-center gap-2 px-5 py-4 text-sm"
@@ -2075,6 +2214,46 @@ export default function ExpenseDraftPage() {
                         >
                           <span>Choose CSV file</span>
                         </label>
+                        <button
+                          type="button"
+                          className="mt-2 inline-flex w-full items-center justify-center rounded-2xl border bg-white px-4 py-3 text-sm font-semibold transition hover:border-slate-300 hover:bg-slate-50 active:scale-[0.99]"
+                          onClick={() =>
+                            downloadCsvTemplate(
+                              "expense-import-template.csv",
+                              [
+                                [
+                                  "date",
+                                  "category",
+                                  "description",
+                                  "vendor",
+                                  "amount",
+                                  "method",
+                                  "cheque_number",
+                                ],
+                                [
+                                  "2026-07-05",
+                                  "Example Utilities",
+                                  "Example internet bill",
+                                  "Example Vendor One",
+                                  "120.50",
+                                  "online",
+                                  "",
+                                ],
+                                [
+                                  "2026-07-07",
+                                  "Example Supplies",
+                                  "Example printer paper",
+                                  "Example Vendor Two",
+                                  "85.00",
+                                  "cash",
+                                  "",
+                                ],
+                              ],
+                            )
+                          }
+                        >
+                          Download CSV template
+                        </button>
                       </div>
                     </div>
 

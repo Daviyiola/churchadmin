@@ -8,6 +8,7 @@ import {
   assertMonthlyQuota,
   consumeMonthlyQuota,
 } from "@/lib/server/communicationsLimits";
+import { canSendFollowupEmail } from "@/lib/emailPermissions";
 
 export const runtime = "nodejs";
 
@@ -81,18 +82,22 @@ export async function POST(req: Request) {
   try {
     const actorId = await requireActorId(req);
 
-    const body = (await req.json().catch(() => null)) as
-      | {
-          member_id?: string;
-          to?: string;
-          reply_to?: string | null;
-          subject?: string;
-          body?: string;
-        }
-      | null;
+    const body = (await req.json().catch(() => null)) as {
+      member_id?: string;
+      scheduled_followup_id?: string;
+      to?: string;
+      reply_to?: string | null;
+      subject?: string;
+      body?: string;
+    } | null;
 
     const memberId = String(body?.member_id ?? "").trim();
-    const to = String(body?.to ?? "").trim().toLowerCase();
+    const scheduledFollowupId = String(
+      body?.scheduled_followup_id ?? "",
+    ).trim();
+    const to = String(body?.to ?? "")
+      .trim()
+      .toLowerCase();
     const replyToRaw =
       body?.reply_to === null ? "" : String(body?.reply_to ?? "").trim();
     const replyTo = replyToRaw ? replyToRaw.toLowerCase() : "";
@@ -130,7 +135,11 @@ export async function POST(req: Request) {
       .from("members")
       .select("id, org_id, email")
       .eq("id", memberId)
-      .maybeSingle<{ id: string; org_id: string | null; email: string | null }>();
+      .maybeSingle<{
+        id: string;
+        org_id: string | null;
+        email: string | null;
+      }>();
 
     if (memErr)
       return NextResponse.json<ErrorJson>(
@@ -170,20 +179,106 @@ export async function POST(req: Request) {
       );
 
     const role = String(link.role ?? "");
-    if (!["owner", "admin", "finance"].includes(role))
+
+    if (!canSendFollowupEmail(role))
       return NextResponse.json<ErrorJson>(
         { error: "Forbidden: insufficient role" },
         { status: 403 },
       );
+      
+    // When this request comes from a scheduled follow-up's "Send now" button,
+    // verify that the scheduled record is valid before sending.
+    if (scheduledFollowupId) {
+      const { data: scheduledFollowup, error: scheduledErr } =
+        await supabaseAdmin
+          .from("scheduled_followups")
+          .select(
+            "id,org_id,member_id,status,archived_at,subject,body,reply_to",
+          )
+          .eq("id", scheduledFollowupId)
+          .maybeSingle<{
+            id: string;
+            org_id: string;
+            member_id: string;
+            status: string;
+            archived_at: string | null;
+            subject: string;
+            body: string;
+            reply_to: string | null;
+          }>();
 
+      if (scheduledErr) {
+        return NextResponse.json<ErrorJson>(
+          { error: scheduledErr.message },
+          { status: 400 },
+        );
+      }
+
+      if (!scheduledFollowup) {
+        return NextResponse.json<ErrorJson>(
+          { error: "Scheduled follow-up not found" },
+          { status: 404 },
+        );
+      }
+
+      if (scheduledFollowup.org_id !== orgId) {
+        return NextResponse.json<ErrorJson>(
+          { error: "Scheduled follow-up belongs to another organization" },
+          { status: 403 },
+        );
+      }
+
+      if (scheduledFollowup.member_id !== memberId) {
+        return NextResponse.json<ErrorJson>(
+          { error: "Scheduled follow-up does not match this member" },
+          { status: 400 },
+        );
+      }
+
+      if (scheduledFollowup.archived_at) {
+        return NextResponse.json<ErrorJson>(
+          { error: "Restore the scheduled follow-up before sending it" },
+          { status: 400 },
+        );
+      }
+
+      if (scheduledFollowup.status !== "pending") {
+        return NextResponse.json<ErrorJson>(
+          { error: "Only pending scheduled follow-ups can be sent" },
+          { status: 409 },
+        );
+      }
+
+      // Ensure the message being sent still matches the stored scheduled message.
+      if (
+        scheduledFollowup.subject.trim() !== subject ||
+        scheduledFollowup.body.trim() !== msgBody ||
+        (scheduledFollowup.reply_to ?? "").trim().toLowerCase() !== replyTo
+      ) {
+        return NextResponse.json<ErrorJson>(
+          {
+            error:
+              "The scheduled follow-up has changed. Refresh the page and try again.",
+          },
+          { status: 409 },
+        );
+      }
+    }
+    
     // ---- Quota checks (shared system) ----
     const burst = await assertBurstLimit(orgId, 1);
     if (!burst.ok)
-      return NextResponse.json<ErrorJson>({ error: burst.error }, { status: 429 });
+      return NextResponse.json<ErrorJson>(
+        { error: burst.error },
+        { status: 429 },
+      );
 
     const quota = await assertMonthlyQuota(orgId, 1);
     if (!quota.ok)
-      return NextResponse.json<ErrorJson>({ error: quota.error }, { status: 402 });
+      return NextResponse.json<ErrorJson>(
+        { error: quota.error },
+        { status: 402 },
+      );
 
     // Org name for From
     const { data: org, error: orgErr } = await supabaseAdmin
@@ -226,6 +321,46 @@ export async function POST(req: Request) {
 
     const resendId = sendRes.data?.id ?? null;
 
+    const sentAt = new Date().toISOString();
+
+    if (scheduledFollowupId) {
+      const { data: updatedScheduled, error: scheduledUpdateErr } =
+        await supabaseAdmin
+          .from("scheduled_followups")
+          .update({
+            status: "sent",
+            sent_at: sentAt,
+            error_message: null,
+            updated_at: sentAt,
+          })
+          .eq("id", scheduledFollowupId)
+          .eq("org_id", orgId)
+          .eq("member_id", memberId)
+          .eq("status", "pending")
+          .is("archived_at", null)
+          .select("id")
+          .maybeSingle<{ id: string }>();
+
+      if (scheduledUpdateErr) {
+        return NextResponse.json<ErrorJson>(
+          {
+            error: `Email was sent, but the scheduled follow-up could not be updated: ${scheduledUpdateErr.message}`,
+          },
+          { status: 500 },
+        );
+      }
+
+      if (!updatedScheduled) {
+        return NextResponse.json<ErrorJson>(
+          {
+            error:
+              "Email was sent, but the scheduled follow-up could not be marked as sent.",
+          },
+          { status: 409 },
+        );
+      }
+    }
+
     // Consume AFTER success (so you don't burn quota on provider failure)
     await consumeBurst(orgId, 1);
     await consumeMonthlyQuota(orgId, 1);
@@ -257,7 +392,10 @@ export async function POST(req: Request) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Error";
     if (msg === "UNAUTHORIZED") {
-      return NextResponse.json<ErrorJson>({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json<ErrorJson>(
+        { error: "Unauthorized" },
+        { status: 401 },
+      );
     }
     return NextResponse.json<ErrorJson>({ error: msg }, { status: 400 });
   }

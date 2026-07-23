@@ -1,6 +1,10 @@
 import { runMemberGivingReportFromToken } from "@/lib/server/reports/memberGiving";
 import type { RunMemberGivingBody, ErrorResponse } from "@/lib/reports/members/types";
 import { NextResponse } from "next/server";
+import {
+  getBearerToken,
+  reportErrorStatus,
+} from "@/lib/server/reports/requestSupabase";
 
 export const runtime = "nodejs";
 
@@ -15,8 +19,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const authHeader = req.headers.get("authorization") || "";
-    const accessToken = authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : null;
+    const accessToken = getBearerToken(req);
     if (!accessToken) {
       return NextResponse.json({ error: "Unauthorized" } satisfies ErrorResponse, { status: 401 });
     }
@@ -25,6 +28,9 @@ export async function POST(req: Request) {
     return NextResponse.json(report);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return NextResponse.json({ error: msg } satisfies ErrorResponse, { status: 400 });
+    return NextResponse.json(
+      { error: msg } satisfies ErrorResponse,
+      { status: reportErrorStatus(e) },
+    );
   }
 }

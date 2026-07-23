@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { requireUser, requireOrgFinanceOrAbove } from "@/lib/serverAuthz";
 import crypto from "crypto";
 
 export const runtime = "nodejs";
@@ -26,48 +27,13 @@ type OkJson = {
   signed_url: string;
 };
 
-function getBearerToken(req: Request): string | null {
-  const h = req.headers.get("authorization") || "";
-  return h.startsWith("Bearer ") ? h.slice("Bearer ".length) : null;
-}
-
-type Role = "owner" | "admin" | "finance" | "viewer" | "member";
-
-async function assertCanSendCommunications(
-  organizationId: string,
-  accessToken: string,
-): Promise<{ userId: string } | { error: string }> {
-  const { data: userRes, error: userErr } =
-    await supabaseAdmin.auth.getUser(accessToken);
-
-  if (userErr || !userRes?.user?.id) return { error: "Unauthorized" };
-  const userId = userRes.user.id;
-
-  const { data: link, error: linkErr } = await supabaseAdmin
-    .from("user_organizations")
-    .select("role")
-    .eq("user_id", userId)
-    .eq("organization_id", organizationId)
-    .maybeSingle();
-
-  if (linkErr) return { error: linkErr.message };
-  if (!link) return { error: "No access to this organization." };
-
-  const role = link.role as Role;
-  if (role !== "owner" && role !== "admin") {
-    return { error: "Only owners/admins can upload communications." };
-  }
-
-  return { userId };
-}
-
 export async function POST(req: Request) {
   try {
-    const token = getBearerToken(req);
-    if (!token) {
+    const user = await requireUser(req);
+    if (!user.ok) {
       return NextResponse.json<ErrorJson>(
-        { error: "Unauthorized" },
-        { status: 401 },
+        { error: user.error },
+        { status: user.status },
       );
     }
 
@@ -95,11 +61,14 @@ export async function POST(req: Request) {
       );
     }
 
-    const can = await assertCanSendCommunications(organization_id, token);
-    if ("error" in can) {
+    const authz = await requireOrgFinanceOrAbove(
+      organization_id,
+      user.userId,
+    );
+    if (!authz.ok) {
       return NextResponse.json<ErrorJson>(
-        { error: can.error },
-        { status: 403 },
+        { error: authz.error },
+        { status: authz.status },
       );
     }
 
@@ -140,7 +109,7 @@ export async function POST(req: Request) {
         id,
         org_id: organization_id,
         campaign_id,
-        uploaded_by: can.userId,
+        uploaded_by: user.userId,
         bucket,
         path,
         filename: safeName,

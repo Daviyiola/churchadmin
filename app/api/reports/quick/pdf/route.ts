@@ -2,14 +2,14 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { chromium } from "playwright";
 import type { SupabaseClient } from "@supabase/supabase-js";
-
-type Role = "owner" | "admin" | "finance" | "member";
-
-function asRole(raw: unknown): Role {
-  const v = String(raw);
-  if (v === "owner" || v === "admin" || v === "finance" || v === "member") return v;
-  return "member";
-}
+import {
+  getBearerToken,
+  getReportRequestContext,
+  reportErrorStatus,
+  requireFinanceDateWindow,
+  requireReportRoles,
+  requireValidReportDateRange,
+} from "@/lib/server/reports/requestSupabase";
 
 type Mode = "income" | "expense" | "attendance";
 
@@ -39,7 +39,7 @@ type QuickReportRequest = {
 };
 
 type BuildReportArgs = {
-  supabaseAdmin: SupabaseClient;
+  supabase: SupabaseClient;
   organizationId: string;
   mode: Mode;
   body: QuickReportRequest;
@@ -57,36 +57,29 @@ export async function POST(req: Request) {
     const body = (await req.json()) as QuickReportRequest;
     const { organization_id, mode } = body;
 
-    if (!organization_id || !mode) {
-      return NextResponse.json({ error: "organization_id and mode are required" }, { status: 400 });
+    if (!organization_id || !mode || !body.start_date || !body.end_date) {
+      return NextResponse.json(
+        { error: "organization_id, mode, start_date, and end_date are required" },
+        { status: 400 },
+      );
     }
 
-    // --- Auth (your pattern) ---
-    const authHeader = req.headers.get("authorization") || "";
-    const accessToken = authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : null;
+    const accessToken = getBearerToken(req);
     if (!accessToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const { data: userRes, error: userErr } = await supabaseAdmin.auth.getUser(accessToken);
-    if (userErr || !userRes?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    requireValidReportDateRange(body.start_date, body.end_date);
 
-    const userId = userRes.user.id;
-
-    const { data: membership, error: memErr } = await supabaseAdmin
-      .from("user_organizations")
-      .select("role")
-      .eq("organization_id", organization_id)
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    if (memErr) return NextResponse.json({ error: memErr.message }, { status: 400 });
-    if (!membership) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-
-    const role = asRole(membership.role);
-    const canExport = role === "owner" || role === "admin" || role === "finance";
-    if (!canExport) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const { supabase, role } = await getReportRequestContext(
+      accessToken,
+      organization_id,
+    );
+    requireReportRoles(role, ["owner", "admin", "finance"]);
+    if (mode === "income" || mode === "expense") {
+      requireFinanceDateWindow(role, body.start_date);
+    }
 
     // --- Fetch org settings for header/subheader + logo path ---
-    const { data: orgSettings } = await supabaseAdmin
+    const { data: orgSettings } = await supabase
       .from("organization_settings")
       .select("report_header_text,report_subheader_text,report_banner_bg_rgb,report_banner_text_rgb")
       .eq("organization_id", organization_id)
@@ -103,7 +96,7 @@ export async function POST(req: Request) {
     // --- Query data depending on mode ---
     // NOTE: implement these 3 functions as pure helpers that return {title, filtersLine, tableHtml}
     const report = await buildReportHtml({
-      supabaseAdmin,
+      supabase,
       organizationId: organization_id,
       mode,
       body,
@@ -158,7 +151,7 @@ export async function POST(req: Request) {
     });
   } catch (e: unknown) {
   const message = e instanceof Error ? e.message : "Unknown error";
-  return NextResponse.json({ error: message }, { status: 500 });
+  return NextResponse.json({ error: message }, { status: reportErrorStatus(e) });
 }
 }
 

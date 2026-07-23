@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { requireUser, requireOrgOwnerOrAdmin } from "@/lib/serverAuthz";
+import { requireUser, requireOrgFinanceOrAbove } from "@/lib/serverAuthz";
 
 export const runtime = "nodejs";
 
@@ -21,7 +21,7 @@ export async function GET(req: Request) {
     if (!campaign_id)
       return NextResponse.json<ErrorJson>({ error: "campaign_id required" }, { status: 400 });
 
-    const authz = await requireOrgOwnerOrAdmin(organization_id, u.userId);
+    const authz = await requireOrgFinanceOrAbove(organization_id, u.userId);
     if (!authz.ok)
       return NextResponse.json<ErrorJson>({ error: authz.error }, { status: authz.status });
 

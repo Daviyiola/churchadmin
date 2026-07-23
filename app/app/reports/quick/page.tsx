@@ -9,10 +9,15 @@ import {
 
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
+import {
+  FINANCE_REPORT_WINDOW_DAYS,
+  financeWindowStart,
+} from "@/lib/reports/financeWindow";
 
 type CategoryType = "income" | "expense" | "services";
 type Cat = { id: string; name: string; type: CategoryType };
 type ExpenseSort = "date" | "category";
+type Role = "owner" | "admin" | "finance" | "viewer" | "member";
 
 async function fetchCategories(
   orgId: string,
@@ -33,10 +38,28 @@ async function fetchCategories(
 type AttendanceView = "summary" | "detailed";
 type Option = { id: string; name: string };
 
+async function fetchMyRole(orgId: string): Promise<Role> {
+  const { data: sessionResult } = await supabase.auth.getSession();
+  const userId = sessionResult.session?.user.id;
+  if (!userId) throw new Error("Unauthorized");
+
+  const { data, error } = await supabase
+    .from("user_organizations")
+    .select("role")
+    .eq("organization_id", orgId)
+    .eq("user_id", userId)
+    .maybeSingle<{ role: Role }>();
+
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("You do not belong to this organization.");
+  return data.role;
+}
+
 export default function QuickReportPage() {
   const router = useRouter();
 
-  const [mode, setMode] = useState<QuickReportMode>("income");
+  const [mode, setMode] = useState<QuickReportMode>("attendance");
+  const [role, setRole] = useState<Role | null>(null);
 
   const today = useMemo(() => new Date(), []);
   const defaultStart = useMemo(() => {
@@ -70,6 +93,15 @@ export default function QuickReportPage() {
     Option[]
   >([]);
   const [loadErr, setLoadErr] = useState("");
+  const canSeeFinancialReports =
+    role === "owner" || role === "admin" || role === "finance";
+  const financeCutoff = useMemo(() => financeWindowStart(today), [today]);
+
+  useEffect(() => {
+    if (role === "finance" && mode !== "attendance" && start < financeCutoff) {
+      setStart(financeCutoff);
+    }
+  }, [financeCutoff, mode, role, start]);
 
   useEffect(() => {
     let alive = true;
@@ -80,13 +112,21 @@ export default function QuickReportPage() {
         const orgId = getActiveOrgId();
         if (!orgId) throw new Error("No active organization selected.");
 
-        const [svcs, inc, exp] = await Promise.all([
+        const [myRole, svcs, inc, exp] = await Promise.all([
+          fetchMyRole(orgId),
           fetchCategories(orgId, "services"),
           fetchCategories(orgId, "income"),
           fetchCategories(orgId, "expense"),
         ]);
 
         if (!alive) return;
+
+        setRole(myRole);
+        setMode(
+          myRole === "owner" || myRole === "admin" || myRole === "finance"
+            ? "income"
+            : "attendance",
+        );
 
         const svcOpts = svcs.map((x) => ({ id: x.id, name: x.name }));
         const incOpts = inc.map((x) => ({ id: x.id, name: x.name }));
@@ -118,6 +158,14 @@ export default function QuickReportPage() {
     if (!start || !end) return alert("Please select a start and end date.");
     if (end < start)
       return alert("End date cannot be earlier than start date.");
+    if (mode !== "attendance" && !canSeeFinancialReports) {
+      return alert("Income and expense reports require a finance, admin, or owner role.");
+    }
+    if (role === "finance" && mode !== "attendance" && start < financeCutoff) {
+      return alert(
+        `Finance reports cannot start before ${financeCutoff}.`,
+      );
+    }
 
     const service_ids =
       mode === "income"
@@ -188,16 +236,20 @@ export default function QuickReportPage() {
               ) : null}
 
               <div className="flex flex-wrap gap-2">
-                <ModePill
-                  label="Income"
-                  active={mode === "income"}
-                  onClick={() => setMode("income")}
-                />
-                <ModePill
-                  label="Expense"
-                  active={mode === "expense"}
-                  onClick={() => setMode("expense")}
-                />
+                {canSeeFinancialReports ? (
+                  <>
+                    <ModePill
+                      label="Income"
+                      active={mode === "income"}
+                      onClick={() => setMode("income")}
+                    />
+                    <ModePill
+                      label="Expense"
+                      active={mode === "expense"}
+                      onClick={() => setMode("expense")}
+                    />
+                  </>
+                ) : null}
                 <ModePill
                   label="Attendance"
                   active={mode === "attendance"}
@@ -213,6 +265,7 @@ export default function QuickReportPage() {
                       <Field label="Start date">
                         <input
                           type="date"
+                          min={role === "finance" ? financeCutoff : undefined}
                           value={start}
                           onChange={(e) => setStart(e.target.value)}
                           className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:border-slate-400"
@@ -222,6 +275,7 @@ export default function QuickReportPage() {
                       <Field label="End date">
                         <input
                           type="date"
+                          min={role === "finance" ? financeCutoff : undefined}
                           value={end}
                           onChange={(e) => setEnd(e.target.value)}
                           className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:border-slate-400"
@@ -267,6 +321,11 @@ export default function QuickReportPage() {
                       <Field label="Start date">
                         <input
                           type="date"
+                          min={
+                            role === "finance" && mode === "income"
+                              ? financeCutoff
+                              : undefined
+                          }
                           value={start}
                           onChange={(e) => setStart(e.target.value)}
                           className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:border-slate-400"
@@ -276,6 +335,11 @@ export default function QuickReportPage() {
                       <Field label="End date">
                         <input
                           type="date"
+                          min={
+                            role === "finance" && mode === "income"
+                              ? financeCutoff
+                              : undefined
+                          }
                           value={end}
                           onChange={(e) => setEnd(e.target.value)}
                           className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:border-slate-400"
@@ -362,6 +426,12 @@ export default function QuickReportPage() {
                 <div className="mt-2 text-xs text-slate-500">
                   Note: Totals always include adjustments.
                 </div>
+                {role === "finance" && mode !== "attendance" ? (
+                  <div className="mt-1 text-xs text-amber-700">
+                    Finance reports are limited to the most recent{" "}
+                    {FINANCE_REPORT_WINDOW_DAYS} days, beginning {financeCutoff}.
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>

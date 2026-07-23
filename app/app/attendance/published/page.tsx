@@ -41,6 +41,20 @@ type PublishedSession = {
   last_edited_by_email: string | null;
 };
 
+type SessionEdit = {
+  id: string;
+  revision: number;
+  old_service_category_id: string;
+  new_service_category_id: string;
+  old_service_name: string;
+  new_service_name: string;
+  old_session_date: string;
+  new_session_date: string;
+  edited_by_email: string | null;
+  edited_at: string;
+  reason: string;
+};
+
 type AttendanceEntry = {
   id: string;
   org_id: string;
@@ -108,6 +122,8 @@ export default function AttendancePublishedPage() {
 
   const [role, setRole] = useState<Role | null>(null);
   const isAdmin = role === "admin" || role === "owner";
+  const canEditSession =
+    role === "finance" || role === "admin" || role === "owner";
 
   const [serviceCats, setServiceCats] = useState<CategoryRow[]>([]);
   const [members, setMembers] = useState<MemberRow[]>([]);
@@ -127,6 +143,17 @@ export default function AttendancePublishedPage() {
 
   const [busy, setBusy] = useState<null | "revert" | "delete">(null);
 
+  const [sessionEditOpen, setSessionEditOpen] = useState(false);
+  const [sessionEditServiceId, setSessionEditServiceId] = useState("");
+  const [sessionEditDate, setSessionEditDate] = useState("");
+  const [sessionEditReason, setSessionEditReason] = useState("");
+  const [sessionEditErr, setSessionEditErr] = useState("");
+  const [savingSessionEdit, setSavingSessionEdit] = useState(false);
+  const [sessionEditHistory, setSessionEditHistory] = useState<SessionEdit[]>(
+    [],
+  );
+  const [loadingSessionHistory, setLoadingSessionHistory] = useState(false);
+
   function fmtDateTime(iso: string | null | undefined) {
     if (!iso) return "—";
     const dt = new Date(iso);
@@ -138,7 +165,7 @@ export default function AttendancePublishedPage() {
   const [serviceFilter, setServiceFilter] = useState<string>("all");
   const [dateFrom, setDateFrom] = useState<string>(() => {
     const d = new Date();
-    d.setDate(d.getDate() - 30);
+    d.setDate(d.getDate() - 90);
     return toISODateInput(d);
   });
   const [dateTo, setDateTo] = useState<string>(() =>
@@ -359,6 +386,72 @@ export default function AttendancePublishedPage() {
     setSelectedSessionId(null);
   };
 
+  const loadSessionEditHistory = async (sessionId: string) => {
+    if (!orgId) return;
+
+    setLoadingSessionHistory(true);
+    const { data, error } = await supabase
+      .from("attendance_session_edits")
+      .select(
+        "id,revision,old_service_category_id,new_service_category_id,old_service_name,new_service_name,old_session_date,new_session_date,edited_by_email,edited_at,reason",
+      )
+      .eq("org_id", orgId)
+      .eq("session_id", sessionId)
+      .order("revision", { ascending: false });
+    setLoadingSessionHistory(false);
+
+    if (error) {
+      setSessionEditErr(error.message);
+      setSessionEditHistory([]);
+      return;
+    }
+    setSessionEditHistory((data ?? []) as SessionEdit[]);
+  };
+
+  const openSessionEdit = () => {
+    if (!selectedSession || !canEditSession || selectedSession.deleted_at)
+      return;
+
+    setSessionEditServiceId(selectedSession.service_category_id);
+    setSessionEditDate(selectedSession.session_date);
+    setSessionEditReason("");
+    setSessionEditErr("");
+    setSessionEditHistory([]);
+    setSessionEditOpen(true);
+    void loadSessionEditHistory(selectedSession.id);
+  };
+
+  const saveSessionEdit = async () => {
+    if (!selectedSession) return;
+    if (!sessionEditServiceId || !sessionEditDate)
+      return setSessionEditErr("Service and date are required.");
+    if (!sessionEditReason.trim())
+      return setSessionEditErr("A reason is required.");
+    if (
+      sessionEditServiceId === selectedSession.service_category_id &&
+      sessionEditDate === selectedSession.session_date
+    )
+      return setSessionEditErr("Change the service or date before saving.");
+
+    setSavingSessionEdit(true);
+    setSessionEditErr("");
+    const { error } = await supabase.rpc(
+      "edit_published_attendance_session",
+      {
+        p_session_id: selectedSession.id,
+        p_service_category_id: sessionEditServiceId,
+        p_session_date: sessionEditDate,
+        p_reason: sessionEditReason.trim(),
+      },
+    );
+    setSavingSessionEdit(false);
+
+    if (error) return setSessionEditErr(error.message);
+
+    setSessionEditOpen(false);
+    await Promise.all([loadAll(), loadEntries(selectedSession.id)]);
+  };
+
   if (!orgId)
     return (
       <div className="p-6 text-slate-700">No active organization selected.</div>
@@ -405,7 +498,7 @@ export default function AttendancePublishedPage() {
                   {filteredSessions.length} shown
                 </div>
               </div>
-              <Pill>v1</Pill>
+              {/* <Pill>v1</Pill> */}
             </div>
 
             <div className="mt-4 space-y-3">
@@ -558,6 +651,33 @@ export default function AttendancePublishedPage() {
                   <div className="flex gap-2">
                     <button
                       className={`rounded-2xl border px-4 py-2 text-sm font-semibold ${
+                        !canEditSession ||
+                        !!selectedSession.deleted_at ||
+                        busy ||
+                        savingSessionEdit
+                          ? "border-slate-200 text-slate-400"
+                          : "text-slate-800 hover:bg-slate-50"
+                      }`}
+                      disabled={
+                        !canEditSession ||
+                        !!selectedSession.deleted_at ||
+                        !!busy ||
+                        savingSessionEdit
+                      }
+                      onClick={openSessionEdit}
+                      title={
+                        !canEditSession
+                          ? "Finance, admin, or owner only"
+                          : selectedSession.deleted_at
+                            ? "Deleted sessions cannot be edited"
+                            : "Change the service or date"
+                      }
+                    >
+                      Edit
+                    </button>
+
+                    <button
+                      className={`rounded-2xl border px-4 py-2 text-sm font-semibold ${
                         !isAdmin || !!selectedSession.deleted_at || busy
                           ? "text-slate-400 border-slate-200"
                           : "text-slate-800 hover:bg-slate-50"
@@ -691,6 +811,166 @@ export default function AttendancePublishedPage() {
           </div>
         </div>
       </div>
+
+      {sessionEditOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-xl">
+            <div className="border-b px-6 py-4">
+              <div className="text-sm font-semibold">
+                Edit published attendance session
+              </div>
+              <div className="text-xs text-slate-600">
+                Updates the session and all of its published attendance entries.
+              </div>
+            </div>
+
+            <div className="space-y-4 overflow-auto px-6 py-6">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Service *
+                  </div>
+                  <select
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    value={sessionEditServiceId}
+                    onChange={(e) => {
+                      setSessionEditServiceId(e.target.value);
+                      setSessionEditErr("");
+                    }}
+                  >
+                    <option value="">Select…</option>
+                    {serviceCats.map((service) => (
+                      <option key={service.id} value={service.id}>
+                        {service.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Date *
+                  </div>
+                  <input
+                    type="date"
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    value={sessionEditDate}
+                    onChange={(e) => {
+                      setSessionEditDate(e.target.value);
+                      setSessionEditErr("");
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Reason *
+                </div>
+                <input
+                  className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  value={sessionEditReason}
+                  onChange={(e) => {
+                    setSessionEditReason(e.target.value);
+                    setSessionEditErr("");
+                  }}
+                  placeholder="Why is this published session changing?"
+                />
+              </div>
+
+              {sessionEditErr ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {sessionEditErr}
+                </div>
+              ) : null}
+
+              <div className="rounded-2xl border bg-slate-50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-semibold">Revision history</div>
+                  <div className="text-xs text-slate-600">
+                    {sessionEditHistory.length} revision
+                    {sessionEditHistory.length === 1 ? "" : "s"}
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  {loadingSessionHistory ? (
+                    <div className="text-sm text-slate-600">
+                      Loading history…
+                    </div>
+                  ) : sessionEditHistory.length === 0 ? (
+                    <div className="text-sm text-slate-600">
+                      No session revisions yet.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {sessionEditHistory.map((edit) => (
+                        <div
+                          key={edit.id}
+                          className="rounded-xl border bg-white p-3"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-xs font-semibold text-slate-700">
+                                {fmtDateTime(edit.edited_at)}
+                              </div>
+                              <div className="text-[11px] text-slate-500">
+                                Changed by {edit.edited_by_email ?? "Unknown editor"}
+                              </div>
+                            </div>
+                            <Pill>Rev {edit.revision}</Pill>
+                          </div>
+
+                          <div className="mt-2 space-y-1 text-sm text-slate-800">
+                            {edit.old_service_category_id !==
+                            edit.new_service_category_id ? (
+                              <div>
+                                Service: <b>{edit.old_service_name}</b> →{" "}
+                                <b>{edit.new_service_name}</b>
+                              </div>
+                            ) : null}
+                            {edit.old_session_date !== edit.new_session_date ? (
+                              <div>
+                                Date: <b>{fmtDate(edit.old_session_date)}</b> →{" "}
+                                <b>{fmtDate(edit.new_session_date)}</b>
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="mt-2 text-xs text-slate-600">
+                            Reason: {edit.reason}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
+              <button
+                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                onClick={() => setSessionEditOpen(false)}
+                disabled={savingSessionEdit}
+              >
+                Cancel
+              </button>
+              <button
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
+                  savingSessionEdit
+                    ? "bg-slate-300"
+                    : "bg-primary hover:bg-primary/85"
+                }`}
+                onClick={saveSessionEdit}
+                disabled={savingSessionEdit}
+              >
+                {savingSessionEdit ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

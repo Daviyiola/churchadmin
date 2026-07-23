@@ -68,7 +68,7 @@ useEffect(() => {
 
 
   const canSeeFinancialReports = useMemo(() => {
-    return role === "owner" || role === "admin";
+    return role === "owner" || role === "admin" || role === "finance";
   }, [role]);
 
   const items = useMemo(
@@ -79,6 +79,7 @@ useEffect(() => {
         href: "/app/reports/quick",
         badge: "",
         requiresAdmin: false,
+        financeAllowed: true,
       },      
        {
         title: "First-timers report",
@@ -86,6 +87,7 @@ useEffect(() => {
         href: "/app/reports/first-timers",
         badge: "",
         requiresAdmin: false,
+        financeAllowed: true,
       },
       {
         title: "New Converts and Baptisms report",
@@ -93,6 +95,7 @@ useEffect(() => {
         href: "/app/reports/converts-baptisms",
         badge: "",
         requiresAdmin: false,
+        financeAllowed: true,
       },
       {
         title: "Income statement",
@@ -100,6 +103,7 @@ useEffect(() => {
         href: "/app/reports/income-statement",
         badge: "",
         requiresAdmin: true,
+        financeAllowed: true,
       },
       {
         title: "Member giving report",
@@ -107,6 +111,7 @@ useEffect(() => {
         href: "/app/reports/member-giving",
         badge: "",
         requiresAdmin: true,
+        financeAllowed: false,
       },
       {
         title: "Email Member giving report",
@@ -114,6 +119,7 @@ useEffect(() => {
         href: "/app/reports/email-member-giving-reports",
         badge: "",
         requiresAdmin: true,
+        financeAllowed: false,
       },
     ],
     [],
@@ -144,7 +150,7 @@ useEffect(() => {
             <div className="divide-y">
               {items.map((it) => {
                 const locked =
-                  it.requiresAdmin && roleLoaded && !canSeeFinancialReports;
+                  it.requiresAdmin && roleLoaded && (!canSeeFinancialReports || (role === "finance" && it.financeAllowed === false));
 
                 const tooltip = locked
                   ? "Admins/Owners only. Ask an admin to grant access."

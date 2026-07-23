@@ -3,6 +3,8 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { getBearerToken, getReportRequestContext, reportErrorStatus } from "@/lib/server/reports/requestSupabase";
 
 import type {
   RunConvertsBaptismsBody,
@@ -25,8 +27,6 @@ type OrgSettingsRow = {
   report_header_text: string | null;
   report_subheader_text: string | null;
 };
-
-type UserOrgRow = { role: string };
 
 type RawRow = {
   id: string;
@@ -83,8 +83,8 @@ function reportSubheader(rt: ReportType) {
   return "Converts & Baptisms report";
 }
 
-async function getBranding(orgId: string, rt: ReportType): Promise<Branding> {
-  const { data: org, error: orgErr } = await supabaseAdmin
+async function getBranding(supabase: SupabaseClient, orgId: string, rt: ReportType): Promise<Branding> {
+  const { data: org, error: orgErr } = await supabase
     .from("organizations")
     .select("id,name")
     .eq("id", orgId)
@@ -92,7 +92,7 @@ async function getBranding(orgId: string, rt: ReportType): Promise<Branding> {
 
   if (orgErr) throw new Error(orgErr.message);
 
-  const { data: s, error: sErr } = await supabaseAdmin
+  const { data: s, error: sErr } = await supabase
     .from("organization_settings")
     .select("organization_id,logo_path,use_default_logo,report_header_text,report_subheader_text")
     .eq("organization_id", orgId)
@@ -169,47 +169,24 @@ export async function POST(req: Request) {
       : "combined";
 
     // ---- Auth ----
-    const authHeader = req.headers.get("authorization") || "";
-    const accessToken = authHeader.startsWith("Bearer ")
-      ? authHeader.slice("Bearer ".length)
-      : null;
+    const accessToken = getBearerToken(req);
 
     if (!accessToken) {
       return NextResponse.json({ error: "Unauthorized" } satisfies ErrorResponse, { status: 401 });
     }
 
-    const { data: userRes, error: userErr } = await supabaseAdmin.auth.getUser(accessToken);
-    if (userErr || !userRes?.user) {
-      return NextResponse.json({ error: "Unauthorized" } satisfies ErrorResponse, { status: 401 });
-    }
-
-    const userId = userRes.user.id;
-
-    const { data: membership, error: memErr } = await supabaseAdmin
-      .from("user_organizations")
-      .select("role")
-      .eq("organization_id", body.organization_id)
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    if (memErr) {
-      return NextResponse.json({ error: memErr.message } satisfies ErrorResponse, { status: 400 });
-    }
-    if (!membership) {
-      return NextResponse.json({ error: "Forbidden" } satisfies ErrorResponse, { status: 403 });
-    }
-
-    const role = asRole((membership as UserOrgRow).role);
+    const { supabase, role: verifiedRole } = await getReportRequestContext(accessToken, body.organization_id);
+    const role = asRole(verifiedRole);
 
     // ---- Branding ----
-    const branding = await getBranding(body.organization_id, report_type);
+    const branding = await getBranding(supabase, body.organization_id, report_type);
 
     // ---- Query ----
     const statusFilter: Array<"active" | "archived"> = include_archived
       ? ["active", "archived"]
       : ["active"];
 
-    let q = supabaseAdmin
+    let q = supabase
       .from("members")
       .select(
         [
@@ -342,6 +319,6 @@ export async function POST(req: Request) {
     return NextResponse.json(resp);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return NextResponse.json({ error: msg } satisfies ErrorResponse, { status: 400 });
+    return NextResponse.json({ error: msg } satisfies ErrorResponse, { status: reportErrorStatus(e) });
   }
 }

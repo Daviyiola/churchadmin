@@ -83,6 +83,7 @@ type ImportIncomeRow = {
 
   member_match_query?: string;
   member_match_open?: boolean;
+  archived_member_matches_open?: boolean;
 };
 
 /* ===================== Shared helpers (File 2) ===================== */
@@ -100,6 +101,24 @@ function getErrorMessage(err: unknown): string {
   }
 
   return "Unknown error";
+}
+
+function downloadCsvTemplate(filename: string, rows: string[][]): void {
+  const escapeCell = (value: string) =>
+    /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+  const csv = rows
+    .map((row) => row.map(escapeCell).join(","))
+    .join("\r\n");
+  const url = URL.createObjectURL(
+    new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function fmtDate(isoOrDate: string) {
@@ -202,6 +221,13 @@ export default function IncomePage() {
   /* ---------- Draft items for selected batch ---------- */
   const [items, setItems] = useState<DraftItem[]>([]);
 
+  /* ---------- Entry filters for selected batch ---------- */
+  const [entryMemberQuery, setEntryMemberQuery] = useState("");
+  const [entryIncomeCatFilter, setEntryIncomeCatFilter] = useState("all");
+  const [entryMethodFilter, setEntryMethodFilter] = useState<
+    PaymentMethod | "all"
+  >("all");
+
   /* ---------- Global page load ---------- */
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -247,6 +273,8 @@ export default function IncomePage() {
   /* ---------- Typeahead: Member ---------- */
   const [memberQuery, setMemberQuery] = useState("");
   const [memberSuggestOpen, setMemberSuggestOpen] = useState(false);
+  const [archivedMemberMatchesOpen, setArchivedMemberMatchesOpen] =
+    useState(false);
   const clearedOnFocusRef = useRef(false);
 
   /* ---------- Typeahead: Income category ---------- */
@@ -294,22 +322,42 @@ export default function IncomePage() {
     return map;
   }, [members]);
 
+  const activeMembers = useMemo(
+    () => members.filter((member) => member.status === "active"),
+    [members],
+  );
+
+  const archivedMembers = useMemo(
+    () => members.filter((member) => member.status === "archived"),
+    [members],
+  );
+
   const memberIdByLabel = useMemo(() => {
     const map = new Map<string, string>();
-    for (const m of members)
+    for (const m of activeMembers)
       map.set(`${m.first_name} ${m.last_name}`.toLowerCase(), m.id);
     return map;
-  }, [members]);
+  }, [activeMembers]);
 
   const filteredMembers = useMemo(() => {
     const needle = memberQuery.trim().toLowerCase();
-    if (!needle) return members.slice(0, 8);
-    return members
+    if (!needle) return activeMembers.slice(0, 8);
+    return activeMembers
       .filter((m) =>
         `${m.first_name} ${m.last_name}`.toLowerCase().includes(needle),
       )
       .slice(0, 8);
-  }, [memberQuery, members]);
+  }, [memberQuery, activeMembers]);
+
+  const filteredArchivedMembers = useMemo(() => {
+    const needle = memberQuery.trim().toLowerCase();
+    if (!needle) return [];
+    return archivedMembers.filter((member) =>
+      `${member.first_name} ${member.last_name}`
+        .toLowerCase()
+        .includes(needle),
+    );
+  }, [memberQuery, archivedMembers]);
 
   const exactMemberMatchId = useMemo(() => {
     const id = memberIdByLabel.get(memberQuery.trim().toLowerCase());
@@ -354,6 +402,48 @@ export default function IncomePage() {
     for (const c of incomeCats) map.set(c.id, c.name);
     return map;
   }, [incomeCats]);
+
+  const filteredItems = useMemo(() => {
+    const memberQuery = entryMemberQuery.trim().toLowerCase();
+
+    return items.filter((item) => {
+      if (
+        memberQuery &&
+        !(memberNameById.get(item.member_id) ?? "")
+          .toLowerCase()
+          .includes(memberQuery)
+      )
+        return false;
+      if (
+        entryIncomeCatFilter !== "all" &&
+        item.income_category_id !== entryIncomeCatFilter
+      )
+        return false;
+      if (
+        entryMethodFilter !== "all" &&
+        item.payment_method !== entryMethodFilter
+      )
+        return false;
+      return true;
+    });
+  }, [
+    items,
+    entryMemberQuery,
+    entryIncomeCatFilter,
+    entryMethodFilter,
+    memberNameById,
+  ]);
+
+  const filteredItemsTotalCents = useMemo(
+    () => filteredItems.reduce((sum, item) => sum + item.amount_cents, 0),
+    [filteredItems],
+  );
+
+  const clearEntryFilters = useCallback(() => {
+    setEntryMemberQuery("");
+    setEntryIncomeCatFilter("all");
+    setEntryMethodFilter("all");
+  }, []);
 
   const [importOpen, setImportOpen] = useState(false);
   const [importStep, setImportStep] = useState<ImportStep>("upload");
@@ -850,7 +940,7 @@ export default function IncomePage() {
         .from("members")
         .select("id,first_name,last_name,status,gender,age_group,segment")
         .eq("org_id", orgId)
-        .eq("status", "active")
+        .in("status", ["active", "archived"])
         .eq("membership_stage", "member")
         .order("last_name", { ascending: true })
         .order("first_name", { ascending: true }),
@@ -1127,6 +1217,7 @@ export default function IncomePage() {
     setMemberId("");
     setMemberQuery("");
     setMemberSuggestOpen(false);
+    setArchivedMemberMatchesOpen(false);
 
     setIncomeCategoryId("");
     setIncomeCatQuery("");
@@ -1623,6 +1714,14 @@ export default function IncomePage() {
                       <>
                         <button
                           className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                          onClick={clearEntryFilters}
+                          title="Clear entry filters"
+                        >
+                          Clear filters
+                        </button>
+
+                        <button
+                          className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
                           onClick={openAddItem}
                         >
                           Add line
@@ -1677,6 +1776,68 @@ export default function IncomePage() {
                     : "This batch is published and locked. Add a new draft for missing people, or post a negative adjustment for corrections."}
                 </div>
 
+                {/* Entry filters */}
+                <div className="mt-4 rounded-2xl border bg-slate-50 p-4">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <div>
+                      <div className="mb-1 text-xs font-semibold text-slate-600">
+                        Member
+                      </div>
+                      <input
+                        className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        value={entryMemberQuery}
+                        onChange={(e) => setEntryMemberQuery(e.target.value)}
+                        placeholder="Type a name…"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="mb-1 text-xs font-semibold text-slate-600">
+                        Income category
+                      </div>
+                      <select
+                        className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        value={entryIncomeCatFilter}
+                        onChange={(e) =>
+                          setEntryIncomeCatFilter(e.target.value)
+                        }
+                      >
+                        <option value="all">All categories</option>
+                        {incomeCats.map((category) => (
+                          <option key={category.id} value={category.id}>
+                            {category.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <div className="mb-1 text-xs font-semibold text-slate-600">
+                        Method
+                      </div>
+                      <select
+                        className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        value={entryMethodFilter}
+                        onChange={(e) =>
+                          setEntryMethodFilter(
+                            e.target.value as PaymentMethod | "all",
+                          )
+                        }
+                      >
+                        <option value="all">All methods</option>
+                        <option value="cash">Cash</option>
+                        <option value="cheque">Cheque</option>
+                        <option value="online">Online</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 text-xs text-slate-600">
+                    {filteredItems.length} items shown • Total{" "}
+                    {formatMoney(filteredItemsTotalCents)}
+                  </div>
+                </div>
+
                 {/* Items table */}
                 <div className="mt-4 rounded-3xl border bg-white overflow-hidden">
                   <FloatingXScroll forceShow={true} onlyWhenOverflow={false}>
@@ -1690,13 +1851,15 @@ export default function IncomePage() {
                         <div className="col-span-3 text-right">Actions</div>
                       </div>
 
-                      {items.length === 0 ? (
+                      {filteredItems.length === 0 ? (
                         <div className="p-6 text-sm text-slate-600">
-                          No items in this batch yet.
+                          {items.length === 0
+                            ? "No items in this batch yet."
+                            : "No items match your filters."}
                         </div>
                       ) : (
                         <div className="divide-y">
-                          {items.map((it) => (
+                          {filteredItems.map((it) => (
                             <div
                               key={it.id}
                               className="grid grid-cols-12 items-start px-5 py-4 text-sm"
@@ -1892,14 +2055,15 @@ export default function IncomePage() {
                           clearedOnFocusRef.current = true;
                           setMemberQuery("");
                           setMemberId("");
+                          setArchivedMemberMatchesOpen(false);
                           setItemErr("");
                         }
                       }}
                       onBlur={() => {
-                        window.setTimeout(
-                          () => setMemberSuggestOpen(false),
-                          120,
-                        );
+                        window.setTimeout(() => {
+                          setMemberSuggestOpen(false);
+                          setArchivedMemberMatchesOpen(false);
+                        }, 120);
                         clearedOnFocusRef.current = false;
                       }}
                       onChange={(e) => {
@@ -1910,6 +2074,7 @@ export default function IncomePage() {
                         const id = memberIdByLabel.get(v.trim().toLowerCase());
                         setMemberId(id ?? "");
                         setMemberSuggestOpen(true);
+                        setArchivedMemberMatchesOpen(false);
                       }}
                       placeholder="Type a name…"
                     />
@@ -1933,6 +2098,7 @@ export default function IncomePage() {
                                   setMemberId(m.id);
                                   setMemberQuery(label);
                                   setMemberSuggestOpen(false);
+                                  setArchivedMemberMatchesOpen(false);
                                   setItemErr("");
                                 }}
                               >
@@ -1941,6 +2107,55 @@ export default function IncomePage() {
                             );
                           })
                         )}
+
+                        {filteredArchivedMembers.length > 0 ? (
+                          <div className="border-t">
+                            <button
+                              type="button"
+                              className="flex w-full items-center justify-between px-4 py-2 text-left text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() =>
+                                setArchivedMemberMatchesOpen((open) => !open)
+                              }
+                            >
+                              <span>
+                                {filteredArchivedMembers.length} archived{" "}
+                                {filteredArchivedMembers.length === 1
+                                  ? "member"
+                                  : "members"}{" "}
+                                found
+                              </span>
+                              <span>
+                                {archivedMemberMatchesOpen ? "Hide" : "Show"}
+                              </span>
+                            </button>
+                            {archivedMemberMatchesOpen
+                              ? filteredArchivedMembers.map((member) => {
+                                  const label = `${member.first_name} ${member.last_name}`;
+                                  return (
+                                    <button
+                                      type="button"
+                                      key={member.id}
+                                      className="flex w-full items-center justify-between px-4 py-2 text-left text-sm hover:bg-slate-50"
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={() => {
+                                        setMemberId(member.id);
+                                        setMemberQuery(label);
+                                        setMemberSuggestOpen(false);
+                                        setArchivedMemberMatchesOpen(false);
+                                        setItemErr("");
+                                      }}
+                                    >
+                                      <span>{label}</span>
+                                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                                        Archived
+                                      </span>
+                                    </button>
+                                  );
+                                })
+                              : null}
+                          </div>
+                        ) : null}
 
                         {showAddMemberRow ? (
                           <div className="border-t">
@@ -2482,6 +2697,37 @@ export default function IncomePage() {
                         >
                           <span>Choose CSV file</span>
                         </label>
+                        <button
+                          type="button"
+                          className="mt-2 inline-flex w-full items-center justify-center rounded-2xl border bg-white px-4 py-3 text-sm font-semibold transition hover:border-slate-300 hover:bg-slate-50 active:scale-[0.99]"
+                          onClick={() =>
+                            downloadCsvTemplate("income-import-template.csv", [
+                              [
+                                "member",
+                                "category",
+                                "amount",
+                                "method",
+                                "cheque_number",
+                              ],
+                              [
+                                "Example Member One",
+                                "Example Tithe",
+                                "120.50",
+                                "cash",
+                                "",
+                              ],
+                              [
+                                "Example Member Two",
+                                "Example Offering",
+                                "85.00",
+                                "online",
+                                "",
+                              ],
+                            ])
+                          }
+                        >
+                          Download CSV template
+                        </button>
                       </div>
                     </div>
 
@@ -2764,6 +3010,8 @@ export default function IncomePage() {
                                             window.setTimeout(() => {
                                               patchImportRowLocal(r.id, {
                                                 member_match_open: false,
+                                                archived_member_matches_open:
+                                                  false,
                                               });
                                             }, 120);
                                           }}
@@ -2773,6 +3021,8 @@ export default function IncomePage() {
                                             patchImportRowLocal(r.id, {
                                               member_match_query: v,
                                               member_match_open: true,
+                                              archived_member_matches_open:
+                                                false,
                                             });
 
                                             // auto-set member_id only on exact match
@@ -2797,14 +3047,22 @@ export default function IncomePage() {
                                                 .toLowerCase();
 
                                               const shown = !needle
-                                                ? members.slice(0, 8)
-                                                : members
+                                                ? activeMembers.slice(0, 8)
+                                                : activeMembers
                                                     .filter((m) =>
                                                       `${m.first_name} ${m.last_name}`
                                                         .toLowerCase()
                                                         .includes(needle),
                                                     )
                                                     .slice(0, 8);
+
+                                              const archivedMatches = needle
+                                                ? archivedMembers.filter((m) =>
+                                                    `${m.first_name} ${m.last_name}`
+                                                      .toLowerCase()
+                                                      .includes(needle),
+                                                  )
+                                                : [];
 
                                               const exactId = needle
                                                 ? (memberIdByLabel.get(
@@ -2842,6 +3100,8 @@ export default function IncomePage() {
                                                                 member_match_query:
                                                                   label,
                                                                 member_match_open: false,
+                                                                archived_member_matches_open:
+                                                                  false,
                                                               },
                                                             );
                                                           }}
@@ -2851,6 +3111,84 @@ export default function IncomePage() {
                                                       );
                                                     })
                                                   )}
+
+                                                  {archivedMatches.length >
+                                                  0 ? (
+                                                    <div className="border-t">
+                                                      <button
+                                                        type="button"
+                                                        className="flex w-full items-center justify-between px-4 py-2 text-left text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                                                        onMouseDown={(e) =>
+                                                          e.preventDefault()
+                                                        }
+                                                        onClick={() =>
+                                                          patchImportRowLocal(
+                                                            r.id,
+                                                            {
+                                                              archived_member_matches_open:
+                                                                !r.archived_member_matches_open,
+                                                            },
+                                                          )
+                                                        }
+                                                      >
+                                                        <span>
+                                                          {archivedMatches.length}{" "}
+                                                          archived{" "}
+                                                          {archivedMatches.length ===
+                                                          1
+                                                            ? "member"
+                                                            : "members"}{" "}
+                                                          found
+                                                        </span>
+                                                        <span>
+                                                          {r.archived_member_matches_open
+                                                            ? "Hide"
+                                                            : "Show"}
+                                                        </span>
+                                                      </button>
+                                                      {r.archived_member_matches_open
+                                                        ? archivedMatches.map(
+                                                            (member) => {
+                                                              const label = `${member.first_name} ${member.last_name}`;
+                                                              return (
+                                                                <button
+                                                                  type="button"
+                                                                  key={member.id}
+                                                                  className="flex w-full items-center justify-between px-4 py-2 text-left text-sm hover:bg-slate-50"
+                                                                  onMouseDown={(
+                                                                    e,
+                                                                  ) =>
+                                                                    e.preventDefault()
+                                                                  }
+                                                                  onClick={() =>
+                                                                    patchImportRowLocal(
+                                                                      r.id,
+                                                                      {
+                                                                        member_id:
+                                                                          member.id,
+                                                                        member_match_query:
+                                                                          label,
+                                                                        member_match_open:
+                                                                          false,
+                                                                        archived_member_matches_open:
+                                                                          false,
+                                                                      },
+                                                                    )
+                                                                  }
+                                                                >
+                                                                  <span>
+                                                                    {label}
+                                                                  </span>
+                                                                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                                                                    Archived
+                                                                  </span>
+                                                                </button>
+                                                              );
+                                                            },
+                                                          )
+                                                        : null}
+                                                    </div>
+                                                  ) : null}
 
                                                   {showAddMemberRow ? (
                                                     <div className="border-t">

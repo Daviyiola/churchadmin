@@ -9,6 +9,10 @@ import { applyOrgTheme } from "@/lib/theme/applyOrgTheme";
 import { hexToRgbTriplet, rgbTripletToHex } from "@/lib/utils/color";
 import { useRouter } from "next/navigation";
 import { setUnsaved } from "@/lib/unsaved";
+import {
+  friendlyTimezoneName,
+  timezoneOptions,
+} from "@/lib/timezones";
 
 function fmtDate(iso: string) {
   try {
@@ -48,7 +52,11 @@ type SettingsRow = {
   report_subheader_text: string | null;
   report_banner_bg_rgb: string | null;
   report_banner_text_rgb: string | null;
+  timezone_name: string | null;
+  timezone_confirmed: boolean;
 };
+
+const TIMEZONE_OPTIONS = timezoneOptions();
 
 export default function OrgSettingsPage() {
   const orgId = getActiveOrgId();
@@ -81,6 +89,7 @@ export default function OrgSettingsPage() {
 
   const [bannerBgHex, setBannerBgHex] = useState("#0f172a"); // slate-900-ish
   const [bannerTextHex, setBannerTextHex] = useState("#ffffff");
+  const [timezone, setTimezone] = useState("");
 
   const [saving, setSaving] = useState(false);
 
@@ -116,7 +125,8 @@ export default function OrgSettingsPage() {
       reportHeader !== (saved.report_header_text ?? "") ||
       reportSubheader !== (saved.report_subheader_text ?? "") ||
       bannerBgHex.toLowerCase() !== savedBannerBgHex.toLowerCase() ||
-      bannerTextHex.toLowerCase() !== savedBannerTextHex.toLowerCase()
+      bannerTextHex.toLowerCase() !== savedBannerTextHex.toLowerCase() ||
+      timezone !== (saved.timezone_name ?? "")
     );
   }, [
     saved,
@@ -128,6 +138,7 @@ export default function OrgSettingsPage() {
     reportSubheader,
     bannerBgHex,
     bannerTextHex,
+    timezone,
   ]);
 
   useEffect(() => {
@@ -170,7 +181,7 @@ export default function OrgSettingsPage() {
       const { data: setRow, error: setErr } = await supabase
         .from("organization_settings")
         .select(
-          "logo_path, use_default_logo, primary_rgb, report_header_text, report_subheader_text, report_banner_bg_rgb, report_banner_text_rgb",
+          "logo_path, use_default_logo, primary_rgb, report_header_text, report_subheader_text, report_banner_bg_rgb, report_banner_text_rgb, timezone_name, timezone_confirmed",
         )
         .eq("organization_id", orgId)
         .maybeSingle();
@@ -195,6 +206,8 @@ export default function OrgSettingsPage() {
         report_subheader_text: setRow?.report_subheader_text ?? null,
         report_banner_bg_rgb: setRow?.report_banner_bg_rgb ?? null,
         report_banner_text_rgb: setRow?.report_banner_text_rgb ?? null,
+        timezone_name: setRow?.timezone_name ?? null,
+        timezone_confirmed: Boolean(setRow?.timezone_confirmed),
       };
 
       setSaved(normalized);
@@ -205,6 +218,7 @@ export default function OrgSettingsPage() {
 
       setReportHeader(normalized.report_header_text ?? "");
       setReportSubheader(normalized.report_subheader_text ?? "");
+      setTimezone(normalized.timezone_name ?? "");
 
       const hex = rgbTripletToHex(normalized.primary_rgb);
       setPrimaryHex(hex ?? "#2f5e85");
@@ -241,7 +255,6 @@ export default function OrgSettingsPage() {
       // revert to saved on leaving page
       applyOrgTheme({ primary_rgb: saved?.primary_rgb ?? null });
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saved?.primary_rgb]);
 
   async function handlePickFile(file: File | null) {
@@ -335,6 +348,8 @@ export default function OrgSettingsPage() {
           : null,
         report_banner_bg_rgb: bannerBgTriplet,
         report_banner_text_rgb: bannerTextTriplet,
+        timezone_name: timezone || null,
+        timezone_confirmed: Boolean(timezone),
       };
 
       const { error: upErr } = await supabase
@@ -347,8 +362,12 @@ export default function OrgSettingsPage() {
           report_subheader_text: next.report_subheader_text,
           report_banner_bg_rgb: next.report_banner_bg_rgb,
           report_banner_text_rgb: next.report_banner_text_rgb,
+          timezone_name: next.timezone_name,
+          timezone_confirmed: next.timezone_confirmed,
         })
         .eq("organization_id", orgId);
+
+      if (upErr) throw new Error(upErr.message);
 
       setSaved(next);
       setLogoPath(next.logo_path);
@@ -388,6 +407,7 @@ export default function OrgSettingsPage() {
 
     setReportHeader(saved.report_header_text ?? "");
     setReportSubheader(saved.report_subheader_text ?? "");
+    setTimezone(saved.timezone_name ?? "");
 
     setBannerBgHex(rgbTripletToHex(saved.report_banner_bg_rgb) ?? "#0f172a");
     setBannerTextHex(
@@ -584,6 +604,38 @@ export default function OrgSettingsPage() {
                       Preview
                     </div>
                   </div>
+                </div>
+              </div>
+
+              {/* Regional preferences */}
+              <div className="px-5 py-4">
+                <div className="text-lg font-semibold">Regional preferences</div>
+                <div className="mt-1 text-sm text-slate-600">
+                  Used for organization dates, reports, schedules, and time-sensitive features.
+                </div>
+
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <label className="text-sm">
+                    <span className="text-xs font-semibold text-slate-600">Timezone</span>
+                    <select
+                      value={timezone}
+                      onChange={(event) => setTimezone(event.target.value)}
+                      disabled={!canEdit}
+                      className="mt-1 w-full rounded-2xl border bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100"
+                    >
+                      <option value="">Select a timezone</option>
+                      {TIMEZONE_OPTIONS.map((value) => <option key={value} value={value}>{friendlyTimezoneName(value)}</option>)}
+                    </select>
+                    <span className="mt-1 block text-xs text-slate-500">Nikky uses this timezone when resolving dates such as today and this year. Changes here stay synchronized with Nikky Settings.</span>
+                  </label>
+
+                  <label className="text-sm">
+                    <span className="text-xs font-semibold text-slate-600">Currency</span>
+                    <select value="USD" disabled className="mt-1 w-full rounded-2xl border bg-slate-100 px-3 py-2 text-slate-700">
+                      <option value="USD">USD ($)</option>
+                    </select>
+                    <span className="mt-1 block text-xs text-slate-500">Additional currencies will be supported in a future update.</span>
+                  </label>
                 </div>
               </div>
 

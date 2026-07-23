@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 import FloatingXScroll from "@/components/FloatingXScroll";
@@ -9,6 +9,7 @@ type Role = "owner" | "admin" | "finance" | "viewer" | "member";
 type CategoryType = "income" | "expense" | "services";
 type PaymentMethod = "cash" | "cheque" | "online";
 type IncomeEntryType = "normal" | "adjustment" | "post_publication";
+type MemberAgeGroup = "1-12" | "13-17" | "18-35" | "36+";
 
 type CategoryRow = {
   id: string;
@@ -35,6 +36,10 @@ type PublishedBatch = {
   updated_at: string;
   posted_by: string | null;
   posted_at: string | null;
+  revision: number;
+  last_edited_at: string | null;
+  last_edited_by: string | null;
+  last_edited_by_email: string | null;
 };
 
 type IncomeEntry = {
@@ -70,6 +75,21 @@ type EntryEdit = {
   reason: string | null;
 };
 
+type BatchEdit = {
+  id: string;
+  revision: number;
+  old_service_category_id: string;
+  new_service_category_id: string;
+  old_service_name: string;
+  new_service_name: string;
+  old_session_date: string;
+  new_session_date: string;
+  edited_by: string;
+  edited_by_email: string | null;
+  edited_at: string;
+  reason: string;
+};
+
 function fmtDate(isoOrDate: string) {
   if (!isoOrDate) return "—";
   if (/^\d{4}-\d{2}-\d{2}$/.test(isoOrDate)) {
@@ -79,6 +99,12 @@ function fmtDate(isoOrDate: string) {
   const dt = new Date(isoOrDate);
   if (Number.isNaN(dt.getTime())) return isoOrDate;
   return dt.toLocaleDateString();
+}
+
+function fmtDateTime(iso: string) {
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return iso;
+  return dt.toLocaleString();
 }
 
 function formatMoney(cents: number) {
@@ -126,11 +152,26 @@ function toISODateInput(d: Date) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function isGender(value: string): value is "male" | "female" {
+  return value === "male" || value === "female";
+}
+
+function isMemberAgeGroup(value: string): value is MemberAgeGroup {
+  return (
+    value === "1-12" ||
+    value === "13-17" ||
+    value === "18-35" ||
+    value === "36+"
+  );
+}
+
 export default function IncomePublishedPage() {
   const orgId = getActiveOrgId();
 
   const [role, setRole] = useState<Role | null>(null);
   const isAdmin = role === "admin" || role === "owner";
+  const canEditBatch =
+    role === "finance" || role === "admin" || role === "owner";
 
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [incomeCats, setIncomeCats] = useState<CategoryRow[]>([]);
@@ -153,7 +194,7 @@ export default function IncomePublishedPage() {
   const [dateFrom, setDateFrom] = useState<string>(() => {
     // default last 30 days (nice usability)
     const d = new Date();
-    d.setDate(d.getDate() - 30);
+    d.setDate(d.getDate() - 90);
     return toISODateInput(d);
   });
   const [dateTo, setDateTo] = useState<string>(() =>
@@ -175,6 +216,21 @@ export default function IncomePublishedPage() {
   const [adjOpen, setAdjOpen] = useState(false);
   const [adjMemberQuery, setAdjMemberQuery] = useState("");
   const [adjMemberId, setAdjMemberId] = useState("");
+  const [adjMemberSuggestOpen, setAdjMemberSuggestOpen] = useState(false);
+  const [adjArchivedMemberMatchesOpen, setAdjArchivedMemberMatchesOpen] =
+    useState(false);
+  const adjMemberClearedOnFocusRef = useRef(false);
+  const [quickMemberOpen, setQuickMemberOpen] = useState(false);
+  const [quickMemberFirst, setQuickMemberFirst] = useState("");
+  const [quickMemberLast, setQuickMemberLast] = useState("");
+  const [quickMemberGender, setQuickMemberGender] = useState<
+    "male" | "female" | ""
+  >("");
+  const [quickMemberAgeGroup, setQuickMemberAgeGroup] = useState<
+    MemberAgeGroup | ""
+  >("");
+  const [quickMemberSaving, setQuickMemberSaving] = useState(false);
+  const [quickMemberErr, setQuickMemberErr] = useState("");
   const [adjIncomeCategoryId, setAdjIncomeCategoryId] = useState("");
   const [adjPaymentMethod, setAdjPaymentMethod] =
     useState<PaymentMethod>("cash");
@@ -193,11 +249,31 @@ export default function IncomePublishedPage() {
   const [editAmount, setEditAmount] = useState("");
   const [editReason, setEditReason] = useState("");
 
+  // Edit published batch metadata (finance/admin/owner)
+  const [batchEditOpen, setBatchEditOpen] = useState(false);
+  const [batchEditServiceId, setBatchEditServiceId] = useState("");
+  const [batchEditDate, setBatchEditDate] = useState("");
+  const [batchEditReason, setBatchEditReason] = useState("");
+  const [batchEditErr, setBatchEditErr] = useState("");
+  const [savingBatchEdit, setSavingBatchEdit] = useState(false);
+  const [batchEditHistory, setBatchEditHistory] = useState<BatchEdit[]>([]);
+  const [loadingBatchHistory, setLoadingBatchHistory] = useState(false);
+
   const memberLabelById = useMemo(() => {
     const map = new Map<string, string>();
     for (const m of members) map.set(m.id, `${m.first_name} ${m.last_name}`);
     return map;
   }, [members]);
+
+  const activeMembers = useMemo(
+    () => members.filter((member) => member.status === "active"),
+    [members],
+  );
+
+  const archivedMembers = useMemo(
+    () => members.filter((member) => member.status === "archived"),
+    [members],
+  );
 
   const memberIdByLabel = useMemo(() => {
     const map = new Map<string, string>();
@@ -205,6 +281,44 @@ export default function IncomePublishedPage() {
       map.set(`${m.first_name} ${m.last_name}`.toLowerCase(), m.id);
     return map;
   }, [members]);
+
+  const activeMemberIdByLabel = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const member of activeMembers)
+      map.set(
+        `${member.first_name} ${member.last_name}`.toLowerCase(),
+        member.id,
+      );
+    return map;
+  }, [activeMembers]);
+
+  const filteredAdjMembers = useMemo(() => {
+    const needle = adjMemberQuery.trim().toLowerCase();
+    if (!needle) return activeMembers.slice(0, 8);
+    return activeMembers
+      .filter((member) =>
+        `${member.first_name} ${member.last_name}`
+          .toLowerCase()
+          .includes(needle),
+      )
+      .slice(0, 8);
+  }, [adjMemberQuery, activeMembers]);
+
+  const filteredArchivedAdjMembers = useMemo(() => {
+    const needle = adjMemberQuery.trim().toLowerCase();
+    if (!needle) return [];
+    return archivedMembers.filter((member) =>
+      `${member.first_name} ${member.last_name}`
+        .toLowerCase()
+        .includes(needle),
+    );
+  }, [adjMemberQuery, archivedMembers]);
+
+  const showAddAdjMemberRow = useMemo(() => {
+    const query = adjMemberQuery.trim();
+    if (query.length < 2) return false;
+    return !activeMemberIdByLabel.has(query.toLowerCase());
+  }, [adjMemberQuery, activeMemberIdByLabel]);
 
   const serviceNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -232,7 +346,8 @@ export default function IncomePublishedPage() {
         .from("members")
         .select("id,first_name,last_name,status")
         .eq("org_id", orgId)
-        .eq("status", "active")
+        .in("status", ["active", "archived"])
+        .eq("membership_stage", "member")
         .order("last_name", { ascending: true })
         .order("first_name", { ascending: true }),
       supabase
@@ -245,7 +360,7 @@ export default function IncomePublishedPage() {
       supabase
         .from("income_draft_batches")
         .select(
-          "id,org_id,service_category_id,session_date,status,created_by,created_at,updated_at,posted_by,posted_at",
+          "id,org_id,service_category_id,session_date,status,created_by,created_at,updated_at,posted_by,posted_at,revision,last_edited_at,last_edited_by,last_edited_by_email",
         )
         .eq("org_id", orgId)
         .eq("status", "published")
@@ -328,6 +443,84 @@ export default function IncomePublishedPage() {
     setEditLog((data ?? []) as EntryEdit[]);
   }
 
+  async function loadBatchEditHistory(batchId: string) {
+    if (!orgId) return;
+    setLoadingBatchHistory(true);
+
+    const { data, error } = await supabase
+      .from("income_batch_edits")
+      .select(
+        "id,revision,old_service_category_id,new_service_category_id,old_service_name,new_service_name,old_session_date,new_session_date,edited_by,edited_by_email,edited_at,reason",
+      )
+      .eq("org_id", orgId)
+      .eq("batch_id", batchId)
+      .order("edited_at", { ascending: false });
+
+    setLoadingBatchHistory(false);
+    if (error) {
+      setBatchEditHistory([]);
+      setBatchEditErr(error.message);
+      return;
+    }
+
+    setBatchEditHistory((data ?? []) as BatchEdit[]);
+  }
+
+  function openBatchEdit() {
+    if (!selectedBatch || !canEditBatch) return;
+    setBatchEditServiceId(selectedBatch.service_category_id);
+    setBatchEditDate(selectedBatch.session_date);
+    setBatchEditReason("");
+    setBatchEditErr("");
+    setBatchEditHistory([]);
+    setBatchEditOpen(true);
+    void loadBatchEditHistory(selectedBatch.id);
+  }
+
+  async function saveBatchEdit() {
+    if (!selectedBatch || !canEditBatch) return;
+    if (!batchEditServiceId) {
+      setBatchEditErr("Select a service.");
+      return;
+    }
+    if (!batchEditDate) {
+      setBatchEditErr("Select a date.");
+      return;
+    }
+    if (!batchEditReason.trim()) {
+      setBatchEditErr("Reason is required.");
+      return;
+    }
+    if (
+      batchEditServiceId === selectedBatch.service_category_id &&
+      batchEditDate === selectedBatch.session_date
+    ) {
+      setBatchEditErr("Change the service or date before saving.");
+      return;
+    }
+
+    setSavingBatchEdit(true);
+    setBatchEditErr("");
+    const batchId = selectedBatch.id;
+
+    const { error } = await supabase.rpc("edit_published_income_batch", {
+      p_batch_id: batchId,
+      p_service_category_id: batchEditServiceId,
+      p_session_date: batchEditDate,
+      p_reason: batchEditReason.trim(),
+    });
+
+    if (error) {
+      setBatchEditErr(error.message);
+      setSavingBatchEdit(false);
+      return;
+    }
+
+    setSavingBatchEdit(false);
+    setBatchEditOpen(false);
+    await Promise.all([loadAll(), loadEntries(batchId)]);
+  }
+
   useEffect(() => {
     loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -408,15 +601,85 @@ export default function IncomePublishedPage() {
     [filteredEntries],
   );
 
+  const openQuickMemberFromQuery = () => {
+    const parts = adjMemberQuery.trim().split(/\s+/).filter(Boolean);
+    setQuickMemberFirst(parts[0] ?? "");
+    setQuickMemberLast(parts.slice(1).join(" "));
+    setQuickMemberGender("");
+    setQuickMemberAgeGroup("");
+    setQuickMemberErr("");
+    setAdjMemberSuggestOpen(false);
+    setAdjArchivedMemberMatchesOpen(false);
+    setQuickMemberOpen(true);
+  };
+
+  const saveQuickMember = async () => {
+    if (!orgId) return;
+
+    const firstName = quickMemberFirst.trim();
+    const lastName = quickMemberLast.trim();
+    if (!firstName || !lastName)
+      return setQuickMemberErr("First name and last name are required.");
+    if (!quickMemberGender || !isGender(quickMemberGender))
+      return setQuickMemberErr("Select gender.");
+    if (!quickMemberAgeGroup || !isMemberAgeGroup(quickMemberAgeGroup))
+      return setQuickMemberErr("Select age group.");
+
+    setQuickMemberSaving(true);
+    setQuickMemberErr("");
+
+    try {
+      const { data: sessionResult } = await supabase.auth.getSession();
+      const userId = sessionResult.session?.user?.id;
+      if (!userId) return setQuickMemberErr("Not signed in.");
+
+      const { data, error } = await supabase
+        .from("members")
+        .insert({
+          org_id: orgId,
+          first_name: firstName,
+          last_name: lastName,
+          status: "active",
+          gender: quickMemberGender,
+          age_group: quickMemberAgeGroup,
+          created_by: userId,
+        })
+        .select("id,first_name,last_name,status")
+        .single();
+
+      if (error) return setQuickMemberErr(error.message);
+
+      const newMember = data as MemberRow;
+      const label = `${newMember.first_name} ${newMember.last_name}`.trim();
+      setMembers((current) =>
+        [...current, newMember].sort((a, b) =>
+          `${a.last_name} ${a.first_name}`.localeCompare(
+            `${b.last_name} ${b.first_name}`,
+          ),
+        ),
+      );
+      setAdjMemberId(newMember.id);
+      setAdjMemberQuery(label);
+      setAdjMemberSuggestOpen(false);
+      setAdjArchivedMemberMatchesOpen(false);
+      setAdjErr("");
+      setQuickMemberOpen(false);
+    } finally {
+      setQuickMemberSaving(false);
+    }
+  };
+
   const openAdjustment = () => {
     if (!selectedBatch) return;
     if (!isAdmin) {
       setErr("Admin only.");
       return;
     }
-    const firstId = members[0]?.id ?? "";
-    setAdjMemberId(firstId);
-    setAdjMemberQuery(firstId ? (memberLabelById.get(firstId) ?? "") : "");
+    setAdjMemberId("");
+    setAdjMemberQuery("");
+    setAdjMemberSuggestOpen(false);
+    setAdjArchivedMemberMatchesOpen(false);
+    adjMemberClearedOnFocusRef.current = false;
     setAdjIncomeCategoryId(incomeCats[0]?.id ?? "");
     setAdjPaymentMethod("cash");
     setAdjChequeNumber("");
@@ -724,6 +987,23 @@ export default function IncomePublishedPage() {
                     </button>
 
                     <button
+                      className={`rounded-2xl border px-4 py-2 text-sm font-semibold ${
+                        !canEditBatch
+                          ? "bg-slate-100 text-slate-400"
+                          : "hover:bg-slate-50"
+                      }`}
+                      disabled={!canEditBatch}
+                      onClick={openBatchEdit}
+                      title={
+                        canEditBatch
+                          ? "Edit published batch service and date"
+                          : "Finance, admin, or owner only"
+                      }
+                    >
+                      Edit
+                    </button>
+
+                    <button
                       className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
                         !isAdmin
                           ? "bg-slate-300"
@@ -927,6 +1207,166 @@ export default function IncomePublishedPage() {
         </div>
       </div>
 
+      {batchEditOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-xl">
+            <div className="border-b px-6 py-4">
+              <div className="text-sm font-semibold">
+                Edit published income batch
+              </div>
+              <div className="text-xs text-slate-600">
+                Updates the batch and all of its published ledger entries.
+              </div>
+            </div>
+
+            <div className="space-y-4 overflow-auto px-6 py-6">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Service *
+                  </div>
+                  <select
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    value={batchEditServiceId}
+                    onChange={(e) => {
+                      setBatchEditServiceId(e.target.value);
+                      setBatchEditErr("");
+                    }}
+                  >
+                    <option value="">Select…</option>
+                    {serviceCats.map((service) => (
+                      <option key={service.id} value={service.id}>
+                        {service.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Date *
+                  </div>
+                  <input
+                    type="date"
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    value={batchEditDate}
+                    onChange={(e) => {
+                      setBatchEditDate(e.target.value);
+                      setBatchEditErr("");
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-600">
+                  Reason *
+                </div>
+                <input
+                  className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  value={batchEditReason}
+                  onChange={(e) => {
+                    setBatchEditReason(e.target.value);
+                    setBatchEditErr("");
+                  }}
+                  placeholder="Why is this published batch changing?"
+                />
+              </div>
+
+              {batchEditErr ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {batchEditErr}
+                </div>
+              ) : null}
+
+              <div className="rounded-2xl border bg-slate-50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-semibold">Revision history</div>
+                  <div className="text-xs text-slate-600">
+                    {batchEditHistory.length} revision
+                    {batchEditHistory.length === 1 ? "" : "s"}
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  {loadingBatchHistory ? (
+                    <div className="text-sm text-slate-600">
+                      Loading history…
+                    </div>
+                  ) : batchEditHistory.length === 0 ? (
+                    <div className="text-sm text-slate-600">
+                      No batch revisions yet.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {batchEditHistory.map((edit) => (
+                        <div
+                          key={edit.id}
+                          className="rounded-xl border bg-white p-3"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-xs font-semibold text-slate-700">
+                                {fmtDateTime(edit.edited_at)}
+                              </div>
+                              <div className="text-[11px] text-slate-500">
+                                Changed by {edit.edited_by_email ?? "Unknown editor"}
+                              </div>
+                            </div>
+                            <Pill>Rev {edit.revision}</Pill>
+                          </div>
+
+                          <div className="mt-2 space-y-1 text-sm text-slate-800">
+                            {edit.old_service_category_id !==
+                            edit.new_service_category_id ? (
+                              <div>
+                                Service: <b>{edit.old_service_name}</b> →{" "}
+                                <b>{edit.new_service_name}</b>
+                              </div>
+                            ) : null}
+                            {edit.old_session_date !== edit.new_session_date ? (
+                              <div>
+                                Date: <b>{fmtDate(edit.old_session_date)}</b> →{" "}
+                                <b>{fmtDate(edit.new_session_date)}</b>
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="mt-2 text-xs text-slate-600">
+                            Reason: {edit.reason}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
+              <button
+                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
+                onClick={() => setBatchEditOpen(false)}
+                disabled={savingBatchEdit}
+              >
+                Cancel
+              </button>
+              <button
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
+                  savingBatchEdit
+                    ? "bg-slate-300"
+                    : "bg-primary hover:bg-primary/85"
+                }`}
+                onClick={saveBatchEdit}
+                disabled={savingBatchEdit}
+              >
+                {savingBatchEdit ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {editCatOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-xl max-h-[90vh] rounded-3xl bg-white shadow-xl flex flex-col overflow-hidden">
@@ -1129,32 +1569,145 @@ export default function IncomePublishedPage() {
                   <div className="mb-1 text-xs font-semibold text-slate-600">
                     Member *
                   </div>
-                  <input
-                    list="members-dl-pub-adj"
-                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                    value={adjMemberQuery}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setAdjMemberQuery(v);
-                      setAdjErr("");
-                      const id = memberIdByLabel.get(v.trim().toLowerCase());
-                      setAdjMemberId(id ?? "");
-                    }}
-                    placeholder="Type a name…"
-                  />
-                  <datalist id="members-dl-pub-adj">
-                    {members.map((m) => (
-                      <option
-                        key={m.id}
-                        value={`${m.first_name} ${m.last_name}`}
-                      />
-                    ))}
-                  </datalist>
-                  {!adjMemberId && adjMemberQuery.trim() ? (
-                    <div className="mt-1 text-xs text-amber-700">
-                      Select a valid member from suggestions.
-                    </div>
-                  ) : null}
+                  <div className="relative">
+                    <input
+                      className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                      value={adjMemberQuery}
+                      onFocus={() => {
+                        setAdjMemberSuggestOpen(true);
+                        if (!adjMemberClearedOnFocusRef.current) {
+                          adjMemberClearedOnFocusRef.current = true;
+                          setAdjMemberQuery("");
+                          setAdjMemberId("");
+                          setAdjArchivedMemberMatchesOpen(false);
+                          setAdjErr("");
+                        }
+                      }}
+                      onBlur={() => {
+                        window.setTimeout(() => {
+                          setAdjMemberSuggestOpen(false);
+                          setAdjArchivedMemberMatchesOpen(false);
+                        }, 120);
+                        adjMemberClearedOnFocusRef.current = false;
+                      }}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setAdjMemberQuery(value);
+                        setAdjErr("");
+                        const id = activeMemberIdByLabel.get(
+                          value.trim().toLowerCase(),
+                        );
+                        setAdjMemberId(id ?? "");
+                        setAdjMemberSuggestOpen(true);
+                        setAdjArchivedMemberMatchesOpen(false);
+                      }}
+                      placeholder="Type a name…"
+                    />
+
+                    {adjMemberSuggestOpen ? (
+                      <div className="absolute z-50 mt-2 max-h-56 w-full overflow-auto rounded-2xl border bg-white shadow-lg">
+                        {filteredAdjMembers.length === 0 ? (
+                          <div className="px-4 py-3 text-sm text-slate-600">
+                            No matches.
+                          </div>
+                        ) : (
+                          filteredAdjMembers.map((member) => {
+                            const label = `${member.first_name} ${member.last_name}`;
+                            return (
+                              <button
+                                type="button"
+                                key={member.id}
+                                className="block w-full px-4 py-2 text-left text-sm hover:bg-slate-50"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  setAdjMemberId(member.id);
+                                  setAdjMemberQuery(label);
+                                  setAdjMemberSuggestOpen(false);
+                                  setAdjArchivedMemberMatchesOpen(false);
+                                  setAdjErr("");
+                                }}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })
+                        )}
+
+                        {filteredArchivedAdjMembers.length > 0 ? (
+                          <div className="border-t">
+                            <button
+                              type="button"
+                              className="flex w-full items-center justify-between px-4 py-2 text-left text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() =>
+                                setAdjArchivedMemberMatchesOpen(
+                                  (open) => !open,
+                                )
+                              }
+                            >
+                              <span>
+                                {filteredArchivedAdjMembers.length} archived{" "}
+                                {filteredArchivedAdjMembers.length === 1
+                                  ? "member"
+                                  : "members"}{" "}
+                                found
+                              </span>
+                              <span>
+                                {adjArchivedMemberMatchesOpen ? "Hide" : "Show"}
+                              </span>
+                            </button>
+                            {adjArchivedMemberMatchesOpen
+                              ? filteredArchivedAdjMembers.map((member) => {
+                                  const label = `${member.first_name} ${member.last_name}`;
+                                  return (
+                                    <button
+                                      type="button"
+                                      key={member.id}
+                                      className="flex w-full items-center justify-between px-4 py-2 text-left text-sm hover:bg-slate-50"
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={() => {
+                                        setAdjMemberId(member.id);
+                                        setAdjMemberQuery(label);
+                                        setAdjMemberSuggestOpen(false);
+                                        setAdjArchivedMemberMatchesOpen(false);
+                                        setAdjErr("");
+                                      }}
+                                    >
+                                      <span>{label}</span>
+                                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                                        Archived
+                                      </span>
+                                    </button>
+                                  );
+                                })
+                              : null}
+                          </div>
+                        ) : null}
+
+                        {showAddAdjMemberRow ? (
+                          <div className="border-t">
+                            <button
+                              type="button"
+                              className="block w-full px-4 py-2 text-left text-sm font-semibold text-primary hover:bg-slate-50"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={openQuickMemberFromQuery}
+                            >
+                              + Add new member
+                              {adjMemberQuery.trim()
+                                ? `: “${adjMemberQuery.trim()}”`
+                                : ""}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {!adjMemberId && adjMemberQuery.trim() ? (
+                      <div className="mt-1 text-xs text-amber-700">
+                        Select a valid member (or add a new one).
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div>
@@ -1277,6 +1830,123 @@ export default function IncomePublishedPage() {
                 onClick={postAdjustment}
               >
                 {postingAdj ? "Posting…" : "Post entry"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {quickMemberOpen ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
+          onClick={() => {
+            if (!quickMemberSaving) setQuickMemberOpen(false);
+          }}
+        >
+          <div
+            className="w-full max-w-2xl rounded-3xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b px-6 py-4">
+              <div className="text-sm font-semibold">Add member</div>
+              <div className="text-xs text-slate-600">
+                Quick add without leaving the post-publication entry.
+              </div>
+            </div>
+
+            <div className="space-y-4 px-6 py-6">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    First name *
+                  </div>
+                  <input
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                    value={quickMemberFirst}
+                    onChange={(e) => setQuickMemberFirst(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Last name *
+                  </div>
+                  <input
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                    value={quickMemberLast}
+                    onChange={(e) => setQuickMemberLast(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Gender *
+                  </div>
+                  <select
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                    value={quickMemberGender}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      if (value === "" || isGender(value))
+                        setQuickMemberGender(value);
+                    }}
+                  >
+                    <option value="">Select…</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                  </select>
+                </div>
+
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Age group *
+                  </div>
+                  <select
+                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                    value={quickMemberAgeGroup}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      if (value === "" || isMemberAgeGroup(value))
+                        setQuickMemberAgeGroup(value);
+                    }}
+                  >
+                    <option value="">Select…</option>
+                    <option value="1-12">1 to 12</option>
+                    <option value="13-17">13 to 17</option>
+                    <option value="18-35">18 to 35</option>
+                    <option value="36+">36 and above</option>
+                  </select>
+                </div>
+              </div>
+
+              {quickMemberErr ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {quickMemberErr}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t px-6 py-4">
+              <button
+                type="button"
+                className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50 disabled:text-slate-400"
+                disabled={quickMemberSaving}
+                onClick={() => setQuickMemberOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
+                  quickMemberSaving
+                    ? "bg-slate-300"
+                    : "bg-primary hover:bg-primary/85"
+                }`}
+                disabled={quickMemberSaving}
+                onClick={() => void saveQuickMember()}
+              >
+                {quickMemberSaving ? "Saving…" : "Save member"}
               </button>
             </div>
           </div>

@@ -12,7 +12,7 @@ type AgeGroup = "1-12" | "13-17" | "18-35" | "36+";
 type UploadMode = "inline" | "attachment"; // API allows both, but this page will only use "inline"
 type PendingSendAction = "report_send";
 
-type PlanKey = "free" | "basic" | "growth" | "enterprise";
+type PlanKey = "free" | "basic" | "pro" | "enterprise";
 
 type UploadUiRow = {
   upload_id: string; // message_uploads.id
@@ -216,7 +216,7 @@ function isLimitsPayload(v: unknown): v is LimitsPayload {
     v.ok === true &&
     (v.plan === "free" ||
       v.plan === "basic" ||
-      v.plan === "growth" ||
+      v.plan === "pro" ||
       v.plan === "enterprise") &&
     typeof v.month_left === "number" &&
     typeof v.month_used === "number" &&

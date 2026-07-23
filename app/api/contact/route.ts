@@ -32,7 +32,7 @@ export async function POST(req: Request) {
     // Store to Supabase (recommended)
     // NOTE: create table public.contact_messages (I gave you the SQL earlier)
     try {
-      await supabaseAdmin
+      const { error: storageError } = await supabaseAdmin
         .from("contact_messages")
         .insert({
           name: cleanName,
@@ -46,6 +46,12 @@ export async function POST(req: Request) {
             req.headers.get("x-real-ip") ||
             null,
         });
+
+      if (storageError) {
+        console.error("Contact message storage failed", {
+          code: storageError.code,
+        });
+      }
     } catch {
       // Don't fail the whole request if DB insert fails
     }
@@ -104,7 +110,7 @@ export async function POST(req: Request) {
     });
 
     return NextResponse.json({ ok: true });
-  } catch (e) {
+  } catch {
     // Up to you:
     // - If you want to be strict for contact form UX, return 500
     // - If you want "always ok" behavior, return ok true

@@ -47,6 +47,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const navItems = useMemo(
     () => [
       { label: "Dashboard", href: "/app" },
+      ...(["owner", "admin", "finance"].includes(role ?? "")
+        ? [{ label: "Nikky (AI Assistant)", href: "/app/nikky" }]
+        : []),
       { label: "Income", href: "/app/income" },
       { label: "Expense", href: "/app/expense" },
       { label: "Attendance", href: "/app/attendance" },
@@ -56,7 +59,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       { label: "Reports", href: "/app/reports" },
       { label: "Settings", href: "/app/settings" },
     ],
-    [],
+    [role],
   );
 
   const check = useCallback(async () => {

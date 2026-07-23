@@ -9,6 +9,10 @@ import { launchBrowser } from "@/lib/server/pdf/launchBrowser";
 import type { RunMemberGivingBody, ErrorResponse } from "@/lib/reports/members/types";
 import { runMemberGivingReportFromToken } from "@/lib/server/reports/memberGiving";
 import { renderMemberGivingHtml } from "@/lib/server/reports/memberGivingHtml";
+import {
+  getBearerToken,
+  reportErrorStatus,
+} from "@/lib/server/reports/requestSupabase";
 
 type OkJson = {
   ok: true;
@@ -43,10 +47,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const authHeader = req.headers.get("authorization") || "";
-    const accessToken = authHeader.startsWith("Bearer ")
-      ? authHeader.slice("Bearer ".length)
-      : null;
+    const accessToken = getBearerToken(req);
 
     if (!accessToken) {
       return NextResponse.json(
@@ -95,7 +96,7 @@ export async function POST(req: Request) {
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Unknown error";
     return NextResponse.json({ error: msg } satisfies ErrorResponse, {
-      status: 400,
+      status: reportErrorStatus(e),
     });
   } finally {
     if (page) {

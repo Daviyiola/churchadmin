@@ -126,6 +126,20 @@ function toISODateInput(d: Date) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function getMonthDateRange(periodMonth: string) {
+  const [year, month] = periodMonth.split("-").map(Number);
+  if (!year || !month || month < 1 || month > 12) {
+    return { from: "", to: "" };
+  }
+
+  const monthText = String(month).padStart(2, "0");
+  const lastDay = new Date(year, month, 0).getDate();
+  return {
+    from: `${year}-${monthText}-01`,
+    to: `${year}-${monthText}-${String(lastDay).padStart(2, "0")}`,
+  };
+}
+
 export default function ExpensePublishedPage() {
   const orgId = getActiveOrgId();
 
@@ -172,14 +186,22 @@ export default function ExpensePublishedPage() {
     "all" | "normal" | "adjustment" | "post_publication"
   >("all");
 
-  const [dateFrom, setDateFrom] = useState<string>(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return toISODateInput(d);
-  });
-  const [dateTo, setDateTo] = useState<string>(() =>
-    toISODateInput(new Date()),
-  );
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+
+  const selectBatch = (batch: PublishedBatch | null) => {
+    setSelectedBatchId(batch?.id ?? null);
+
+    if (!batch) {
+      setDateFrom("");
+      setDateTo("");
+      return;
+    }
+
+    const range = getMonthDateRange(batch.period_month);
+    setDateFrom(range.from);
+    setDateTo(range.to);
+  };
 
   // Negative adjustment modal (admin only)
   const [adjOpen, setAdjOpen] = useState(false);
@@ -258,7 +280,7 @@ export default function ExpensePublishedPage() {
 
     const bs = (batchesRes.data ?? []) as PublishedBatch[];
     setBatches(bs);
-    if (!selectedBatchId && bs.length > 0) setSelectedBatchId(bs[0].id);
+    if (!selectedBatchId && bs.length > 0) selectBatch(bs[0]);
 
     setLoading(false);
   };
@@ -446,8 +468,8 @@ export default function ExpensePublishedPage() {
     const stillVisible = filteredBatches.some((b) => b.id === selectedBatchId);
     if (stillVisible) return;
 
-    if (filteredBatches.length > 0) setSelectedBatchId(filteredBatches[0].id);
-    else setSelectedBatchId(null);
+    if (filteredBatches.length > 0) selectBatch(filteredBatches[0]);
+    else selectBatch(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monthFrom, monthTo, batches]);
 
@@ -568,10 +590,11 @@ export default function ExpensePublishedPage() {
     setExpenseCatFilter("all");
     setMethodFilter("all");
     setEntryTypeFilter("all");
-    setDateFrom(
-      toISODateInput(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)),
-    );
-    setDateTo(toISODateInput(new Date()));
+    const range = selectedBatch
+      ? getMonthDateRange(selectedBatch.period_month)
+      : { from: "", to: "" };
+    setDateFrom(range.from);
+    setDateTo(range.to);
   };
 
   if (!orgId)
@@ -664,7 +687,7 @@ export default function ExpensePublishedPage() {
                   return (
                     <button
                       key={b.id}
-                      onClick={() => setSelectedBatchId(b.id)}
+                      onClick={() => selectBatch(b)}
                       className={`w-full rounded-2xl px-4 py-3 text-left text-sm ${
                         active ? "bg-primary text-white" : "hover:bg-slate-50"
                       }`}

@@ -2,6 +2,15 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  getBearerToken,
+  getReportRequestContext,
+  reportErrorStatus,
+  requireFinanceDateWindow,
+  requireReportRoles,
+  requireValidReportDateRange,
+} from "@/lib/server/reports/requestSupabase";
 import type {
   RunQuickReportBody,
   PaymentMethod,
@@ -10,8 +19,6 @@ import type {
   ExpenseReport,
   AttendanceReport,
 } from "@/lib/reports/quick/types";
-
-type Role = "owner" | "admin" | "finance" | "member";
 
 type OrgRow = { id: string; name: string };
 
@@ -25,8 +32,6 @@ type OrgSettingsRow = {
   report_banner_text_rgb: string | null;
 };
 
-type UserOrgRow = { role: string };
-
 type CategoryRow = { id: string; name: string; type: string; status: string };
 
 // Segments are stored in DB as: men/women/boys/girls
@@ -39,13 +44,6 @@ type MemberRow = {
   last_name: string;
   segment?: Segment; // for attendance detailed
 };
-
-function asRole(raw: unknown): Role {
-  const v = String(raw);
-  if (v === "owner" || v === "admin" || v === "finance" || v === "member")
-    return v;
-  return "member";
-}
 
 function isNonEmptyArray<T>(v: T[] | undefined | null): v is T[] {
   return Array.isArray(v) && v.length > 0;
@@ -79,8 +77,8 @@ function pickRecord<T extends Record<string, number>>(
   return out;
 }
 
-async function getCategoryNameMap(orgId: string) {
-  const { data, error } = await supabaseAdmin
+async function getCategoryNameMap(supabase: SupabaseClient, orgId: string) {
+  const { data, error } = await supabase
     .from("categories")
     .select("id,name,type,status")
     .eq("org_id", orgId);
@@ -94,8 +92,8 @@ async function getCategoryNameMap(orgId: string) {
   return map;
 }
 
-async function getBranding(orgId: string) {
-  const { data: org, error: orgErr } = await supabaseAdmin
+async function getBranding(supabase: SupabaseClient, orgId: string) {
+  const { data: org, error: orgErr } = await supabase
     .from("organizations")
     .select("id,name")
     .eq("id", orgId)
@@ -103,7 +101,7 @@ async function getBranding(orgId: string) {
 
   if (orgErr) throw new Error(orgErr.message);
 
-  const { data: s, error: sErr } = await supabaseAdmin
+  const { data: s, error: sErr } = await supabase
     .from("organization_settings")
     .select(
       "organization_id,logo_path,use_default_logo,report_header_text,report_subheader_text,report_banner_bg_rgb,report_banner_text_rgb",
@@ -153,43 +151,30 @@ export async function POST(req: Request) {
       );
     }
 
-    // --- Auth header ---
-    const authHeader = req.headers.get("authorization") || "";
-    const accessToken = authHeader.startsWith("Bearer ")
-      ? authHeader.slice("Bearer ".length)
-      : null;
+    const accessToken = getBearerToken(req);
 
     if (!accessToken) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // --- Validate user ---
-    const { data: userRes, error: userErr } =
-      await supabaseAdmin.auth.getUser(accessToken);
-    if (userErr || !userRes?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    requireValidReportDateRange(body.start_date, body.end_date);
+
+    const { supabase, role } = await getReportRequestContext(
+      accessToken,
+      body.organization_id,
+    );
+
+    if (body.mode === "income" || body.mode === "expense") {
+      requireReportRoles(role, ["owner", "admin", "finance"]);
+      requireFinanceDateWindow(role, body.start_date);
     }
 
-    const userId = userRes.user.id;
-
-    // --- Membership + role ---
-    const { data: membership, error: memErr } = await supabaseAdmin
-      .from("user_organizations")
-      .select("role")
-      .eq("organization_id", body.organization_id)
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    if (memErr)
-      return NextResponse.json({ error: memErr.message }, { status: 400 });
-    if (!membership)
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-
-    const role = asRole((membership as UserOrgRow).role);
-
     // Shared lookups
-    const categoryMap = await getCategoryNameMap(body.organization_id);
-    const branding = await getBranding(body.organization_id);
+    const categoryMap = await getCategoryNameMap(
+      supabase,
+      body.organization_id,
+    );
+    const branding = await getBranding(supabase, body.organization_id);
 
     const categoryNameById = new Map<string, string>();
     for (const c of categoryMap.values()) categoryNameById.set(c.id, c.name);
@@ -208,7 +193,7 @@ export async function POST(req: Request) {
         entry_type: "normal" | "adjustment";
       };
 
-      let q = supabaseAdmin
+      let q = supabase
         .from("income_entries")
         .select(
           "session_date,service_category_id,member_id,income_category_id,payment_method,amount_cents,entry_type",
@@ -236,7 +221,7 @@ export async function POST(req: Request) {
         : Array.from(new Set(entries.map((e) => e.income_category_id)));
 
       // Fetch member names
-      const { data: memRows, error: mem2Err } = await supabaseAdmin
+      const { data: memRows, error: mem2Err } = await supabase
         .from("members")
         .select("id,first_name,last_name")
         .eq("org_id", body.organization_id)
@@ -290,10 +275,8 @@ export async function POST(req: Request) {
       );
 
       const colTotals: Record<string, number> = {};
-      let grandTotal = 0;
 
       for (const r of rows) {
-        grandTotal += r.total;
         for (const c of columns) {
           colTotals[c.id] = (colTotals[c.id] ?? 0) + (r.values[c.id] ?? 0);
         }
@@ -355,7 +338,7 @@ export async function POST(req: Request) {
         entry_type: "normal" | "adjustment";
       };
 
-      let q = supabaseAdmin
+      let q = supabase
         .from("expense_entries")
         .select(
           "expense_date,expense_category_id,description,vendor,amount_cents,entry_type",
@@ -440,7 +423,7 @@ export async function POST(req: Request) {
         count: number;
       };
 
-      let q = supabaseAdmin
+      let q = supabase
         .from("attendance_entries")
         .select(
           "session_date,service_category_id,entry_source,member_id,segment,age_group,count",
@@ -543,7 +526,7 @@ export async function POST(req: Request) {
         return NextResponse.json(resp);
       }
 
-      const { data: memData, error: memErr } = await supabaseAdmin
+      const { data: memData, error: memErr } = await supabase
         .from("members")
         .select("id,first_name,last_name")
         .eq("org_id", body.organization_id)
@@ -638,6 +621,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unsupported mode." }, { status: 400 });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: msg }, { status: reportErrorStatus(e) });
   }
 }

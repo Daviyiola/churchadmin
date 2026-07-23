@@ -1,16 +1,18 @@
 // lib/server/reports/memberGiving.ts
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  getReportRequestContext,
+  requireReportRoles,
+  requireValidReportDateRange,
+} from "@/lib/server/reports/requestSupabase";
 import type {
   RunMemberGivingBody,
   MemberGivingReport,
-  ErrorResponse,
   Branding,
   PaymentMethod,
   MemberGivingMode,
 } from "@/lib/reports/members/types";
-
-type Role = "owner" | "admin" | "finance" | "member";
-type UserOrgRow = { role: string };
 
 type OrgSettingsRow = {
   organization_id: string;
@@ -39,12 +41,6 @@ type IncomeEntryRow = {
   entry_type: "normal" | "adjustment";
 };
 
-function asRole(raw: unknown): Role {
-  const v = String(raw);
-  if (v === "owner" || v === "admin" || v === "finance" || v === "member") return v;
-  return "member";
-}
-
 function isNonEmptyArray<T>(v: T[] | undefined | null): v is T[] {
   return Array.isArray(v) && v.length > 0;
 }
@@ -67,8 +63,11 @@ function memberName(m: MemberRow): string {
   return base || "Unknown member";
 }
 
-async function getBranding(orgId: string): Promise<Branding> {
-  const { data: org, error: orgErr } = await supabaseAdmin
+async function getBranding(
+  supabase: SupabaseClient,
+  orgId: string,
+): Promise<Branding> {
+  const { data: org, error: orgErr } = await supabase
     .from("organizations")
     .select("id,name")
     .eq("id", orgId)
@@ -76,7 +75,7 @@ async function getBranding(orgId: string): Promise<Branding> {
 
   if (orgErr) throw new Error(orgErr.message);
 
-  const { data: s, error: sErr } = await supabaseAdmin
+  const { data: s, error: sErr } = await supabase
     .from("organization_settings")
     .select("organization_id,logo_path,use_default_logo,report_header_text,report_subheader_text")
     .eq("organization_id", orgId)
@@ -105,8 +104,11 @@ async function getBranding(orgId: string): Promise<Branding> {
   };
 }
 
-async function getIncomeCategoryNameMap(orgId: string) {
-  const { data, error } = await supabaseAdmin
+async function getIncomeCategoryNameMap(
+  supabase: SupabaseClient,
+  orgId: string,
+) {
+  const { data, error } = await supabase
     .from("categories")
     .select("id,name,type,status")
     .eq("org_id", orgId)
@@ -125,30 +127,21 @@ export async function runMemberGivingReportFromToken(
   body: RunMemberGivingBody,
   accessToken: string,
 ): Promise<MemberGivingReport> {
-  // --- Validate user ---
-  const { data: userRes, error: userErr } = await supabaseAdmin.auth.getUser(accessToken);
-  if (userErr || !userRes?.user) throw new Error("Unauthorized");
-  const userId = userRes.user.id;
+  requireValidReportDateRange(body.start_date, body.end_date);
 
-  // --- Membership + role ---
-  const { data: membership, error: memErr } = await supabaseAdmin
-    .from("user_organizations")
-    .select("role")
-    .eq("organization_id", body.organization_id)
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (memErr) throw new Error(memErr.message);
-  if (!membership) throw new Error("Forbidden");
-
-  const role = asRole((membership as unknown as UserOrgRow).role);
+  const { supabase, role } = await getReportRequestContext(
+    accessToken,
+    body.organization_id,
+  );
+  requireReportRoles(role, ["owner", "admin"]);
 
   // --- Member ---
-  const { data: memRow, error: mem2Err } = await supabaseAdmin
+  const { data: memRow, error: mem2Err } = await supabase
     .from("members")
     .select("id,first_name,last_name")
     .eq("org_id", body.organization_id)
     .eq("id", body.member_id)
+    .in("status", ["active", "archived"])
     .maybeSingle();
 
   if (mem2Err) throw new Error(mem2Err.message);
@@ -156,11 +149,14 @@ export async function runMemberGivingReportFromToken(
 
   const member = memRow as unknown as MemberRow;
 
-  const branding = await getBranding(body.organization_id);
-  const categoryNameById = await getIncomeCategoryNameMap(body.organization_id);
+  const branding = await getBranding(supabase, body.organization_id);
+  const categoryNameById = await getIncomeCategoryNameMap(
+    supabase,
+    body.organization_id,
+  );
 
   // --- Income entries for this member ---
-  let q = supabaseAdmin
+  let q = supabase
     .from("income_entries")
     .select("session_date,service_category_id,member_id,income_category_id,payment_method,amount_cents,entry_type")
     .eq("org_id", body.organization_id)

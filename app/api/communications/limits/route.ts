@@ -1,10 +1,7 @@
 import { NextResponse } from "next/server";
+import { requireUser, requireOrgFinanceOrAbove } from "@/lib/serverAuthz";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { requireUser, requireOrgOwnerOrAdmin } from "@/lib/serverAuthz";
-import {
-  PLAN_MONTHLY_LIMIT,
-  type PlanKey,
-} from "@/lib/serverLimits";
+import { getOrganizationEntitlements } from "@/lib/server/planEntitlements";
 
 export const runtime = "nodejs";
 
@@ -14,10 +11,6 @@ function monthBucketUtc(d = new Date()) {
   // store first day of month in UTC as YYYY-MM-DD
   const dt = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
   return dt.toISOString().slice(0, 10);
-}
-
-function isPlanKey(v: string): v is PlanKey {
-  return v === "free" || v === "basic" || v === "growth" || v === "enterprise";
 }
 
 export async function GET(req: Request) {
@@ -31,22 +24,14 @@ export async function GET(req: Request) {
     if (!organization_id)
       return NextResponse.json<ErrorJson>({ error: "organization_id required" }, { status: 400 });
 
-    const authz = await requireOrgOwnerOrAdmin(organization_id, u.userId);
+    const authz = await requireOrgFinanceOrAbove(organization_id, u.userId);
     if (!authz.ok)
       return NextResponse.json<ErrorJson>({ error: authz.error }, { status: authz.status });
 
     // plan
-    const { data: planRow, error: planErr } = await supabaseAdmin
-      .from("org_plans")
-      .select("plan")
-      .eq("organization_id", organization_id)
-      .maybeSingle<{ plan: string | null }>();
-
-    if (planErr) throw new Error(planErr.message);
-
-    const planRaw = String(planRow?.plan ?? "basic").toLowerCase();
-    const plan: PlanKey = isPlanKey(planRaw) ? planRaw : "basic";
-    const month_limit = PLAN_MONTHLY_LIMIT[plan];
+    const entitlements = await getOrganizationEntitlements(organization_id);
+    const plan = entitlements.plan;
+    const month_limit = entitlements.emailMonthlyLimit;
 
     // usage
     const mb = monthBucketUtc();

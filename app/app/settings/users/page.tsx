@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 import { getActiveOrgId } from "@/lib/auth";
+import UserRoleInfoModal from "@/components/settings/UserRoleInfoModal";
 
 type Role = "owner" | "admin" | "finance" | "member";
 type Status = "active" | "invited";
@@ -98,6 +99,7 @@ export default function UsersSettingsPage() {
   // Toast
   const [toastOpen, setToastOpen] = useState(false);
   const [toastText, setToastText] = useState("Copied to clipboard ");
+  const [roleInfoOpen, setRoleInfoOpen] = useState(false);
 
   const [confirmRemove, setConfirmRemove] = useState<
     null | { user_id: string; email: string }
@@ -122,8 +124,6 @@ export default function UsersSettingsPage() {
   }>(null);
 
   const isAdminRole = (r: Role) => r === "admin";
-  const isDemotion =
-  !!confirmRoleChange && isAdminRole(confirmRoleChange.fromRole) && !isAdminRole(confirmRoleChange.toRole);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setMeId(data.user?.id ?? null));
@@ -359,7 +359,14 @@ export default function UsersSettingsPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setRoleInfoOpen(true)}
+              className="rounded-2xl border px-4 py-2 text-sm font-semibold hover:border-primary hover:bg-slate-50"
+            >
+              About roles
+            </button>
             <button
               onClick={() => {
                 setInviteOpen(true);
@@ -535,6 +542,12 @@ export default function UsersSettingsPage() {
           </div>
         </div>
       </div>
+
+      {/* Role information modal */}
+      <UserRoleInfoModal
+        open={roleInfoOpen}
+        onClose={() => setRoleInfoOpen(false)}
+      />
 
       {/* Change role modal */}
       {confirmRoleChange ? (

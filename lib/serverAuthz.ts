@@ -1,7 +1,12 @@
 // lib/serverAuthz.ts
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import {
+  canSendBroadcastEmail,
+  canSendMemberGivingEmail,
+  type OrganizationRole,
+} from "@/lib/emailPermissions";
 
-export type OrgRole = "owner" | "admin" | "finance" | "viewer" | "member";
+export type OrgRole = OrganizationRole;
 
 export function getBearerToken(req: Request): string | null {
   const auth = req.headers.get("authorization") ?? "";
@@ -38,7 +43,29 @@ export async function requireOrgOwnerOrAdmin(
     .maybeSingle<{ role: OrgRole }>();
 
   if (error) return { ok: false, status: 400, error: error.message };
-  if (!data || (data.role !== "owner" && data.role !== "admin")) {
+  if (!data || !canSendMemberGivingEmail(data.role)) {
+    return { ok: false, status: 403, error: "Forbidden" };
+  }
+
+  return { ok: true, role: data.role };
+}
+
+export async function requireOrgFinanceOrAbove(
+  organizationId: string,
+  userId: string,
+): Promise<
+  | { ok: true; role: "owner" | "admin" | "finance" }
+  | { ok: false; status: 400 | 403; error: string }
+> {
+  const { data, error } = await supabaseAdmin
+    .from("user_organizations")
+    .select("role")
+    .eq("organization_id", organizationId)
+    .eq("user_id", userId)
+    .maybeSingle<{ role: OrgRole }>();
+
+  if (error) return { ok: false, status: 400, error: error.message };
+  if (!data || !canSendBroadcastEmail(data.role)) {
     return { ok: false, status: 403, error: "Forbidden" };
   }
 

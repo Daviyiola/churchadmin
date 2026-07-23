@@ -9,6 +9,7 @@ import { QRCodeCanvas } from "qrcode.react";
 /* ===================== Types ===================== */
 
 type ShowFilter = "new" | "followups" | "joined" | "all";
+type FollowupListView = "current" | "history" | "archived";
 
 type Gender = "male" | "female";
 type AgeGroup = "1-12" | "13-17" | "18-35" | "36+";
@@ -123,8 +124,17 @@ type FollowupSettings = {
   send_time: string;
 };
 
-type PendingSendAction = "followup"; // (only needed here)
-type PlanKey = "free" | "basic" | "growth" | "enterprise";
+type FollowupAutomationTemplate = {
+  id?: string;
+  step_order: number;
+  day_offset: number;
+  label: string;
+  subject: string;
+  body: string;
+};
+
+type PendingSendAction = "followup" | "scheduled_followup";
+type PlanKey = "free" | "basic" | "pro" | "enterprise";
 
 type LimitsPayload = {
   ok: true;
@@ -142,7 +152,7 @@ function isLimitsPayload(v: unknown): v is LimitsPayload {
     o.ok === true &&
     (o.plan === "free" ||
       o.plan === "basic" ||
-      o.plan === "growth" ||
+      o.plan === "pro" ||
       o.plan === "enterprise") &&
     typeof o.month_left === "number" &&
     typeof o.month_used === "number" &&
@@ -241,32 +251,40 @@ function fillTemplate(template: string, vars: Record<string, string>) {
   return template.replace(/\{(\w+)\}/g, (_, k: string) => vars[k] ?? "");
 }
 
-const DEFAULT_FOLLOWUP_STEPS = [
+const DEFAULT_FOLLOWUP_STEPS: FollowupAutomationTemplate[] = [
   {
-    dayOffset: 0,
+    step_order: 1,
+    day_offset: 0,
     label: "Day 0: Thank you for visiting",
     subject: "Thank you for visiting {churchName}",
     body: "Hi {firstName},\n\nThank you for visiting {churchName}. It was a blessing to have you with us.\n\nWe hope you felt welcomed, and we would love to see you again soon.\n\nBlessings,\n{churchName}",
   },
   {
-    dayOffset: 3,
+    step_order: 2,
+    day_offset: 3,
     label: "Day 3: Hope to see you again",
     subject: "We hope to see you again soon",
     body: "Hi {firstName},\n\nWe just wanted to check in and say we were glad you visited {churchName}.\n\nIf you have any questions or prayer requests, feel free to reply to this email.\n\nBlessings,\n{churchName}",
   },
   {
-    dayOffset: 7,
+    step_order: 3,
+    day_offset: 7,
     label: "Day 7: Invite to community group",
     subject: "Would you like to connect with a group?",
     body: "Hi {firstName},\n\nWe would love to help you get more connected at {churchName}.\n\nIf you are interested, we can share more information about our community groups, ministries, or next steps.\n\nBlessings,\n{churchName}",
   },
   {
-    dayOffset: 14,
+    step_order: 4,
+    day_offset: 14,
     label: "Day 14: Pastoral check-in",
     subject: "Checking in from {churchName}",
     body: "Hi {firstName},\n\nWe wanted to check in again and let you know we are grateful you visited {churchName}.\n\nPlease let us know if there is any way we can pray for you or support you.\n\nBlessings,\n{churchName}",
   },
 ];
+
+function copyDefaultFollowupSteps(): FollowupAutomationTemplate[] {
+  return DEFAULT_FOLLOWUP_STEPS.map((step) => ({ ...step }));
+}
 
 function makeScheduledForISO(
   firstVisitISODate: string,
@@ -329,6 +347,8 @@ export default function FirstTimersPage() {
   // ===== List page state =====
   const [q, setQ] = useState("");
   const [show, setShow] = useState<ShowFilter>("new");
+  const [followupListView, setFollowupListView] =
+    useState<FollowupListView>("current");
 
   const [rows, setRows] = useState<VisitorRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -366,6 +386,12 @@ export default function FirstTimersPage() {
   >([]);
   const [followupSettings, setFollowupSettings] =
     useState<FollowupSettings | null>(null);
+  const [followupTemplates, setFollowupTemplates] = useState<
+    FollowupAutomationTemplate[]
+  >(copyDefaultFollowupSteps);
+  const [templateSettingsOpen, setTemplateSettingsOpen] = useState(false);
+  const [savingFollowupTemplates, setSavingFollowupTemplates] = useState(false);
+  const [followupTemplateErr, setFollowupTemplateErr] = useState("");
 
   const [savingFollowupSettings, setSavingFollowupSettings] = useState(false);
 
@@ -492,6 +518,19 @@ export default function FirstTimersPage() {
     string | null
   >(null);
 
+  const [unarchivingScheduledId, setUnarchivingScheduledId] = useState<
+    string | null
+  >(null);
+
+  const [sendingScheduledId, setSendingScheduledId] = useState<string | null>(
+    null,
+  );
+
+  const [pendingScheduledSend, setPendingScheduledSend] =
+    useState<ScheduledFollowupRow | null>(null);
+
+  const [replyToFocused, setReplyToFocused] = useState(false);
+
   const [scheduledEditMode, setScheduledEditMode] = useState(false);
   const [scheduledEditSubject, setScheduledEditSubject] = useState("");
   const [scheduledEditBody, setScheduledEditBody] = useState("");
@@ -567,6 +606,61 @@ export default function FirstTimersPage() {
     );
   }
 
+  async function saveFollowupTemplates() {
+    if (!orgId || !isAdmin) return;
+
+    setFollowupTemplateErr("");
+
+    const normalized = followupTemplates.map((step, index) => ({
+      step_order: index + 1,
+      day_offset: Math.trunc(Number(step.day_offset)),
+      label: step.label.trim(),
+      subject: step.subject.trim(),
+      body: step.body.trim(),
+    }));
+
+    if (
+      normalized.some(
+        (step) =>
+          !Number.isFinite(step.day_offset) ||
+          step.day_offset < 0 ||
+          step.day_offset > 365,
+      )
+    ) {
+      setFollowupTemplateErr("Each send day must be between 0 and 365.");
+      return;
+    }
+
+    if (
+      new Set(normalized.map((step) => step.day_offset)).size !==
+      normalized.length
+    ) {
+      setFollowupTemplateErr("Each follow-up must use a different send day.");
+      return;
+    }
+
+    if (normalized.some((step) => !step.label || !step.subject || !step.body)) {
+      setFollowupTemplateErr("Label, email subject, and message are required.");
+      return;
+    }
+
+    setSavingFollowupTemplates(true);
+    const { error } = await supabase.rpc("save_followup_automation_templates", {
+      p_org_id: orgId,
+      p_templates: normalized,
+    });
+    setSavingFollowupTemplates(false);
+
+    if (error) {
+      setFollowupTemplateErr(error.message);
+      return;
+    }
+
+    setFollowupTemplates(normalized);
+    setTemplateSettingsOpen(false);
+    showToast("Follow-up sequence saved");
+  }
+
   async function createDefaultScheduledFollowupsForMember(opts: {
     memberId: string;
     firstName: string;
@@ -586,15 +680,15 @@ export default function FirstTimersPage() {
 
     const sendTime = followupSettings.send_time || "18:00:00";
 
-    const rowsToInsert = DEFAULT_FOLLOWUP_STEPS.map((step) => ({
+    const rowsToInsert = followupTemplates.map((step) => ({
       org_id: orgId,
       member_id: opts.memberId,
       channel: "email",
       followup_label: step.label,
-      day_offset: step.dayOffset,
+      day_offset: step.day_offset,
       scheduled_for: makeScheduledForISO(
         opts.firstVisitAt || todayISODate(),
-        step.dayOffset,
+        step.day_offset,
         sendTime,
       ),
       subject: fillTemplate(step.subject, vars),
@@ -705,6 +799,11 @@ export default function FirstTimersPage() {
 
     if (confirmAction === "followup") {
       await sendFollowUpEmailInternal();
+      return;
+    }
+
+    if (confirmAction === "scheduled_followup") {
+      await sendScheduledFollowupNowInternal();
     }
   }
 
@@ -872,6 +971,11 @@ export default function FirstTimersPage() {
       return;
     }
 
+    if (scheduledPreview.archived_at) {
+      setScheduledEditErr("Archived follow-ups are read-only and cannot send.");
+      return;
+    }
+
     if (scheduledEditSubject.trim().length === 0) {
       setScheduledEditErr("Subject is required.");
       return;
@@ -926,7 +1030,7 @@ export default function FirstTimersPage() {
 
     setScheduledPreview(updated);
     setScheduledEditMode(false);
-    showToast("Scheduled follow-up updated ✓");
+    showToast("Scheduled follow-up updated");
     await load();
   };
 
@@ -959,6 +1063,100 @@ export default function FirstTimersPage() {
     await load();
   };
 
+  const sendScheduledFollowupNowInternal = async () => {
+    const followup = pendingScheduledSend;
+
+    if (!followup) return;
+
+    setScheduledEditErr("");
+
+    if (!isAdmin) {
+      setScheduledEditErr(
+        "Only finance/admin/owner can send scheduled follow-ups.",
+      );
+      return;
+    }
+
+    if (followup.status !== "pending") {
+      setScheduledEditErr("Only pending follow-ups can be sent.");
+      return;
+    }
+
+    if (followup.archived_at) {
+      setScheduledEditErr("Restore this follow-up before sending it.");
+      return;
+    }
+
+    const recipientEmail = followup.members?.email?.trim();
+
+    if (!recipientEmail || !recipientEmail.includes("@")) {
+      setScheduledEditErr("The recipient does not have a valid email address.");
+      return;
+    }
+
+    setSendingScheduledId(followup.id);
+
+    try {
+      const { data: sessionRes } = await supabase.auth.getSession();
+      const jwt = sessionRes.session?.access_token;
+
+      if (!jwt) {
+        throw new Error("Unauthorized. Please sign in again.");
+      }
+
+      const res = await fetch("/api/followups/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${jwt}`,
+        },
+        body: JSON.stringify({
+          member_id: followup.member_id,
+          scheduled_followup_id: followup.id,
+          to: recipientEmail,
+          reply_to: followup.reply_to || null,
+          subject: followup.subject,
+          body: followup.body,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        let parsed: unknown = null;
+
+        try {
+          parsed = JSON.parse(text);
+        } catch {}
+
+        const message =
+          typeof parsed === "object" &&
+          parsed !== null &&
+          "error" in parsed &&
+          typeof (parsed as { error?: unknown }).error === "string"
+            ? (parsed as { error: string }).error
+            : text || "Failed to send scheduled follow-up.";
+
+        throw new Error(message);
+      }
+
+      showToast("Scheduled follow-up sent");
+
+      setScheduledPreviewOpen(false);
+      setScheduledPreview(null);
+      setPendingScheduledSend(null);
+
+      await load();
+    } catch (error) {
+      setScheduledEditErr(
+        error instanceof Error
+          ? error.message
+          : "Failed to send scheduled follow-up.",
+      );
+    } finally {
+      setSendingScheduledId(null);
+    }
+  };
+
   const archiveScheduledFollowup = async (id: string) => {
     if (!isAdmin) {
       showToast("Only finance/admin/owner can archive scheduled follow-ups.");
@@ -972,7 +1170,7 @@ export default function FirstTimersPage() {
         updated_at: new Date().toISOString(),
       })
       .eq("id", id)
-      .in("status", ["sent", "failed", "blocked_quota", "cancelled"]);
+      .in("status", ["sent", "cancelled"]);
 
     if (error) {
       showToast(error.message);
@@ -980,6 +1178,35 @@ export default function FirstTimersPage() {
     }
 
     showToast("Scheduled follow-up archived");
+    await load();
+  };
+
+  const unarchiveScheduledFollowup = async (id: string) => {
+    if (!isAdmin) {
+      showToast("Only finance/admin/owner can restore scheduled follow-ups.");
+      return;
+    }
+
+    setUnarchivingScheduledId(id);
+
+    const { error } = await supabase
+      .from("scheduled_followups")
+      .update({
+        archived_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .not("archived_at", "is", null);
+
+    setUnarchivingScheduledId(null);
+
+    if (error) {
+      showToast(error.message);
+      return;
+    }
+
+    showToast("Scheduled follow-up restored");
+    setFollowupListView("history");
     await load();
   };
 
@@ -1017,7 +1244,7 @@ export default function FirstTimersPage() {
     setFollowUpErr("");
 
     if (!isAdmin) {
-      setFollowUpErr("Only admins can send follow-ups.");
+      setFollowUpErr("Only finance, admins, and owners can send follow-ups.");
       return;
     }
     if (!followUpMember?.email) {
@@ -1088,7 +1315,7 @@ export default function FirstTimersPage() {
         throw new Error(msg);
       }
 
-      showToast("Email sent ✓");
+      showToast("Email sent");
       setFollowUpOpen(false);
 
       const stamp = `Sent follow up email on ${todayISODate()}`;
@@ -1188,7 +1415,7 @@ export default function FirstTimersPage() {
       return;
     }
 
-    showToast("Follow-up scheduled ✓");
+    showToast("Follow-up scheduled");
     setFollowUpOpen(false);
     setScheduleSendOpen(false);
     await load();
@@ -1199,7 +1426,7 @@ export default function FirstTimersPage() {
 
     // keep all your existing validations (same as current)
     if (!isAdmin) {
-      setFollowUpErr("Only admins can send follow-ups.");
+      setFollowUpErr("Only finance, admins, and owners can send follow-ups.");
       return;
     }
     if (!followUpMember?.email) {
@@ -1271,7 +1498,7 @@ export default function FirstTimersPage() {
       if (!res.ok) throw new Error(String(json?.error ?? "Failed to create."));
 
       setCampaignUrl(String(json.campaignUrl));
-      showToast("Campaign created ✓");
+      showToast("Campaign created");
 
       // refresh pinned campaigns
       await load();
@@ -1333,6 +1560,26 @@ export default function FirstTimersPage() {
       });
     }
 
+    // Organization-specific automation templates. If none have ever been
+    // saved, preserve the original four-step sequence as the default.
+    try {
+      const { data: templateData, error: templateErr } = await supabase
+        .from("followup_automation_templates")
+        .select("id,step_order,day_offset,label,subject,body")
+        .eq("org_id", orgId)
+        .order("step_order", { ascending: true });
+
+      if (templateErr) throw templateErr;
+
+      setFollowupTemplates(
+        templateData && templateData.length > 0
+          ? (templateData as FollowupAutomationTemplate[])
+          : copyDefaultFollowupSteps(),
+      );
+    } catch {
+      setFollowupTemplates(copyDefaultFollowupSteps());
+    }
+
     // scheduled follow-ups
     try {
       const { data: sfData, error: sfErr } = await supabase
@@ -1340,13 +1587,11 @@ export default function FirstTimersPage() {
         .select(
           [
             "id,org_id,member_id,channel,followup_label,day_offset,scheduled_for",
-            "subject,body,reply_to,status,error_message,sent_at,cancelled_at,created_at,updated_at",
+            "subject,body,reply_to,status,error_message,sent_at,cancelled_at,archived_at,created_at,updated_at",
             "members!inner(id,first_name,last_name,email,visitor_details(first_visit_at))",
           ].join(","),
         )
         .eq("org_id", orgId)
-        .is("archived_at", null)
-        .neq("status", "cancelled")
         .order("scheduled_for", { ascending: true });
 
       if (sfErr) throw sfErr;
@@ -1474,7 +1719,24 @@ export default function FirstTimersPage() {
         .trim()
         .toLowerCase();
 
-    let base = scheduledFollowups.filter((f) => f.status !== "cancelled");
+    let base = scheduledFollowups.filter((f) => {
+      if (followupListView === "archived") {
+        return Boolean(f.archived_at);
+      }
+
+      if (followupListView === "history") {
+        return (
+          !f.archived_at && (f.status === "sent" || f.status === "cancelled")
+        );
+      }
+
+      return (
+        !f.archived_at &&
+        (f.status === "pending" ||
+          f.status === "failed" ||
+          f.status === "blocked_quota")
+      );
+    });
 
     if (needle) {
       base = base.filter((f) => {
@@ -1506,7 +1768,7 @@ export default function FirstTimersPage() {
 
       return getName(a).localeCompare(getName(b));
     });
-  }, [scheduledFollowups, q]);
+  }, [scheduledFollowups, q, followupListView]);
 
   const kpis = useMemo(() => {
     const total = rows.length;
@@ -1517,9 +1779,10 @@ export default function FirstTimersPage() {
 
     const followups = scheduledFollowups.filter(
       (f) =>
-        f.status === "pending" ||
-        f.status === "failed" ||
-        f.status === "blocked_quota",
+        !f.archived_at &&
+        (f.status === "pending" ||
+          f.status === "failed" ||
+          f.status === "blocked_quota"),
     ).length;
 
     return { total, newCount, joined, followups };
@@ -1666,7 +1929,7 @@ export default function FirstTimersPage() {
         if (vdErr) throw new Error(vdErr.message);
       }
 
-      showToast(mode === "create" ? "Saved ✓" : "Updated ✓");
+      showToast(mode === "create" ? "Saved" : "Updated");
       setAddOpen(false);
       resetAddForm();
       await load();
@@ -1729,7 +1992,7 @@ export default function FirstTimersPage() {
       const url = String(json?.intakeUrl ?? "");
       setIntakeUrl(url);
 
-      showToast(json?.emailed ? "Email sent ✓" : "Link created ✓");
+      showToast(json?.emailed ? "Email sent" : "Link created");
       await load();
     } catch (e) {
       setEmailErr(e instanceof Error ? e.message : "Something went wrong.");
@@ -1824,7 +2087,7 @@ export default function FirstTimersPage() {
 
     if (error) showToast(error.message);
     else {
-      showToast("Saved ✓");
+      showToast("Saved");
       setNoteOpen(false);
       setNoteMemberId(null);
       setNoteText("");
@@ -2112,87 +2375,194 @@ export default function FirstTimersPage() {
 
                 {show === "followups" ? (
                   <div className="mt-5 rounded-2xl border bg-slate-50 px-4 py-4">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                      <div>
+                    <div className="grid gap-3 lg:grid-cols-[minmax(170px,0.8fr)_minmax(170px,220px)_auto_auto_auto] lg:items-end">
+                      <div className="min-w-0">
                         <div className="text-sm font-semibold text-slate-800">
                           Automated follow-up settings
                         </div>
-                        <div className="mt-1 text-xs text-slate-500">
-                          Emails are only scheduled when automation is on and
+
+                        <div className="mt-1 max-w-[250px] text-xs leading-5 text-slate-500">
+                          Emails are scheduled only when automation is on and
                           the first-timer has an email.
                         </div>
                       </div>
 
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-                        <div>
-                          <div className="mb-1 text-xs font-semibold text-slate-600">
-                            Reply-to email
-                          </div>
-                          <input
-                            className="w-full sm:w-72 rounded-2xl border bg-white px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                            value={followupSettings?.default_reply_to ?? ""}
-                            disabled={!isAdmin || savingFollowupSettings}
-                            onChange={(e) =>
-                              setFollowupSettings((cur) => ({
-                                org_id: orgId ?? "",
-                                automation_enabled:
-                                  cur?.automation_enabled ?? false,
-                                timezone_name:
-                                  cur?.timezone_name ?? "America/New_York",
-                                send_time: cur?.send_time ?? "18:00:00",
-                                default_reply_to: e.target.value,
-                              }))
-                            }
-                            placeholder="staff@example.com"
-                          />
+                      <div className="min-w-0">
+                        <div className="mb-1 text-xs font-semibold text-slate-600">
+                          Reply-to email
                         </div>
 
-                        <button
-                          type="button"
-                          disabled={!isAdmin || savingFollowupSettings}
-                          className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                            !isAdmin || savingFollowupSettings
-                              ? "bg-slate-300 cursor-not-allowed"
-                              : "bg-slate-900 hover:bg-slate-800"
+                        <input
+                          type="email"
+                          title={followupSettings?.default_reply_to ?? ""}
+                          className={`w-full min-w-0 rounded-2xl border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 ${
+                            replyToFocused ? "" : "text-ellipsis"
                           }`}
-                          onClick={() =>
-                            updateFollowupSettingsPatch({
-                              default_reply_to:
-                                followupSettings?.default_reply_to?.trim() ||
-                                null,
-                            })
-                          }
-                        >
-                          {savingFollowupSettings
-                            ? "Saving..."
-                            : "Save settings"}
-                        </button>
+                          value={followupSettings?.default_reply_to ?? ""}
+                          disabled={!isAdmin || savingFollowupSettings}
+                          onFocus={(event) => {
+                            setReplyToFocused(true);
 
-                        <button
-                          type="button"
-                          disabled={!isAdmin || savingFollowupSettings}
-                          onClick={() =>
-                            updateFollowupSettingsPatch({
+                            window.requestAnimationFrame(() => {
+                              const length = event.currentTarget.value.length;
+                              event.currentTarget.setSelectionRange(
+                                length,
+                                length,
+                              );
+                              event.currentTarget.scrollLeft =
+                                event.currentTarget.scrollWidth;
+                            });
+                          }}
+                          onBlur={() => setReplyToFocused(false)}
+                          onChange={(e) =>
+                            setFollowupSettings((cur) => ({
+                              org_id: orgId ?? "",
                               automation_enabled:
-                                !followupSettings?.automation_enabled,
-                            })
+                                cur?.automation_enabled ?? false,
+                              timezone_name:
+                                cur?.timezone_name ?? "America/New_York",
+                              send_time: cur?.send_time ?? "18:00:00",
+                              default_reply_to: e.target.value,
+                            }))
                           }
-                          className={`rounded-2xl border px-4 py-2 text-sm font-semibold ${
-                            followupSettings?.automation_enabled
-                              ? "bg-emerald-50 border-emerald-200 text-emerald-700"
-                              : "bg-white text-slate-700 hover:bg-slate-50"
-                          } ${
-                            !isAdmin || savingFollowupSettings
-                              ? "opacity-60 cursor-not-allowed"
-                              : ""
-                          }`}
-                        >
-                          {followupSettings?.automation_enabled
-                            ? "Automation on"
-                            : "Automation off"}
-                        </button>
+                          placeholder="staff@example.com"
+                        />
                       </div>
+
+                      <button
+                        type="button"
+                        disabled={!isAdmin}
+                        onClick={() => {
+                          setFollowupTemplateErr("");
+                          setTemplateSettingsOpen(true);
+                        }}
+                        className="w-full whitespace-nowrap rounded-2xl border bg-white px-5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 lg:w-auto"
+                      >
+                        Edit email sequence
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={!isAdmin || savingFollowupSettings}
+                        className={`w-full whitespace-nowrap rounded-2xl px-5 py-2 text-sm font-semibold text-white lg:w-auto ${
+                          !isAdmin || savingFollowupSettings
+                            ? "cursor-not-allowed bg-slate-300"
+                            : "bg-slate-900 hover:bg-slate-800"
+                        }`}
+                        onClick={() =>
+                          updateFollowupSettingsPatch({
+                            default_reply_to:
+                              followupSettings?.default_reply_to?.trim() ||
+                              null,
+                          })
+                        }
+                      >
+                        {savingFollowupSettings ? "Saving..." : "Save settings"}
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={!isAdmin || savingFollowupSettings}
+                        onClick={() =>
+                          updateFollowupSettingsPatch({
+                            automation_enabled:
+                              !followupSettings?.automation_enabled,
+                          })
+                        }
+                        className={`w-full whitespace-nowrap rounded-2xl border px-5 py-2 text-sm font-semibold lg:w-auto ${
+                          followupSettings?.automation_enabled
+                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                            : "bg-white text-slate-700 hover:bg-slate-50"
+                        } ${
+                          !isAdmin || savingFollowupSettings
+                            ? "cursor-not-allowed opacity-60"
+                            : ""
+                        }`}
+                      >
+                        {followupSettings?.automation_enabled
+                          ? "Automation on"
+                          : "Automation off"}
+                      </button>
                     </div>
+                  </div>
+                ) : null}
+
+                {show === "followups" ? (
+                  <div className="mt-4 inline-flex rounded-xl border bg-slate-50 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setFollowupListView("current")}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                        followupListView === "current"
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      Current (
+                      {
+                        scheduledFollowups.filter(
+                          (followup) =>
+                            !followup.archived_at &&
+                            (followup.status === "pending" ||
+                              followup.status === "failed" ||
+                              followup.status === "blocked_quota"),
+                        ).length
+                      }
+                      )
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setFollowupListView("history")}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                        followupListView === "history"
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      History (
+                      {
+                        scheduledFollowups.filter(
+                          (followup) =>
+                            !followup.archived_at &&
+                            (followup.status === "sent" ||
+                              followup.status === "cancelled"),
+                        ).length
+                      }
+                      )
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setFollowupListView("archived")}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                        followupListView === "archived"
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      Archived (
+                      {
+                        scheduledFollowups.filter((followup) =>
+                          Boolean(followup.archived_at),
+                        ).length
+                      }
+                      )
+                    </button>
+                  </div>
+                ) : null}
+
+                {show === "followups" && followupListView === "history" ? (
+                  <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                    History contains sent and cancelled follow-ups. Archive
+                    records you no longer need in the main follow-up view.
+                  </div>
+                ) : null}
+
+                {show === "followups" && followupListView === "archived" ? (
+                  <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    Archived follow-ups are hidden from Current and History.
+                    Unarchive a record to return it to History.
                   </div>
                 ) : null}
 
@@ -2244,7 +2614,11 @@ export default function FirstTimersPage() {
                 <div className="p-6 text-sm text-slate-600">
                   {q.trim()
                     ? "No scheduled follow-ups match your search."
-                    : "No scheduled follow-ups found."}
+                    : followupListView === "archived"
+                      ? "No archived follow-ups found."
+                      : followupListView === "history"
+                        ? "No completed or cancelled follow-ups found."
+                        : "No current follow-ups found."}
                 </div>
               ) : show !== "followups" &&
                 filtered.length === 0 &&
@@ -2327,7 +2701,19 @@ export default function FirstTimersPage() {
                                 Preview
                               </button>
 
-                              {f.status === "pending" ? (
+                              {f.archived_at ? (
+                                <button
+                                  className="rounded-xl border px-4 py-1 text-xs hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                  disabled={unarchivingScheduledId === f.id}
+                                  onClick={() =>
+                                    unarchiveScheduledFollowup(f.id)
+                                  }
+                                >
+                                  {unarchivingScheduledId === f.id
+                                    ? "Restoring..."
+                                    : "Restore"}
+                                </button>
+                              ) : f.status === "pending" ? (
                                 <button
                                   className="rounded-xl border border-red-200 px-4 py-1 text-xs text-red-700 hover:bg-red-50 disabled:opacity-60"
                                   disabled={cancellingScheduledId === f.id}
@@ -2337,9 +2723,9 @@ export default function FirstTimersPage() {
                                     ? "Cancelling..."
                                     : "Cancel"}
                                 </button>
-                              ) : f.status === "sent" ||
-                                f.status === "failed" ||
-                                f.status === "blocked_quota" ? (
+                              ) : followupListView === "history" &&
+                                (f.status === "sent" ||
+                                  f.status === "cancelled") ? (
                                 <button
                                   className="rounded-xl border px-4 py-1 text-xs hover:bg-slate-50"
                                   onClick={() => archiveScheduledFollowup(f.id)}
@@ -2712,7 +3098,7 @@ export default function FirstTimersPage() {
           onClick={() => setFollowUpOpen(false)}
         >
           <div
-            className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-xl sm:rounded-3xl"
+            className="flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-xl sm:max-h-[92vh] sm:rounded-3xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="shrink-0 border-b px-4 py-3 sm:px-6 sm:py-4">
@@ -2882,7 +3268,15 @@ export default function FirstTimersPage() {
       {confirmOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
-          onClick={() => setConfirmOpen(false)}
+          onClick={() => {
+            setConfirmOpen(false);
+
+            if (confirmAction === "scheduled_followup") {
+              setPendingScheduledSend(null);
+            }
+
+            setConfirmAction(null);
+          }}
         >
           <div
             className="w-full max-w-lg rounded-3xl bg-white shadow-xl"
@@ -2957,7 +3351,15 @@ export default function FirstTimersPage() {
             <div className="border-t px-6 py-4 flex items-center justify-end gap-2">
               <button
                 className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
-                onClick={() => setConfirmOpen(false)}
+                onClick={() => {
+                  setConfirmOpen(false);
+
+                  if (confirmAction === "scheduled_followup") {
+                    setPendingScheduledSend(null);
+                  }
+
+                  setConfirmAction(null);
+                }}
               >
                 Cancel
               </button>
@@ -3370,7 +3772,7 @@ export default function FirstTimersPage() {
     hover:bg-primary/85 disabled:bg-slate-300 disabled:cursor-not-allowed"
               >
                 {campaignUrl
-                  ? "Link generated ✓"
+                  ? "Link generated"
                   : campaignLimitReached
                     ? "Limit reached (max 2 active)"
                     : campaignLoading
@@ -3520,14 +3922,200 @@ export default function FirstTimersPage() {
         </div>
       ) : null}
 
+      {/* ========== Automated follow-up sequence settings ========== */}
+      {templateSettingsOpen ? (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-3 sm:p-6"
+          onMouseDown={() => {
+            if (!savingFollowupTemplates) setTemplateSettingsOpen(false);
+          }}
+        >
+          <div
+            className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border bg-white shadow-2xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b px-5 py-4 sm:px-6">
+              <div>
+                <div className="text-lg font-semibold text-slate-900">
+                  Automated email sequence
+                </div>
+                <div className="mt-1 text-sm text-slate-500">
+                  Customize when each message is sent and what it says.
+                </div>
+              </div>
+              <button
+                type="button"
+                className="rounded-xl border px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-60"
+                disabled={savingFollowupTemplates}
+                onClick={() => setTemplateSettingsOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="overflow-y-auto px-5 py-5 sm:px-6">
+              <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                These templates apply to new first-timers only. Existing
+                scheduled follow-ups keep their current date and message. You
+                can use {"{firstName}"}, {"{lastName}"}, and {"{churchName}"}.
+              </div>
+
+              <div className="mt-4 space-y-4">
+                {followupTemplates.map((step, index) => (
+                  <div
+                    key={step.id ?? `template-${index}`}
+                    className="rounded-2xl border bg-slate-50 p-4"
+                  >
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                      <label className="block sm:w-36">
+                        <span className="text-xs font-semibold text-slate-600">
+                          Send after
+                        </span>
+                        <div className="mt-1 flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={0}
+                            max={365}
+                            className="w-24 rounded-xl border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                            value={step.day_offset}
+                            disabled={!isAdmin || savingFollowupTemplates}
+                            onChange={(event) => {
+                              const dayOffset = Number(event.target.value);
+                              setFollowupTemplates((current) =>
+                                current.map((item, itemIndex) =>
+                                  itemIndex === index
+                                    ? { ...item, day_offset: dayOffset }
+                                    : item,
+                                ),
+                              );
+                            }}
+                          />
+                          <span className="text-sm text-slate-600">days</span>
+                        </div>
+                      </label>
+
+                      <label className="block flex-1">
+                        <span className="text-xs font-semibold text-slate-600">
+                          Step name
+                        </span>
+                        <input
+                          className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                          value={step.label}
+                          maxLength={120}
+                          disabled={!isAdmin || savingFollowupTemplates}
+                          onChange={(event) =>
+                            setFollowupTemplates((current) =>
+                              current.map((item, itemIndex) =>
+                                itemIndex === index
+                                  ? { ...item, label: event.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                      </label>
+                    </div>
+
+                    <label className="mt-3 block">
+                      <span className="text-xs font-semibold text-slate-600">
+                        Email subject
+                      </span>
+                      <input
+                        className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        value={step.subject}
+                        maxLength={200}
+                        disabled={!isAdmin || savingFollowupTemplates}
+                        onChange={(event) =>
+                          setFollowupTemplates((current) =>
+                            current.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? { ...item, subject: event.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                    </label>
+
+                    <label className="mt-3 block">
+                      <span className="text-xs font-semibold text-slate-600">
+                        Message
+                      </span>
+                      <textarea
+                        rows={7}
+                        className="mt-1 w-full resize-y rounded-xl border bg-white px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-slate-200"
+                        value={step.body}
+                        maxLength={10000}
+                        disabled={!isAdmin || savingFollowupTemplates}
+                        onChange={(event) =>
+                          setFollowupTemplates((current) =>
+                            current.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? { ...item, body: event.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                    </label>
+                  </div>
+                ))}
+              </div>
+
+              {followupTemplateErr ? (
+                <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {followupTemplateErr}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 border-t bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+              <button
+                type="button"
+                className="rounded-xl border px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                disabled={!isAdmin || savingFollowupTemplates}
+                onClick={() => {
+                  setFollowupTemplates(copyDefaultFollowupSteps());
+                  setFollowupTemplateErr("");
+                }}
+              >
+                Restore original defaults
+              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="flex-1 rounded-xl border px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 sm:flex-none"
+                  disabled={savingFollowupTemplates}
+                  onClick={() => setTemplateSettingsOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="flex-1 rounded-xl bg-slate-900 px-5 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 sm:flex-none"
+                  disabled={!isAdmin || savingFollowupTemplates}
+                  onClick={saveFollowupTemplates}
+                >
+                  {savingFollowupTemplates ? "Saving..." : "Save sequence"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* ========== Modal E: Scheduled follow-up preview ========== */}
       {scheduledPreviewOpen && scheduledPreview ? (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 p-2 sm:items-center sm:p-4"
-          onClick={() => setScheduledPreviewOpen(false)}
+          className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto bg-black/30 p-2 sm:items-center sm:p-4"
+          onClick={() => {
+            setScheduledPreviewOpen(false);
+            setScheduledEditMode(false);
+            setScheduledEditErr("");
+          }}
         >
           <div
-            className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-xl sm:rounded-3xl"
+            className="flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-xl sm:max-h-[92vh] sm:rounded-3xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="shrink-0 border-b px-4 py-3 sm:px-6 sm:py-4">
@@ -3539,7 +4127,7 @@ export default function FirstTimersPage() {
               </div>
             </div>
 
-            <div className="px-6 py-6 space-y-4">
+            <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6">
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border bg-slate-50 px-4 py-3">
                   <div className="text-xs font-semibold text-slate-600">
@@ -3660,7 +4248,7 @@ export default function FirstTimersPage() {
                     <div className="mb-1 text-xs font-semibold text-slate-600">
                       Body
                     </div>
-                    <div className="max-h-72 min-h-[160px] overflow-y-auto whitespace-pre-wrap rounded-2xl border px-4 py-3 text-sm text-slate-800 sm:min-h-[220px]">
+                    <div className="max-h-[40vh] min-h-[140px] overflow-y-auto whitespace-pre-wrap break-words rounded-2xl border px-4 py-3 text-sm text-slate-800 sm:max-h-72 sm:min-h-[220px]">
                       {scheduledPreview.body}
                     </div>
                   </div>
@@ -3681,7 +4269,7 @@ export default function FirstTimersPage() {
               ) : null}
             </div>
 
-            <div className="shrink-0 border-t px-4 py-3 sm:px-4 sm:py-4">
+            <div className="shrink-0 border-t bg-white px-3 py-3 sm:px-4 sm:py-4">
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <button
                   className="w-full rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50 sm:w-auto sm:min-w-[96px]"
@@ -3694,8 +4282,9 @@ export default function FirstTimersPage() {
                   Close
                 </button>
 
-                {scheduledPreview.status === "pending" ? (
-                  <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                {scheduledPreview.status === "pending" &&
+                !scheduledPreview.archived_at ? (
+                  <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:items-center">
                     {scheduledEditMode ? (
                       <>
                         <button
@@ -3736,9 +4325,34 @@ export default function FirstTimersPage() {
                       <>
                         <button
                           className="w-full rounded-2xl border px-4 py-2 text-sm font-semibold hover:bg-slate-50 sm:w-auto"
+                          disabled={sendingScheduledId === scheduledPreview.id}
                           onClick={() => setScheduledEditMode(true)}
                         >
                           Edit
+                        </button>
+
+                        <button
+                          className={`w-full rounded-2xl px-4 py-2 text-sm font-semibold text-white sm:w-auto sm:min-w-[110px] ${
+                            sendingScheduledId === scheduledPreview.id
+                              ? "bg-slate-300"
+                              : "bg-slate-900 hover:bg-slate-800"
+                          }`}
+                          disabled={sendingScheduledId === scheduledPreview.id}
+                          onClick={async () => {
+                            setScheduledEditErr("");
+
+                            setPendingScheduledSend(scheduledPreview);
+
+                            setScheduledPreviewOpen(false);
+                            setScheduledPreview(null);
+                            setScheduledEditMode(false);
+
+                            await requestSend("scheduled_followup", 1);
+                          }}
+                        >
+                          {sendingScheduledId === scheduledPreview.id
+                            ? "Sending..."
+                            : "Send now"}
                         </button>
 
                         <button
