@@ -67,6 +67,7 @@ type AttendanceEntryRow = {
 };
 
 type IncomeEntryRow = {
+  id: string;
   org_id: string;
   session_date: string; // date
   income_category_id: string;
@@ -74,6 +75,7 @@ type IncomeEntryRow = {
 };
 
 type ExpenseEntryRow = {
+  id: string;
   org_id: string;
   expense_date: string; // date
   expense_category_id: string;
@@ -605,26 +607,10 @@ export default function DashboardPage() {
         const y1 = new Date(now.getFullYear() + 1, 0, 1);
 
         // fetch all year entries once; compute everything client-side for demo reliability
-        const [incRes, expRes] = await Promise.all([
-          supabase
-            .from("income_entries")
-            .select("org_id,session_date,income_category_id,amount_cents")
-            .eq("org_id", orgId)
-            .gte("session_date", isoDate(y0))
-            .lt("session_date", isoDate(y1)),
-          supabase
-            .from("expense_entries")
-            .select("org_id,expense_date,expense_category_id,amount_cents")
-            .eq("org_id", orgId)
-            .gte("expense_date", isoDate(y0))
-            .lt("expense_date", isoDate(y1)),
+        const [inc, exp] = await Promise.all([
+          fetchAllIncomeEntries(orgId, isoDate(y0), isoDate(y1)),
+          fetchAllExpenseEntries(orgId, isoDate(y0), isoDate(y1)),
         ]);
-
-        if (incRes.error) throw incRes.error;
-        if (expRes.error) throw expRes.error;
-
-        const inc = (incRes.data ?? []) as IncomeEntryRow[];
-        const exp = (expRes.data ?? []) as ExpenseEntryRow[];
 
         // MTD sums
         const incomeMtd = inc
@@ -1517,6 +1503,70 @@ export default function DashboardPage() {
 }
 
 /** ========= Helpers used above ========= */
+
+async function fetchAllIncomeEntries(
+  orgId: string,
+  fromIso: string,
+  toIso: string,
+): Promise<IncomeEntryRow[]> {
+  const pageSize = 1000;
+  let from = 0;
+  const all: IncomeEntryRow[] = [];
+
+  while (true) {
+    const { data, error } = await supabase
+      .from("income_entries")
+      .select("id,org_id,session_date,income_category_id,amount_cents")
+      .eq("org_id", orgId)
+      .gte("session_date", fromIso)
+      .lt("session_date", toIso)
+      .order("session_date", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+
+    const rows = (data ?? []) as IncomeEntryRow[];
+    all.push(...rows);
+
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return all;
+}
+
+async function fetchAllExpenseEntries(
+  orgId: string,
+  fromIso: string,
+  toIso: string,
+): Promise<ExpenseEntryRow[]> {
+  const pageSize = 1000;
+  let from = 0;
+  const all: ExpenseEntryRow[] = [];
+
+  while (true) {
+    const { data, error } = await supabase
+      .from("expense_entries")
+      .select("id,org_id,expense_date,expense_category_id,amount_cents")
+      .eq("org_id", orgId)
+      .gte("expense_date", fromIso)
+      .lt("expense_date", toIso)
+      .order("expense_date", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+
+    const rows = (data ?? []) as ExpenseEntryRow[];
+    all.push(...rows);
+
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return all;
+}
 
 async function fetchAllAttendanceEntries(
   orgId: string,

@@ -203,7 +203,6 @@ export default function IncomePublishedPage() {
 
   // Entry filters (within selected batch)
   const [memberQuery, setMemberQuery] = useState("");
-  const [memberIdFilter, setMemberIdFilter] = useState<string>(""); // resolved id or ""
   const [incomeCatFilter, setIncomeCatFilter] = useState<string>("all");
   const [methodFilter, setMethodFilter] = useState<PaymentMethod | "all">(
     "all",
@@ -274,13 +273,6 @@ export default function IncomePublishedPage() {
     () => members.filter((member) => member.status === "archived"),
     [members],
   );
-
-  const memberIdByLabel = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const m of members)
-      map.set(`${m.first_name} ${m.last_name}`.toLowerCase(), m.id);
-    return map;
-  }, [members]);
 
   const activeMemberIdByLabel = useMemo(() => {
     const map = new Map<string, string>();
@@ -584,8 +576,16 @@ export default function IncomePublishedPage() {
   }, [serviceFilter, dateFrom, dateTo, batches]);
 
   const filteredEntries = useMemo(() => {
+    const memberNameQuery = memberQuery.trim().toLowerCase();
+
     return entries.filter((e) => {
-      if (memberIdFilter && e.member_id !== memberIdFilter) return false;
+      if (
+        memberNameQuery &&
+        !(memberLabelById.get(e.member_id) ?? "")
+          .toLowerCase()
+          .includes(memberNameQuery)
+      )
+        return false;
       if (incomeCatFilter !== "all" && e.income_category_id !== incomeCatFilter)
         return false;
       if (methodFilter !== "all" && e.payment_method !== methodFilter)
@@ -594,7 +594,14 @@ export default function IncomePublishedPage() {
         return false;
       return true;
     });
-  }, [entries, memberIdFilter, incomeCatFilter, methodFilter, entryTypeFilter]);
+  }, [
+    entries,
+    memberQuery,
+    memberLabelById,
+    incomeCatFilter,
+    methodFilter,
+    entryTypeFilter,
+  ]);
 
   const filteredTotalCents = useMemo(
     () => filteredEntries.reduce((s, e) => s + e.amount_cents, 0),
@@ -735,7 +742,6 @@ export default function IncomePublishedPage() {
 
   const clearEntryFilters = () => {
     setMemberQuery("");
-    setMemberIdFilter("");
     setIncomeCatFilter("all");
     setMethodFilter("all");
     setEntryTypeFilter("all");
@@ -1028,32 +1034,11 @@ export default function IncomePublishedPage() {
                         Member
                       </div>
                       <input
-                        list="members-filter-dl"
                         className="w-full rounded-2xl border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                         value={memberQuery}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          setMemberQuery(v);
-                          const id = memberIdByLabel.get(
-                            v.trim().toLowerCase(),
-                          );
-                          setMemberIdFilter(id ?? "");
-                        }}
+                        onChange={(e) => setMemberQuery(e.target.value)}
                         placeholder="Type a name…"
                       />
-                      <datalist id="members-filter-dl">
-                        {members.map((m) => (
-                          <option
-                            key={m.id}
-                            value={`${m.first_name} ${m.last_name}`}
-                          />
-                        ))}
-                      </datalist>
-                      {memberQuery.trim() && !memberIdFilter ? (
-                        <div className="mt-1 text-xs text-amber-700">
-                          Pick a valid member from suggestions.
-                        </div>
-                      ) : null}
                     </div>
 
                     <div>
