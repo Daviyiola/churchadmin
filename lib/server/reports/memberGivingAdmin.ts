@@ -1,7 +1,8 @@
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import type {
   RunMemberGivingBody,
-  MemberGivingReport,
+  MemberGivingSummaryReport,
+  MemberGivingDetailedReport,
   Branding,
   PaymentMethod,
   MemberGivingMode,
@@ -112,7 +113,10 @@ async function getIncomeCategoryNameMap(orgId: string) {
 
 export async function runMemberGivingReportAsAdmin(
   body: RunMemberGivingBody,
-): Promise<MemberGivingReport> {
+): Promise<MemberGivingSummaryReport | MemberGivingDetailedReport> {
+  if (body.mode === "monthly") {
+    throw new Error("Monthly multi-member reports are not available through the email workflow.");
+  }
   // Member
   const { data: memRow, error: memErr } = await supabaseAdmin
     .from("members")

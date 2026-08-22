@@ -33,7 +33,7 @@ export async function POST(req: Request) {
 
     if (
       !body.organization_id ||
-      !body.member_id ||
+      (!body.member_id && !body.member_ids?.length) ||
       !body.mode ||
       !body.start_date ||
       !body.end_date
@@ -41,7 +41,7 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           error:
-            "organization_id, member_id, mode, start_date, end_date are required",
+            "organization_id, member selection, mode, start_date, and end_date are required",
         } satisfies ErrorResponse,
         { status: 400 },
       );
@@ -77,13 +77,18 @@ export async function POST(req: Request) {
 
     const pdf = await page.pdf({
       format: "Letter",
+      landscape: report.meta.view === "monthly",
       printBackground: true,
       margin: { top: "0.4in", bottom: "0.4in", left: "0.4in", right: "0.4in" },
     });
 
     const base64 = Buffer.from(pdf).toString("base64");
 
-    const memberPart = safeFilePart(report.member.name || "member");
+    const memberPart = safeFilePart(
+      "member" in report
+        ? report.member.name || "member"
+        : `${report.members.length}_members`,
+    );
     const viewPart = report.meta.view;
     const filename = `Member_Giving_${viewPart}_${memberPart}_${body.start_date}_to_${body.end_date}.pdf`;
 

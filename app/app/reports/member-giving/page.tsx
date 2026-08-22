@@ -15,6 +15,7 @@ import type {
 type CategoryType = "income" | "services";
 type Cat = { id: string; name: string; type: CategoryType };
 type Option = { id: string; name: string };
+type MemberOption = Option & { status: "active" | "archived" };
 
 type MemberRow = {
   id: string;
@@ -62,7 +63,7 @@ async function fetchMembers(orgId: string): Promise<MemberRow[]> {
     .from("members")
     .select("id,first_name,last_name,status")
     .eq("org_id", orgId)
-    .eq("status", "active")
+    .in("status", ["active", "archived"])
     .order("last_name", { ascending: true })
     .order("first_name", { ascending: true });
 
@@ -95,8 +96,8 @@ export default function MemberGivingPage() {
   const [end, setEnd] = useState(defaultEnd);
 
   // member
-  const [memberId, setMemberId] = useState<string>("");
-  const [memberOptions, setMemberOptions] = useState<Option[]>([]);
+  const [memberIds, setMemberIds] = useState<string[]>([]);
+  const [memberOptions, setMemberOptions] = useState<MemberOption[]>([]);
 
   // filters
   const [serviceIds, setServiceIds] = useState<string[]>([]);
@@ -111,21 +112,40 @@ export default function MemberGivingPage() {
 
   const [memberQuery, setMemberQuery] = useState("");
   const [memberOpen, setMemberOpen] = useState(false);
+  const [archivedMembersOpen, setArchivedMembersOpen] = useState(false);
 
   const [authChecked, setAuthChecked] = useState(false);
   const [isAllowed, setIsAllowed] = useState(false);
 
   const selectedMemberName = useMemo(() => {
-    return memberOptions.find((m) => m.id === memberId)?.name ?? "";
-  }, [memberOptions, memberId]);
+    return memberOptions.find((m) => m.id === memberIds[0])?.name ?? "";
+  }, [memberOptions, memberIds]);
+
+  const activeMemberOptions = useMemo(
+    () => memberOptions.filter((member) => member.status === "active"),
+    [memberOptions],
+  );
+
+  const archivedMemberOptions = useMemo(
+    () => memberOptions.filter((member) => member.status === "archived"),
+    [memberOptions],
+  );
 
   const filteredMembers = useMemo(() => {
     const q = memberQuery.trim().toLowerCase();
-    if (!q) return memberOptions.slice(0, 30);
-    return memberOptions
+    if (!q) return activeMemberOptions.slice(0, 30);
+    return activeMemberOptions
       .filter((m) => m.name.toLowerCase().includes(q))
       .slice(0, 30);
-  }, [memberOptions, memberQuery]);
+  }, [activeMemberOptions, memberQuery]);
+
+  const filteredArchivedMembers = useMemo(() => {
+    const q = memberQuery.trim().toLowerCase();
+    if (!q) return archivedMemberOptions;
+    return archivedMemberOptions.filter((member) =>
+      member.name.toLowerCase().includes(q),
+    );
+  }, [archivedMemberOptions, memberQuery]);
 
   useEffect(() => {
     let alive = true;
@@ -162,9 +182,10 @@ export default function MemberGivingPage() {
 
         if (!alive) return;
 
-        const memOpts: Option[] = members.map((m) => ({
+        const memOpts: MemberOption[] = members.map((m) => ({
           id: m.id,
           name: `${m.last_name}, ${m.first_name}`.trim(),
+          status: m.status,
         }));
 
         const svcOpts: Option[] = svcs.map((x) => ({ id: x.id, name: x.name }));
@@ -177,7 +198,8 @@ export default function MemberGivingPage() {
         setServiceOptions(svcOpts);
         setCategoryOptions(catOpts);
 
-        if (!memberId && memOpts.length) setMemberId(memOpts[0].id);
+        const firstActive = memOpts.find((member) => member.status === "active");
+        if (!memberIds.length && firstActive) setMemberIds([firstActive.id]);
 
         setServiceIds(svcOpts.map((x) => x.id));
         setCategoryIds(catOpts.map((x) => x.id));
@@ -197,14 +219,17 @@ export default function MemberGivingPage() {
 
   function openPrintView() {
     if (!orgId) return alert("No active organization selected.");
-    if (!memberId) return alert("Please select a member.");
+    if (!memberIds.length) return alert("Please select at least one member.");
+    if (mode !== "monthly" && memberIds.length !== 1)
+      return alert("Summary and detailed reports require exactly one member.");
     if (!start || !end) return alert("Please select a start and end date.");
     if (end < start)
       return alert("End date cannot be earlier than start date.");
 
     const url = buildMemberGivingPrintUrl({
       org: orgId,
-      member_id: memberId,
+      member_id: mode === "monthly" ? undefined : memberIds[0],
+      member_ids: mode === "monthly" ? memberIds : undefined,
       mode,
       start,
       end,
@@ -249,7 +274,7 @@ export default function MemberGivingPage() {
           <div>
             <div className="text-xl font-semibold">Member giving report</div>
             <div className="text-sm text-slate-600">
-              Select a member, set filters, then open the print view.
+              Select members, set filters, then open the print view.
             </div>
           </div>
 
@@ -308,20 +333,38 @@ export default function MemberGivingPage() {
                 {/* Member — explicitly grows */}
                 <div className="w-full min-w-0 lg:flex-[3]">
                   <div className="mb-1 text-xs font-semibold text-slate-600">
-                    Member
+                    {mode === "monthly" ? "Members" : "Member"}
                   </div>
 
+                  {mode === "monthly" ? (
+                    <MonthlyMemberSelector
+                      query={memberQuery}
+                      onQueryChange={(value) => {
+                        setMemberQuery(value);
+                        setArchivedMembersOpen(false);
+                      }}
+                      activeMembers={filteredMembers}
+                      allActiveMembers={activeMemberOptions}
+                      archivedMembers={filteredArchivedMembers}
+                      archivedOpen={archivedMembersOpen}
+                      onArchivedOpenChange={setArchivedMembersOpen}
+                      selected={memberIds}
+                      onSelectedChange={setMemberIds}
+                    />
+                  ) : (
                   <div className="relative">
                     <input
                       value={memberOpen ? memberQuery : selectedMemberName}
                       onChange={(e) => {
                         setMemberQuery(e.target.value);
                         setMemberOpen(true);
+                        setArchivedMembersOpen(false);
                       }}
                       onFocus={() => {
                         // auto-clear when cursor enters
                         setMemberQuery("");
                         setMemberOpen(true);
+                        setArchivedMembersOpen(false);
                       }}
                       onBlur={() => {
                         // close after click selection has a moment to register
@@ -336,7 +379,7 @@ export default function MemberGivingPage() {
                         <div className="max-h-64 overflow-auto">
                           {filteredMembers.length === 0 ? (
                             <div className="px-4 py-3 text-sm text-slate-500">
-                              No matches
+                              No active matches
                             </div>
                           ) : (
                             filteredMembers.map((m) => (
@@ -345,7 +388,7 @@ export default function MemberGivingPage() {
                                 type="button"
                                 onMouseDown={(e) => e.preventDefault()} // prevent blur before click
                                 onClick={() => {
-                                  setMemberId(m.id);
+                                  setMemberIds([m.id]);
                                   setMemberOpen(false);
                                   setMemberQuery("");
                                 }}
@@ -355,10 +398,47 @@ export default function MemberGivingPage() {
                               </button>
                             ))
                           )}
+                          {filteredArchivedMembers.length ? (
+                            <div className="border-t">
+                              <button
+                                type="button"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => setArchivedMembersOpen((open) => !open)}
+                                className="flex w-full items-center justify-between px-4 py-2 text-left text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                              >
+                                <span>
+                                  {filteredArchivedMembers.length} archived {filteredArchivedMembers.length === 1 ? "member" : "members"} found
+                                </span>
+                                <span>{archivedMembersOpen ? "Hide" : "Show"}</span>
+                              </button>
+                              {archivedMembersOpen
+                                ? filteredArchivedMembers.map((member) => (
+                                    <button
+                                      key={member.id}
+                                      type="button"
+                                      onMouseDown={(event) => event.preventDefault()}
+                                      onClick={() => {
+                                        setMemberIds([member.id]);
+                                        setMemberOpen(false);
+                                        setArchivedMembersOpen(false);
+                                        setMemberQuery("");
+                                      }}
+                                      className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-slate-800 hover:bg-slate-50"
+                                    >
+                                      <span>{member.name}</span>
+                                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                                        Archived
+                                      </span>
+                                    </button>
+                                  ))
+                                : null}
+                            </div>
+                          ) : null}
                         </div>
                       </div>
                     )}
                   </div>
+                  )}
                 </div>
 
                 {/* Report type — constrained */}
@@ -368,13 +448,18 @@ export default function MemberGivingPage() {
                   </div>
                   <select
                     value={mode}
-                    onChange={(e) =>
-                      setMode(e.target.value as MemberGivingMode)
-                    }
+                    onChange={(e) => {
+                      const nextMode = e.target.value as MemberGivingMode;
+                      setMode(nextMode);
+                      if (nextMode !== "monthly" && memberIds.length > 1) {
+                        setMemberIds(memberIds.slice(0, 1));
+                      }
+                    }}
                     className="w-full rounded-lg border px-4 py-2 text-sm outline-none focus:border-slate-400"
                   >
                     <option value="summary">Summary</option>
                     <option value="detailed">Detailed</option>
+                    <option value="monthly">Monthly by member</option>
                   </select>
                 </div>
               </div>
@@ -441,6 +526,130 @@ export default function MemberGivingPage() {
   );
 }
 
+function MonthlyMemberSelector({
+  query,
+  onQueryChange,
+  activeMembers,
+  allActiveMembers,
+  archivedMembers,
+  archivedOpen,
+  onArchivedOpenChange,
+  selected,
+  onSelectedChange,
+}: {
+  query: string;
+  onQueryChange: (value: string) => void;
+  activeMembers: MemberOption[];
+  allActiveMembers: MemberOption[];
+  archivedMembers: MemberOption[];
+  archivedOpen: boolean;
+  onArchivedOpenChange: (open: boolean) => void;
+  selected: string[];
+  onSelectedChange: (ids: string[]) => void;
+}) {
+  return (
+    <div className="rounded-2xl border bg-white">
+      <div className="flex flex-col gap-2 border-b p-3 sm:flex-row sm:items-center">
+        <input
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="Search members..."
+          className="min-w-0 flex-1 rounded-xl border px-3 py-2 text-sm outline-none focus:border-slate-400"
+        />
+        <button
+          type="button"
+          className="rounded-xl border px-3 py-2 text-xs font-semibold hover:bg-slate-50"
+          onClick={() => onSelectedChange(allActiveMembers.map((member) => member.id))}
+        >
+          Select all active
+        </button>
+        <button
+          type="button"
+          className="rounded-xl border px-3 py-2 text-xs font-semibold hover:bg-slate-50"
+          onClick={() => onSelectedChange([])}
+        >
+          Clear
+        </button>
+      </div>
+      <div className="px-3 py-2 text-xs font-semibold text-slate-600">
+        {selected.length} selected
+      </div>
+      <div className="max-h-64 overflow-auto border-t">
+        {activeMembers.length ? (
+          activeMembers.map((member) => (
+            <MemberCheckRow
+              key={member.id}
+              member={member}
+              selected={selected.includes(member.id)}
+              onToggle={() => onSelectedChange(toggleId(selected, member.id))}
+            />
+          ))
+        ) : (
+          <div className="px-3 py-3 text-sm text-slate-500">
+            No active members found.
+          </div>
+        )}
+        {archivedMembers.length ? (
+          <div className="border-t">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-semibold text-slate-600 hover:bg-slate-50"
+              onClick={() => onArchivedOpenChange(!archivedOpen)}
+            >
+              <span>
+                {archivedMembers.length} archived {archivedMembers.length === 1 ? "member" : "members"}
+              </span>
+              <span>{archivedOpen ? "Hide" : "Show"}</span>
+            </button>
+            {archivedOpen
+              ? archivedMembers.map((member) => (
+                  <MemberCheckRow
+                    key={member.id}
+                    member={member}
+                    selected={selected.includes(member.id)}
+                    onToggle={() => onSelectedChange(toggleId(selected, member.id))}
+                    archived
+                  />
+                ))
+              : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function MemberCheckRow({
+  member,
+  selected,
+  onToggle,
+  archived = false,
+}: {
+  member: MemberOption;
+  selected: boolean;
+  onToggle: () => void;
+  archived?: boolean;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center justify-between gap-3 px-3 py-2 hover:bg-slate-50">
+      <span className="flex min-w-0 items-center gap-3">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggle}
+          className="h-4 w-4 accent-slate-900"
+        />
+        <span className="truncate text-sm text-slate-800">{member.name}</span>
+      </span>
+      {archived ? (
+        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+          Archived
+        </span>
+      ) : null}
+    </label>
+  );
+}
+
 function Card({
   title,
   children,
@@ -453,31 +662,6 @@ function Card({
       <div className="text-xs font-semibold text-slate-600">{title}</div>
       <div className="mt-3">{children}</div>
     </div>
-  );
-}
-
-function ModePill({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={[
-        "rounded-full border px-4 py-2 text-sm font-semibold",
-        active
-          ? "border-slate-900 bg-slate-900 text-white"
-          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
-      ].join(" ")}
-      type="button"
-    >
-      {label}
-    </button>
   );
 }
 

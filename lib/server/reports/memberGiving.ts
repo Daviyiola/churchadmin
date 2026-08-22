@@ -32,6 +32,7 @@ type CategoryRow = {
 };
 
 type IncomeEntryRow = {
+  id: string;
   session_date: string;
   service_category_id: string;
   member_id: string;
@@ -61,6 +62,71 @@ function memberName(m: MemberRow): string {
   const first = (m.first_name ?? "").trim();
   const base = [last, first].filter(Boolean).join(", ");
   return base || "Unknown member";
+}
+
+function uniqueMemberIds(body: RunMemberGivingBody) {
+  const ids = body.member_ids?.length
+    ? body.member_ids
+    : body.member_id
+      ? [body.member_id]
+      : [];
+  return [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+}
+
+function monthKeys(start: string, end: string) {
+  const keys: string[] = [];
+  const [startYear, startMonth] = start.split("-").map(Number);
+  const [endYear, endMonth] = end.split("-").map(Number);
+  let year = startYear;
+  let month = startMonth;
+  while (year < endYear || (year === endYear && month <= endMonth)) {
+    keys.push(`${year}-${String(month).padStart(2, "0")}`);
+    month += 1;
+    if (month === 13) {
+      month = 1;
+      year += 1;
+    }
+  }
+  return keys;
+}
+
+async function fetchIncomeEntries(
+  supabase: SupabaseClient,
+  orgId: string,
+  memberIds: string[],
+  body: RunMemberGivingBody,
+) {
+  const rows: IncomeEntryRow[] = [];
+  const pageSize = 1000;
+
+  for (let offset = 0; ; offset += pageSize) {
+    let query = supabase
+      .from("income_entries")
+      .select("id,session_date,service_category_id,member_id,income_category_id,payment_method,amount_cents,entry_type")
+      .eq("org_id", orgId)
+      .in("member_id", memberIds)
+      .gte("session_date", body.start_date)
+      .lte("session_date", body.end_date);
+
+    if (isNonEmptyArray(body.service_ids)) query = query.in("service_category_id", body.service_ids);
+    if (isNonEmptyArray(body.category_ids)) query = query.in("income_category_id", body.category_ids);
+    if (isNonEmptyArray(body.payment_methods)) query = query.in("payment_method", body.payment_methods);
+
+    const { data, error } = await query
+      .order("session_date", { ascending: true })
+      .order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (error) throw new Error(error.message);
+
+    const page = (data ?? []) as unknown as IncomeEntryRow[];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    if (rows.length >= 50_000) {
+      throw new Error("This report exceeds the safe 50,000-entry limit. Narrow the date range or member selection.");
+    }
+  }
+
+  return rows;
 }
 
 async function getBranding(
@@ -135,19 +201,29 @@ export async function runMemberGivingReportFromToken(
   );
   requireReportRoles(role, ["owner", "admin"]);
 
-  // --- Member ---
-  const { data: memRow, error: mem2Err } = await supabase
+  const memberIds = uniqueMemberIds(body);
+  if (memberIds.length === 0) throw new Error("Select at least one member.");
+  if (memberIds.length > 500) throw new Error("Select no more than 500 members per report.");
+  if (body.mode !== "monthly" && memberIds.length !== 1) {
+    throw new Error("Summary and detailed reports require exactly one member.");
+  }
+
+  // --- Members ---
+  const { data: memberRows, error: mem2Err } = await supabase
     .from("members")
     .select("id,first_name,last_name")
     .eq("org_id", body.organization_id)
-    .eq("id", body.member_id)
-    .in("status", ["active", "archived"])
-    .maybeSingle();
+    .in("id", memberIds)
+    .in("status", ["active", "archived"]);
 
   if (mem2Err) throw new Error(mem2Err.message);
-  if (!memRow) throw new Error("Member not found");
-
-  const member = memRow as unknown as MemberRow;
+  const members = ((memberRows ?? []) as unknown as MemberRow[])
+    .map((member) => ({ ...member, name: memberName(member) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  if (members.length !== memberIds.length) {
+    throw new Error("One or more selected members are unavailable, merged, or outside this organization.");
+  }
+  const member = members[0];
 
   const branding = await getBranding(supabase, body.organization_id);
   const categoryNameById = await getIncomeCategoryNameMap(
@@ -155,28 +231,118 @@ export async function runMemberGivingReportFromToken(
     body.organization_id,
   );
 
-  // --- Income entries for this member ---
-  let q = supabase
-    .from("income_entries")
-    .select("session_date,service_category_id,member_id,income_category_id,payment_method,amount_cents,entry_type")
-    .eq("org_id", body.organization_id)
-    .eq("member_id", body.member_id)
-    .gte("session_date", body.start_date)
-    .lte("session_date", body.end_date)
-    .order("session_date", { ascending: true });
-
-  if (isNonEmptyArray(body.service_ids)) q = q.in("service_category_id", body.service_ids);
-  if (isNonEmptyArray(body.category_ids)) q = q.in("income_category_id", body.category_ids);
-  if (isNonEmptyArray(body.payment_methods)) q = q.in("payment_method", body.payment_methods);
-
-  const { data, error } = await q;
-  if (error) throw new Error(error.message);
-
-  const entries = (data ?? []) as unknown as IncomeEntryRow[];
+  const entries = await fetchIncomeEntries(
+    supabase,
+    body.organization_id,
+    memberIds,
+    body,
+  );
 
   const start = body.start_date;
   const end = body.end_date;
   const view: MemberGivingMode = body.mode;
+
+  if (view === "monthly") {
+    const requestedCategoryIds = isNonEmptyArray(body.category_ids)
+      ? [...new Set(body.category_ids)]
+      : [...new Set(entries.map((entry) => entry.income_category_id))];
+    const categories = requestedCategoryIds
+      .map((id) => ({ id, name: categoryNameById.get(id) }))
+      .filter((category): category is { id: string; name: string } => Boolean(category.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (categories.length !== requestedCategoryIds.length) {
+      throw new Error("One or more selected income categories are unavailable or outside this organization.");
+    }
+
+    const amountByMonthMemberCategory = new Map<string, number>();
+    const amountByMemberCategory = new Map<string, number>();
+    for (const entry of entries) {
+      const key = `${entry.session_date.slice(0, 7)}:${entry.member_id}:${entry.income_category_id}`;
+      amountByMonthMemberCategory.set(
+        key,
+        (amountByMonthMemberCategory.get(key) ?? 0) + dollarsFromCents(entry.amount_cents),
+      );
+      const totalKey = `${entry.member_id}:${entry.income_category_id}`;
+      amountByMemberCategory.set(
+        totalKey,
+        (amountByMemberCategory.get(totalKey) ?? 0) + dollarsFromCents(entry.amount_cents),
+      );
+    }
+
+    const months = monthKeys(start, end).map((key) => {
+      const monthStart = `${key}-01`;
+      const [year, month] = key.split("-").map(Number);
+      const monthEnd = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+      const covered_start = monthStart < start ? start : monthStart;
+      const covered_end = monthEnd > end ? end : monthEnd;
+      const rows = members.map((selectedMember) => {
+        const category_amounts = Object.fromEntries(
+          categories.map((category) => [
+            category.id,
+            amountByMonthMemberCategory.get(`${key}:${selectedMember.id}:${category.id}`) ?? 0,
+          ]),
+        );
+        return {
+          member_id: selectedMember.id,
+          member_name: selectedMember.name,
+          category_amounts,
+          total: Object.values(category_amounts).reduce((sum, amount) => sum + amount, 0),
+        };
+      });
+      const category_totals = Object.fromEntries(
+        categories.map((category) => [
+          category.id,
+          rows.reduce((sum, row) => sum + (row.category_amounts[category.id] ?? 0), 0),
+        ]),
+      );
+      return {
+        key,
+        label: yyyymmLabel(key),
+        covered_start,
+        covered_end,
+        rows,
+        category_totals,
+        subtotal: Object.values(category_totals).reduce((sum, amount) => sum + amount, 0),
+      };
+    });
+
+    const member_totals = members.map((selectedMember) => {
+      const category_amounts = Object.fromEntries(
+        categories.map((category) => [
+          category.id,
+          amountByMemberCategory.get(`${selectedMember.id}:${category.id}`) ?? 0,
+        ]),
+      );
+      return {
+        member_id: selectedMember.id,
+        member_name: selectedMember.name,
+        category_amounts,
+        total: Object.values(category_amounts).reduce((sum, amount) => sum + amount, 0),
+      };
+    });
+    const category_totals = Object.fromEntries(
+      categories.map((category) => [
+        category.id,
+        member_totals.reduce((sum, row) => sum + (row.category_amounts[category.id] ?? 0), 0),
+      ]),
+    );
+
+    return {
+      ok: true,
+      mode: "member_giving",
+      branding,
+      meta: { role, view: "monthly" },
+      members: members.map(({ id, name }) => ({ id, name })),
+      period: { start, end },
+      monthly: {
+        categories,
+        months,
+        member_totals,
+        category_totals,
+        grand_total: Object.values(category_totals).reduce((sum, amount) => sum + amount, 0),
+      },
+    };
+  }
 
   // ======================
   // SUMMARY
@@ -206,7 +372,7 @@ export async function runMemberGivingReportFromToken(
       mode: "member_giving",
       branding,
       meta: { role, view: "summary" },
-      member: { id: member.id, name: memberName(member) },
+      member: { id: member.id, name: member.name },
       period: { start, end },
       summary: { rows, grand_total },
     };
@@ -251,7 +417,7 @@ export async function runMemberGivingReportFromToken(
     mode: "member_giving",
     branding,
     meta: { role, view: "detailed" },
-    member: { id: member.id, name: memberName(member) },
+    member: { id: member.id, name: member.name },
     period: { start, end },
     detailed: { months, grand_total },
   };

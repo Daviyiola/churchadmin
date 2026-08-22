@@ -258,6 +258,17 @@ const pageProperty = {
 const leadershipTools: NikkyToolDefinition[] = [
   {
     type: "function",
+    name: "prepare_member_giving_report_selection",
+    description: "Resolve one exact active income category and the canonical members with identifiable giving in an exact period, so a monthly Member Giving report can list each contributor. Owner/admin only. This prepares selection data; it does not generate or confirm a report.",
+    strict: true,
+    parameters: objectSchema({
+      ...dateRangeProperties,
+      category_name: { type: "string", minLength: 1, maxLength: 100 },
+      include_archived: { type: "boolean" },
+    }),
+  },
+  {
+    type: "function",
     name: "sunday_member_checkins",
     description: "Classify active registered members as recorded present, recorded absent, or unknown for exact Sunday dates. Owner/admin only. Anonymous or incomplete Sundays never establish absence.",
     strict: true,
@@ -1946,6 +1957,100 @@ async function givingEntries(
   return rows;
 }
 
+export async function prepareMemberGivingReportSelection(
+  context: NikkyContext,
+  args: Record<string, unknown>,
+) {
+  const { startDate, endDate } = assertDateRange(args.start_date, args.end_date);
+  enforceFinanceWindow(context, startDate);
+  const categoryName = text(args.category_name);
+  if (!categoryName) throw new Error("Enter an exact income category name.");
+  const includeArchived = args.include_archived === true;
+
+  const { data: categoryRows, error: categoryError } = await context.supabase
+    .from("categories")
+    .select("id,name,status,type")
+    .eq("org_id", context.organizationId)
+    .eq("type", "income")
+    .eq("status", "active")
+    .limit(100);
+  if (categoryError) throw new Error(categoryError.message);
+  const categoryMatches = (categoryRows ?? []).filter(
+    (row) => String(row.name).trim().toLocaleLowerCase() === categoryName.toLocaleLowerCase(),
+  );
+  if (categoryMatches.length !== 1) {
+    return result(
+      categoryMatches.length > 1 ? "ambiguous" : "no_records",
+      { start_date: startDate, end_date: endDate, category_name: categoryName, include_archived: includeArchived },
+      categoryMatches.map((row) => ({ category_id: row.id, category: row.name })),
+      categoryMatches.length,
+      categoryMatches.length > 1
+        ? "More than one active income category has that exact name. Ask the user to choose the category."
+        : "No active income category matched that exact name.",
+    );
+  }
+
+  const category = categoryMatches[0];
+  const entries = await givingEntries(context, startDate, endDate, String(category.id));
+  const contributorIds = [...new Set(entries
+    .map((entry) => entry.member_id ? String(entry.member_id) : "")
+    .filter(Boolean))];
+  if (contributorIds.length > 500) {
+    return result(
+      "unavailable",
+      { start_date: startDate, end_date: endDate, category_id: category.id, category: category.name, include_archived: includeArchived },
+      null,
+      contributorIds.length,
+      "That report would include more than 500 identifiable members. Narrow the date range.",
+    );
+  }
+
+  const members: Array<{ id: string; first_name: string | null; last_name: string | null; status: string }> = [];
+  for (let offset = 0; offset < contributorIds.length; offset += 100) {
+    const batch = contributorIds.slice(offset, offset + 100);
+    const { data, error } = await context.supabase
+      .from("members")
+      .select("id,first_name,last_name,status,membership_stage")
+      .eq("org_id", context.organizationId)
+      .eq("membership_stage", "member")
+      .in("status", includeArchived ? ["active", "archived"] : ["active"])
+      .in("id", batch);
+    if (error) throw new Error(error.message);
+    members.push(...((data ?? []) as typeof members));
+  }
+  members.sort((a, b) => {
+    const aName = `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim();
+    const bName = `${b.first_name ?? ""} ${b.last_name ?? ""}`.trim();
+    return aName.localeCompare(bName) || a.id.localeCompare(b.id);
+  });
+  const anonymousEntryCount = entries.filter((entry) => !entry.member_id).length;
+  const selectedMemberIds = new Set(members.map((member) => member.id));
+  const selectedIdentifiableEntryCount = entries.filter(
+    (entry) => entry.member_id && selectedMemberIds.has(String(entry.member_id)),
+  ).length;
+
+  return result(
+    members.length ? "ok" : "no_records",
+    {
+      start_date: startDate,
+      end_date: endDate,
+      category_id: category.id,
+      category: category.name,
+      include_archived: includeArchived,
+    },
+    {
+      category: { id: category.id, name: category.name },
+      member_ids: members.map((member) => member.id),
+      identifiable_entry_count: selectedIdentifiableEntryCount,
+      excluded_identifiable_entry_count: entries.length - anonymousEntryCount - selectedIdentifiableEntryCount,
+      anonymous_entry_count: anonymousEntryCount,
+      interpretation: "Members are included only when an identifiable entry for the selected category was recorded in the applied period. Merged tombstones and visitors are excluded.",
+    },
+    members.length,
+    members.length ? undefined : "No canonical members had identifiable giving recorded for that category and period.",
+  );
+}
+
 function memberGivingMap(rows: GivingEntry[]) {
   const map = new Map<string, GivingEntry[]>();
   for (const row of rows) {
@@ -2199,11 +2304,12 @@ export async function executeDataTool(
     else if (name === "upcoming_schedules" || name === "schedule_assignments") output = await scheduleRows(context, args);
     else if (name === "schedule_coverage_gaps") output = await coverageGaps(context, args);
     else if (name === "individual_giving") output = await individualGiving(context, args);
+    else if (name === "prepare_member_giving_report_selection") output = await prepareMemberGivingReportSelection(context, args);
     else if (name === "regular_tithe_activity") output = await regularTitheActivity(context, args);
     else if (name === "donor_giving_patterns") output = await donorGivingPatterns(context, args);
     else throw new Error("Unknown or unauthorized Nikky tool.");
 
-    const identifiableFinancial = ["individual_giving", "regular_tithe_activity", "donor_giving_patterns"].includes(name);
+    const identifiableFinancial = ["individual_giving", "prepare_member_giving_report_selection", "regular_tithe_activity", "donor_giving_patterns"].includes(name);
     const attendanceCohort = [
       "members_attendance_history",
       "absent_members",

@@ -13,7 +13,7 @@ export const REPORT_TYPES = [
 ] as const;
 export type NikkyReportType = (typeof REPORT_TYPES)[number];
 export type ReportFormat = "pdf" | "csv";
-export type ReportDetail = "summary" | "detailed";
+export type ReportDetail = "summary" | "detailed" | "monthly";
 
 export type CanonicalReportParameters = {
   report_type: NikkyReportType;
@@ -27,6 +27,7 @@ export type CanonicalReportParameters = {
   category_ids: string[];
   payment_methods: Array<"cash" | "cheque" | "online">;
   member_id: string | null;
+  member_ids: string[];
 };
 
 type Definition = {
@@ -42,23 +43,24 @@ export const REPORT_REGISTRY: Record<NikkyReportType, Definition> = {
   quick_expense: { name: "Quick Expense", description: "Expense ledger with dates, categories, vendors, and amounts.", roles: ["owner", "admin", "finance"], financial: true, classification: "financial_detail" },
   quick_attendance: { name: "Quick Attendance", description: "Published attendance summary or member-level detail.", roles: ["owner", "admin", "finance"], financial: false, classification: "attendance" },
   income_statement: { name: "Income Statement", description: "Income, expenses, and net income grouped by category.", roles: ["owner", "admin", "finance"], financial: true, classification: "financial_aggregate" },
-  member_giving: { name: "Member Giving", description: "Giving for one selected member, in summary or detailed form.", roles: ["owner", "admin"], financial: true, classification: "financial_identifiable_individual" },
+  member_giving: { name: "Member Giving", description: "Giving for selected members in summary, detailed, or monthly-by-member form.", roles: ["owner", "admin"], financial: true, classification: "financial_identifiable_individual" },
   first_timers: { name: "First-Timers", description: "Visitors whose first visit falls in the selected period; Nikky omits follow-up notes.", roles: ["owner", "admin", "finance"], financial: false, classification: "visitor" },
   baptisms: { name: "Baptisms", description: "Members baptized in the selected period.", roles: ["owner", "admin", "finance"], financial: false, classification: "member_sacrament" },
   new_converts: { name: "New Converts", description: "Members marked born again in the selected period.", roles: ["owner", "admin", "finance"], financial: false, classification: "member_sacrament" },
   combined: { name: "Converts & Baptisms", description: "Combined converts and baptisms in the selected period.", roles: ["owner", "admin", "finance"], financial: false, classification: "member_sacrament" },
 };
 
-function arrayOfStrings(value: unknown, allowed?: readonly string[]) {
+function arrayOfStrings(value: unknown, allowed?: readonly string[], maxItems = 100) {
   if (value == null) return [];
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw new Error("Invalid report filter list.");
-  const clean = [...new Set(value as string[])].slice(0, 100);
+  const clean = [...new Set(value as string[])];
+  if (clean.length > maxItems) throw new Error(`Report filter lists may contain at most ${maxItems} values.`);
   if (allowed && clean.some((item) => !allowed.includes(item))) throw new Error("Invalid report filter value.");
   return clean;
 }
 
 export function canonicalizeReportParameters(context: NikkyContext, raw: Record<string, unknown>): CanonicalReportParameters {
-  const allowed = new Set(["report_type","format","start_date","end_date","detail_level","include_archived","joined","service_ids","category_ids","payment_methods","member_id"]);
+  const allowed = new Set(["report_type","format","start_date","end_date","detail_level","include_archived","joined","service_ids","category_ids","payment_methods","member_id","member_ids"]);
   if (Object.keys(raw).some((key) => !allowed.has(key))) throw new Error("Unknown report parameter.");
   const reportType = String(raw.report_type) as NikkyReportType;
   if (!REPORT_TYPES.includes(reportType)) throw new Error("Unsupported report type.");
@@ -68,13 +70,18 @@ export function canonicalizeReportParameters(context: NikkyContext, raw: Record<
   if (definition.financial) enforceFinanceWindow(context, startDate);
   const format = raw.format === "pdf" || raw.format === "csv" ? raw.format : null;
   if (!format) throw new Error("Report format must be PDF or CSV.");
-  const detail = raw.detail_level === "detailed" ? "detailed" : "summary";
+  const detail = raw.detail_level === "detailed" || raw.detail_level === "monthly" ? raw.detail_level : "summary";
   const joined = raw.joined === "joined" || raw.joined === "not_joined" ? raw.joined : "all";
   const memberId = raw.member_id == null ? null : String(raw.member_id);
+  const memberIds = arrayOfStrings(raw.member_ids, undefined, 500);
   if (memberId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(memberId)) throw new Error("Invalid member ID.");
-  if (context.role === "finance" && memberId) throw new Error("Finance users cannot target a donor in financial reports.");
-  if (reportType === "member_giving" && !memberId) throw new Error("Member Giving requires an unambiguous selected member.");
-  if (reportType !== "member_giving" && memberId) throw new Error("This report does not accept a member filter.");
+  if (memberIds.some((id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) throw new Error("Invalid member ID list.");
+  if (context.role === "finance" && (memberId || memberIds.length)) throw new Error("Finance users cannot target donors in financial reports.");
+  if (reportType === "member_giving" && detail === "monthly" && !memberIds.length) throw new Error("Monthly Member Giving requires at least one unambiguous selected member.");
+  if (reportType === "member_giving" && detail !== "monthly" && !memberId) throw new Error("Summary and detailed Member Giving require one unambiguous selected member.");
+  if (reportType === "member_giving" && detail !== "monthly" && memberIds.length) throw new Error("Summary and detailed Member Giving accept only one member.");
+  if (reportType === "member_giving" && detail === "monthly" && memberId) throw new Error("Monthly Member Giving uses the selected member list.");
+  if (reportType !== "member_giving" && (memberId || memberIds.length)) throw new Error("This report does not accept a member filter.");
   return {
     report_type: reportType, format, start_date: startDate, end_date: endDate,
     detail_level: detail,
@@ -84,6 +91,7 @@ export function canonicalizeReportParameters(context: NikkyContext, raw: Record<
     category_ids: arrayOfStrings(raw.category_ids),
     payment_methods: arrayOfStrings(raw.payment_methods, ["cash", "cheque", "online"]) as CanonicalReportParameters["payment_methods"],
     member_id: memberId,
+    member_ids: memberIds,
   };
 }
 
@@ -153,10 +161,22 @@ export async function buildReportData(context: NikkyContext, p: CanonicalReportP
     return {title:"First-Timers",columns:["first_visit_at","name","gender","age_group","how_heard","joined"],rows,summary:{total_visitors:rows.length,total_joined:rows.filter(r=>r.joined).length},recordCount:rows.length};
   }
   if (p.report_type === "member_giving") {
-    const report = await runMemberGivingReportFromToken({ organization_id: context.organizationId, member_id: p.member_id!, mode: p.detail_level, start_date: p.start_date, end_date: p.end_date, service_ids: p.service_ids, category_ids: p.category_ids, payment_methods: p.payment_methods }, context.accessToken);
+    const report = await runMemberGivingReportFromToken({ organization_id: context.organizationId, member_id: p.member_id ?? undefined, member_ids: p.member_ids.length ? p.member_ids : undefined, mode: p.detail_level, start_date: p.start_date, end_date: p.end_date, service_ids: p.service_ids, category_ids: p.category_ids, payment_methods: p.payment_methods }, context.accessToken);
     if ("summary" in report) {
       const rows = report.summary.rows.map((r) => ({ category: r.category_name, amount: r.amount }));
       return { title: `Member Giving — ${report.member.name}`, columns: ["category","amount"], rows, summary: { grand_total: report.summary.grand_total }, recordCount: rows.length, memberGivingReport: report };
+    }
+    if ("monthly" in report) {
+      const columns = ["month", "member", ...report.monthly.categories.map((category) => category.name), "total"];
+      const rows = report.monthly.months.flatMap((month) =>
+        month.rows.map((row) => Object.fromEntries([
+          ["month", month.label],
+          ["member", row.member_name],
+          ...report.monthly.categories.map((category) => [category.name, row.category_amounts[category.id] ?? 0]),
+          ["total", row.total],
+        ])),
+      );
+      return { title: `Monthly Member Giving - ${report.members.length} members`, columns, rows, summary: { grand_total: report.monthly.grand_total }, recordCount: rows.length, memberGivingReport: report };
     }
     const rows = report.detailed.months.flatMap((month) => month.rows.map((r) => ({ month: month.label, date: r.date, category: r.category_name, method: r.payment_method, entry_type: r.entry_type, amount: r.amount })));
     return { title: `Member Giving — ${report.member.name}`, columns: ["month","date","category","method","entry_type","amount"], rows, summary: { grand_total: report.detailed.grand_total }, recordCount: rows.length, memberGivingReport: report };
@@ -178,7 +198,7 @@ export async function renderReport(context: NikkyContext,p:CanonicalReportParame
   const browser=await launchBrowser(); const page=await browser.newPage();
   try {
     const shell = data.memberGivingReport
-      ? { html: renderMemberGivingHtml(data.memberGivingReport, "Generated by Nikky"), landscape: false }
+      ? { html: renderMemberGivingHtml(data.memberGivingReport, "Generated by Nikky"), landscape: data.memberGivingReport.meta.view === "monthly" }
       : await renderExistingReportShellHtml(context, p, data);
     await page.setContent(shell.html,{waitUntil:"load",timeout:30_000});
     const bytes=Buffer.from(await page.pdf({format:"Letter",landscape:shell.landscape,printBackground:true,margin:{top:"0.4in",right:"0.4in",bottom:"0.4in",left:"0.4in"}}));

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attendanceDemographicBreakdown, attendanceMonthlySummary, canUseNikkyDataTool, dataToolDefinitions, filterMemberSearchMatches, incomeMonthlyBreakdown, memberPopulationSummary } from "@/lib/server/nikky/tools";
+import { attendanceDemographicBreakdown, attendanceMonthlySummary, canUseNikkyDataTool, dataToolDefinitions, filterMemberSearchMatches, incomeMonthlyBreakdown, memberPopulationSummary, prepareMemberGivingReportSelection } from "@/lib/server/nikky/tools";
 import { canonicalizeReportParameters } from "@/lib/server/reports/registry";
 import type { NikkyContext } from "@/lib/server/nikky/types";
 import { normalizeNikkyMarkdown } from "@/lib/nikkyMarkdown";
@@ -29,11 +29,11 @@ describe("Nikky permissions and strict schemas",()=>{
     expect(names).toEqual(expect.arrayContaining([
       "members_attendance_history","sunday_member_checkins","attendance_member_changes",
       "attendance_inconsistency","attendance_pastoral_candidates","regular_tithe_activity",
-      "donor_giving_patterns",
+      "donor_giving_patterns","prepare_member_giving_report_selection",
     ]));
   });
   it("independently rejects direct finance execution of leadership tools",()=>{
-    for(const name of ["members_attendance_history","absent_members","sunday_member_checkins","attendance_member_changes","attendance_inconsistency","attendance_pastoral_candidates","individual_giving","regular_tithe_activity","donor_giving_patterns"]){
+    for(const name of ["members_attendance_history","absent_members","sunday_member_checkins","attendance_member_changes","attendance_inconsistency","attendance_pastoral_candidates","individual_giving","prepare_member_giving_report_selection","regular_tithe_activity","donor_giving_patterns"]){
       expect(canUseNikkyDataTool(context("finance"),name)).toBe(false);
       expect(canUseNikkyDataTool(context("admin"),name)).toBe(true);
     }
@@ -59,6 +59,38 @@ describe("Nikky permissions and strict schemas",()=>{
   it("rejects finance Member Giving reports",()=>expect(()=>canonicalizeReportParameters(context("finance"),{...report,report_type:"member_giving"})).toThrow("not available"));
   it("rejects finance reports before the cutoff",()=>expect(()=>canonicalizeReportParameters(context("finance"),{...report,start_date:"2026-04-22"})).toThrow("begins 2026-04-23"));
   it("rejects donor targeting and unknown parameters",()=>{expect(()=>canonicalizeReportParameters(context("finance"),{...report,member_id:"11111111-1111-4111-8111-111111111111"})).toThrow("cannot target");expect(()=>canonicalizeReportParameters(context("admin"),{...report,organization_id:"other"})).toThrow("Unknown report parameter");});
+});
+
+describe("Nikky Member Giving report selection",()=>{
+  class Query {
+    constructor(private table:string){}
+    select(){return this;} eq(){return this;} in(){return this;} gte(){return this;}
+    lte(){return this;} limit(){return this;} order(){return this;} range(){return this;}
+    then(resolve:(value:{data:unknown[];error:null})=>void){
+      if(this.table==="categories")resolve({data:[{id:"cat-youth",name:"Youth Ministry",status:"active",type:"income"}],error:null});
+      else if(this.table==="income_entries")resolve({data:[
+        {session_date:"2026-01-10",member_id:"m2",income_category_id:"cat-youth",amount_cents:5000,entry_type:"original"},
+        {session_date:"2026-02-10",member_id:"m1",income_category_id:"cat-youth",amount_cents:2500,entry_type:"original"},
+        {session_date:"2026-02-10",member_id:null,income_category_id:"cat-youth",amount_cents:1000,entry_type:"original"},
+      ],error:null});
+      else resolve({data:[
+        {id:"m1",first_name:"Ada",last_name:"Brooks",status:"active",membership_stage:"member"},
+        {id:"m2",first_name:"David",last_name:"Iyiola",status:"active",membership_stage:"member"},
+      ],error:null});
+    }
+  }
+  const reportContext={...context("admin"),supabase:{from:(table:string)=>new Query(table)}} as never;
+
+  it("resolves exact-category contributors into a stable report member list",async()=>{
+    const output=await prepareMemberGivingReportSelection(reportContext,{
+      start_date:"2026-01-01",end_date:"2026-12-31",category_name:"Youth Ministry",include_archived:true,
+    });
+    expect(output.outcome).toBe("ok");
+    expect(output.applied).toMatchObject({category_id:"cat-youth",category:"Youth Ministry"});
+    expect(output.data).toMatchObject({
+      member_ids:["m1","m2"],identifiable_entry_count:2,anonymous_entry_count:1,
+    });
+  });
 });
 
 describe("Nikky role-safe starter rotation",()=>{

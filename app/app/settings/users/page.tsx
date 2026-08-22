@@ -215,7 +215,15 @@ export default function UsersSettingsPage() {
     setInviteUrl(json.inviteUrl);
 
     setToastText(
-      json.emailed ? "Invite email sent ✓" : "Invite created ✓"
+      json.emailed
+        ? json.refreshed
+          ? "Expired invite refreshed and emailed ✓"
+          : json.reused
+            ? "Pending invite emailed again ✓"
+            : "Invite email sent ✓"
+        : json.refreshed
+          ? "Expired invite refreshed ✓"
+          : "Invite created ✓"
     );
     setToastOpen(true);
     window.setTimeout(() => setToastOpen(false), 1600);

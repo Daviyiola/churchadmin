@@ -9,6 +9,7 @@ import type {
   MemberGivingReport,
   MemberGivingSummaryReport,
   MemberGivingDetailedReport,
+  MemberGivingMonthlyReport,
   RunMemberGivingBody,
   ErrorResponse,
   PaymentMethod,
@@ -23,13 +24,17 @@ function isDetailedReport(r: MemberGivingReport): r is MemberGivingDetailedRepor
   return r.meta.view === "detailed";
 }
 
+function isMonthlyReport(r: MemberGivingReport): r is MemberGivingMonthlyReport {
+  return r.meta.view === "monthly";
+}
+
 
 
 function isPaymentMethod(v: string): v is PaymentMethod {
   return v === "cash" || v === "cheque" || v === "online";
 }
 function isMode(v: string): v is MemberGivingMode {
-  return v === "summary" || v === "detailed";
+  return v === "summary" || v === "detailed" || v === "monthly";
 }
 
 function money(n: number) {
@@ -50,7 +55,7 @@ export default function MemberGivingPrintClient() {
   const meta = useMemo(() => {
     const tmp = new URLSearchParams(qs);
     const org = tmp.get("org") ?? "";
-    const member_id = tmp.get("member_id") ?? "";
+    const member_ids = tmp.getAll("member_id");
     const modeRaw = tmp.get("mode") ?? "summary";
     const mode: MemberGivingMode = isMode(modeRaw) ? modeRaw : "summary";
     const start = tmp.get("start") ?? "";
@@ -60,7 +65,7 @@ export default function MemberGivingPrintClient() {
     const service_ids = tmp.getAll("service_id");
     const payment_methods = tmp.getAll("method").filter(isPaymentMethod);
 
-    return { org, member_id, mode, start, end, category_ids, service_ids, payment_methods };
+    return { org, member_ids, mode, start, end, category_ids, service_ids, payment_methods };
   }, [qs]);
 
   const filtersLine = useMemo(() => {
@@ -81,7 +86,7 @@ export default function MemberGivingPrintClient() {
         setData(null);
 
         if (!meta.org) throw new Error("Missing org in URL.");
-        if (!meta.member_id) throw new Error("Missing member_id in URL.");
+        if (!meta.member_ids.length) throw new Error("Missing member selection in URL.");
         if (!meta.start || !meta.end) throw new Error("Missing start/end dates in URL.");
 
         const { data: sessionRes, error: sessionErr } = await supabase.auth.getSession();
@@ -92,7 +97,8 @@ export default function MemberGivingPrintClient() {
 
         const body: RunMemberGivingBody = {
           organization_id: meta.org,
-          member_id: meta.member_id,
+          member_id: meta.mode === "monthly" ? undefined : meta.member_ids[0],
+          member_ids: meta.mode === "monthly" ? meta.member_ids : undefined,
           mode: meta.mode,
           start_date: meta.start,
           end_date: meta.end,
@@ -181,9 +187,14 @@ export default function MemberGivingPrintClient() {
             Time Period: {meta.start} to {meta.end}
           </div>
 
-          {data ? (
+          {data && !isMonthlyReport(data) ? (
             <div style={{ fontSize: "10pt", fontWeight: 600, marginTop: "4pt" }}>
               Member: {data.member.name}
+            </div>
+          ) : null}
+          {data && isMonthlyReport(data) ? (
+            <div style={{ fontSize: "10pt", fontWeight: 600, marginTop: "4pt" }}>
+              Members: {data.members.length} selected
             </div>
           ) : null}
 
@@ -211,6 +222,9 @@ export default function MemberGivingPrintClient() {
       </div>
 
       <style jsx global>{`
+        @page {
+          size: ${data && isMonthlyReport(data) ? "landscape" : "portrait"};
+        }
         @media print {
           .print-hidden {
             display: none !important;
@@ -255,6 +269,7 @@ export default function MemberGivingPrintClient() {
 function ReportBody({ data }: { data: MemberGivingReport }) {
   if (isSummaryReport(data)) return <SummaryTable data={data} />;
   if (isDetailedReport(data)) return <DetailedTable data={data} />;
+  if (isMonthlyReport(data)) return <MonthlyTable data={data} />;
   return null;
 }
 
@@ -384,6 +399,95 @@ function DetailedTable({ data }: { data: MemberGivingDetailedReport }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function MonthlyTable({ data }: { data: MemberGivingMonthlyReport }) {
+  const categories = data.monthly.categories;
+
+  const table = (
+    rows: MemberGivingMonthlyReport["monthly"]["member_totals"],
+    categoryTotals: Record<string, number>,
+    total: number,
+    totalLabel: string,
+  ) => (
+    <table className="report-table w-full text-[9pt]">
+      <thead>
+        <tr>
+          <th className="border border-black bg-slate-100 px-2 py-1 text-left font-semibold">
+            Member
+          </th>
+          {categories.map((category) => (
+            <th
+              key={category.id}
+              className="border border-black bg-slate-100 px-2 py-1 text-right font-semibold"
+            >
+              {category.name}
+            </th>
+          ))}
+          <th className="border border-black bg-slate-100 px-2 py-1 text-right font-semibold">
+            Total
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.member_id}>
+            <td className="border border-black px-2 py-1 font-medium">
+              {row.member_name}
+            </td>
+            {categories.map((category) => (
+              <td key={category.id} className="border border-black px-2 py-1 text-right">
+                {money(row.category_amounts[category.id] ?? 0)}
+              </td>
+            ))}
+            <td className="border border-black px-2 py-1 text-right font-semibold">
+              {money(row.total)}
+            </td>
+          </tr>
+        ))}
+        <tr>
+          <td className="border border-black bg-slate-100 px-2 py-1 font-semibold">
+            {totalLabel}
+          </td>
+          {categories.map((category) => (
+            <td key={category.id} className="border border-black bg-slate-100 px-2 py-1 text-right font-semibold">
+              {money(categoryTotals[category.id] ?? 0)}
+            </td>
+          ))}
+          <td className="border border-black bg-slate-100 px-2 py-1 text-right font-semibold">
+            {money(total)}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  );
+
+  return (
+    <div className="grid gap-6">
+      {data.monthly.months.map((month) => (
+        <section key={month.key} className="break-avoid overflow-x-auto">
+          <div className="border border-b-0 border-black bg-slate-100 px-2 py-1 text-[10pt] font-semibold">
+            {month.label}
+            <span className="ml-2 font-normal text-slate-600">
+              ({month.covered_start} to {month.covered_end})
+            </span>
+          </div>
+          {table(month.rows, month.category_totals, month.subtotal, `${month.label} total`)}
+        </section>
+      ))}
+      <section className="break-avoid overflow-x-auto">
+        <div className="border border-b-0 border-black bg-slate-200 px-2 py-1 text-[10pt] font-semibold">
+          Report totals
+        </div>
+        {table(
+          data.monthly.member_totals,
+          data.monthly.category_totals,
+          data.monthly.grand_total,
+          "Grand total",
+        )}
+      </section>
     </div>
   );
 }

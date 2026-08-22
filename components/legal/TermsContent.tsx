@@ -31,7 +31,7 @@ export default function TermsContent() {
             <span className="font-medium">Effective Date:</span> [Insert Date]
           </div>
           <div>
-            <span className="font-medium">Entity:</span> Church Admin, LLC (Texas Limited Liability Company)
+            <span className="font-medium">Entity:</span> Davola Technologies, LLC (Tennessee Limited Liability Company)
           </div>
         </div>
       }
@@ -253,7 +253,7 @@ export default function TermsContent() {
       <Section id="arbitration" title="13. Arbitration & Dispute Resolution">
         <P className="font-medium">Mandatory Arbitration</P>
         <P>
-          Any dispute arising from these Terms shall be resolved by binding arbitration in the State of Texas
+          Any dispute arising from these Terms shall be resolved by binding arbitration in the State of Tennessee, conducted in accordance with the rules of the American Arbitration Association.
           under the rules of the American Arbitration Association.
         </P>
 
@@ -265,7 +265,7 @@ export default function TermsContent() {
 
         <P className="font-medium">Governing Law</P>
         <P>
-          These Terms are governed by the laws of the State of Texas, without regard to conflict of law principles.
+          These Terms are governed by the laws of the State of Tennessee, without regard to conflict of law principles.
         </P>
       </Section>
 

@@ -170,6 +170,7 @@ async function directReportRequest(context: NikkyContext, conversationId: string
     category_ids: null,
     payment_methods: null,
     member_id: null,
+    member_ids: null,
   });
   if (output.outcome !== "ok") {
     return { content: output.message ?? "I couldn't prepare that report preview.", evidenceIds: [output.evidence_id] };
@@ -234,6 +235,9 @@ Rules:
 - Use member_population_summary for current member population breakdowns. Present status, age group, segment, gender, and department clearly; merged records and visitors are excluded.
 - For a request to make, create, generate, prepare, or download a report: if the report type or exact date range is missing or ambiguous, ask one concise clarification question ending in a question mark. Do not replace it with a data-verification failure.
 - Once report type and exact dates are clear, prepare the immutable report preview. Default to PDF, summary detail, archived records included, joined filter “all,” and no service/category/payment filters unless the user specifies otherwise. Do not ask about options irrelevant to that report.
+- Member Giving summary and detailed reports require exactly one freshly resolved member. Monthly-by-member Member Giving uses detail level “monthly,” requires one or more freshly resolved member IDs, and displays each selected income category as a separate column. Resolve every named member and category with approved current-turn tools; ask the user to choose whenever any name is ambiguous. Member Giving remains unavailable to finance users.
+- Treat a short reply to your immediately preceding report clarification as a continuation of the user's prior report request. Combine the prior requested subject/filter with the newly supplied report type or date range; do not discard either part.
+- For a monthly Member Giving request asking for each person who contributed to one named income category, call prepare_member_giving_report_selection with the exact category name and dates. If it succeeds, immediately prepare the report preview with detail level “monthly,” its returned member_ids, and its returned category ID. Do not substitute all organization members, a department, or a service. If no exact active income category matches, explain that and ask whether the user meant a different category, department, or service.
 - If a requested report has a named category, service, or payment-method filter, use an approved current-turn breakdown tool to resolve the exact filter identifier before preparing the preview. Ask the user to choose if the label is ambiguous.
 - A report is not generated until the user presses the preview card's Confirm and generate button. Never treat typed confirmation as execution.
 - Preparing a report preview does not query report rows. Never describe the preview tool's record_count as matching records or claim that zero records matched. A real record count is available only after confirmed generation.

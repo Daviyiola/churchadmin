@@ -4,6 +4,15 @@ import crypto from "crypto";
 import { Resend } from "resend";
 
 type Role = "owner" | "admin" | "finance" | "member";
+type InviteRole = Exclude<Role, "owner">;
+
+type PendingInvite = {
+  id: string;
+  token: string;
+  expires_at: string;
+};
+
+const INVITE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 
 const resend = new Resend(process.env.RESEND_API_KEY!);
 
@@ -162,39 +171,72 @@ export async function POST(req: Request) {
   const orgName = String(org?.name ?? "Church Admin").trim() || "Church Admin";
 
   const email = String(invited_email).toLowerCase().trim();
+  const inviteRole = String(role ?? "member") as InviteRole;
+  if (!["member", "finance", "admin"].includes(inviteRole)) {
+    return NextResponse.json({ error: "Invalid invite role." }, { status: 400 });
+  }
 
   const nowIso = new Date().toISOString();
+  const nextExpiryIso = new Date(Date.now() + INVITE_LIFETIME_MS).toISOString();
   const { data: existing, error: exErr } = await supabaseAdmin
     .from("invites")
-    .select("token, expires_at")
+    .select("id, token, expires_at")
     .eq("organization_id", organization_id)
     .eq("invited_email", email)
     .is("used_at", null)
-    .gt("expires_at", nowIso)
-    .maybeSingle();
+    .maybeSingle<PendingInvite>();
 
   if (exErr) {
     return NextResponse.json({ error: exErr.message }, { status: 400 });
   }
 
-  let token = existing?.token;
-  let reused = true;
+  let token: string;
+  let reused = false;
+  let refreshed = false;
 
-  if (!token) {
+  if (existing) {
+    const expired = new Date(existing.expires_at).getTime() <= new Date(nowIso).getTime();
+    token = expired ? crypto.randomUUID() : existing.token;
+    const { error: updateError } = await supabaseAdmin
+      .from("invites")
+      .update({
+        token,
+        role: inviteRole,
+        ...(expired ? { expires_at: nextExpiryIso, created_at: nowIso } : {}),
+      })
+      .eq("id", existing.id)
+      .is("used_at", null);
+
+    if (updateError) {
+      return NextResponse.json(
+        { error: "We couldn't refresh the existing invitation. Please try again." },
+        { status: 409 },
+      );
+    }
+    reused = !expired;
+    refreshed = expired;
+  } else {
     token = crypto.randomUUID();
-
-    const { error } = await supabaseAdmin.from("invites").insert({
+    const { error: insertError } = await supabaseAdmin.from("invites").insert({
       token,
       organization_id,
       invited_email: email,
-      role: role || "member",
+      role: inviteRole,
+      expires_at: nextExpiryIso,
     });
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+    if (insertError?.code === "23505") {
+      return NextResponse.json(
+        { error: "An invitation for this email is already pending. Refresh the users list and resend or remove it." },
+        { status: 409 },
+      );
     }
-
-    reused = false;
+    if (insertError) {
+      return NextResponse.json(
+        { error: "We couldn't create the invitation. Please try again." },
+        { status: 400 },
+      );
+    }
   }
 
   const base = String(process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "");
@@ -212,21 +254,23 @@ export async function POST(req: Request) {
   });
 
   try {
-    await resend.emails.send({
+    const emailResult = await resend.emails.send({
       from,
       to: email,
       subject: `You’re invited to join ${orgName}`,
       html,
     });
-  } catch (e) {
+    if (emailResult.error) throw new Error(emailResult.error.message);
+  } catch {
     // Invite still exists; UI can show link fallback
     return NextResponse.json({
       inviteUrl,
       reused,
+      refreshed,
       emailed: false,
       warning: "Invite created but email failed to send.",
     });
   }
 
-  return NextResponse.json({ inviteUrl, reused, emailed: true });
+  return NextResponse.json({ inviteUrl, reused, refreshed, emailed: true });
 }

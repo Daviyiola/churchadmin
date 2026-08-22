@@ -12,9 +12,15 @@ export async function POST(req: Request) {
   try {
     const body: RunMemberGivingBody = await req.json();
 
-    if (!body.organization_id || !body.member_id || !body.mode || !body.start_date || !body.end_date) {
+    if (
+      !body.organization_id ||
+      (!body.member_id && !body.member_ids?.length) ||
+      !body.mode ||
+      !body.start_date ||
+      !body.end_date
+    ) {
       return NextResponse.json(
-        { error: "organization_id, member_id, mode, start_date, end_date are required" } satisfies ErrorResponse,
+        { error: "organization_id, member selection, mode, start_date, and end_date are required" } satisfies ErrorResponse,
         { status: 400 },
       );
     }

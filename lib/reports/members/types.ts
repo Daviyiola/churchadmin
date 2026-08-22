@@ -1,7 +1,7 @@
 // lib/reports/members/types.ts
 export type PaymentMethod = "cash" | "cheque" | "online";
 
-export type MemberGivingMode = "summary" | "detailed";
+export type MemberGivingMode = "summary" | "detailed" | "monthly";
 
 export type Branding = {
   logo_url: string | null;
@@ -15,7 +15,8 @@ export type ErrorResponse = { error: string };
 export type RunMemberGivingBody = {
   organization_id: string;
 
-  member_id: string;
+  member_id?: string;
+  member_ids?: string[];
   mode: MemberGivingMode;
 
   start_date: string; // YYYY-MM-DD
@@ -73,4 +74,40 @@ export type MemberGivingDetailedReport = {
   };
 };
 
-export type MemberGivingReport = MemberGivingSummaryReport | MemberGivingDetailedReport;
+export type MemberGivingMonthlyMemberRow = {
+  member_id: string;
+  member_name: string;
+  category_amounts: Record<string, number>;
+  total: number;
+};
+
+export type MemberGivingMonthlyBlock = {
+  key: string;
+  label: string;
+  covered_start: string;
+  covered_end: string;
+  rows: MemberGivingMonthlyMemberRow[];
+  category_totals: Record<string, number>;
+  subtotal: number;
+};
+
+export type MemberGivingMonthlyReport = {
+  ok: true;
+  mode: "member_giving";
+  branding: Branding;
+  meta: { role: string; view: "monthly" };
+  members: Array<{ id: string; name: string }>;
+  period: { start: string; end: string };
+  monthly: {
+    categories: Array<{ id: string; name: string }>;
+    months: MemberGivingMonthlyBlock[];
+    member_totals: MemberGivingMonthlyMemberRow[];
+    category_totals: Record<string, number>;
+    grand_total: number;
+  };
+};
+
+export type MemberGivingReport =
+  | MemberGivingSummaryReport
+  | MemberGivingDetailedReport
+  | MemberGivingMonthlyReport;

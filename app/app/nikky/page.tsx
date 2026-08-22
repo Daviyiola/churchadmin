@@ -19,7 +19,7 @@ const reportMeta:Record<string,{name:string;description:string}>={
   quick_expense:{name:"Quick Expense",description:"Expense entries by date, category, vendor, and amount."},
   quick_attendance:{name:"Quick Attendance",description:"Published attendance for the selected period."},
   income_statement:{name:"Income Statement",description:"Income, expenses, and net income grouped by category."},
-  member_giving:{name:"Member Giving",description:"Giving for the selected member."},
+  member_giving:{name:"Member Giving",description:"Giving for the selected member or selected member group."},
   first_timers:{name:"First-Timers",description:"Visitors whose first visit falls in the selected period."},
   baptisms:{name:"Baptisms",description:"Members baptized in the selected period."},
   new_converts:{name:"New Converts",description:"Members marked born again in the selected period."},
@@ -29,11 +29,12 @@ const reportMeta:Record<string,{name:string;description:string}>={
 function ReportPreviewCard({item,generating,onConfirm}:{item:Confirmation;generating:boolean;onConfirm:()=>void}){
   const p=item.canonical_parameters; const meta=reportMeta[item.report_type]??{name:item.report_type.replaceAll("_"," "),description:"Church Admin report."};
   const detail=String(p.detail_level??"summary"); const joined=String(p.joined??"all");
-  const chips=[String(item.format).toUpperCase(),detail==="detailed"?"Detailed":"Summary"];
+  const chips=[String(item.format).toUpperCase(),detail==="detailed"?"Detailed":detail==="monthly"?"Monthly by member":"Summary"];
   const filters:Array<[string,string]>=[];
   if(Array.isArray(p.service_ids)&&p.service_ids.length)filters.push(["Services",`${p.service_ids.length} selected`]);
   if(Array.isArray(p.category_ids)&&p.category_ids.length)filters.push(["Categories",`${p.category_ids.length} selected`]);
   if(Array.isArray(p.payment_methods)&&p.payment_methods.length)filters.push(["Methods",p.payment_methods.join(", ")]);
+  if(Array.isArray(p.member_ids)&&p.member_ids.length)filters.push(["Members",`${p.member_ids.length} selected`]);
   if(item.report_type==="first_timers")filters.push(["Joined",joined==="all"?"All":joined.replaceAll("_"," ")]);
   if(["first_timers","baptisms","new_converts","combined"].includes(item.report_type))filters.push(["Records",p.include_archived===false?"Active only":"Active and archived"]);
   return <div className="overflow-hidden rounded-3xl border border-amber-300 bg-white shadow-sm">

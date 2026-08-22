@@ -3,7 +3,8 @@ import type { MemberGivingMode, PaymentMethod } from "./types";
 
 export type BuildMemberGivingPrintUrlArgs = {
   org: string;
-  member_id: string;
+  member_id?: string;
+  member_ids?: string[];
   mode: MemberGivingMode;
   start: string;
   end: string;
@@ -17,7 +18,8 @@ export function buildMemberGivingPrintUrl(args: BuildMemberGivingPrintUrlArgs) {
   const p = new URLSearchParams();
 
   p.set("org", args.org);
-  p.set("member_id", args.member_id);
+  if (args.member_id) p.set("member_id", args.member_id);
+  for (const id of args.member_ids ?? []) p.append("member_id", id);
   p.set("mode", args.mode);
   p.set("start", args.start);
   p.set("end", args.end);

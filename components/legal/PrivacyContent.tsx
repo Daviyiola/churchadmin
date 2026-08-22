@@ -29,8 +29,8 @@ export default function PrivacyContent() {
             <span className="font-medium">Effective Date:</span> [Insert Date]
           </div>
           <div>
-            <span className="font-medium">Entity:</span> Church Admin, LLC
-            (Texas Limited Liability Company)
+            <span className="font-medium">Entity:</span> Davola Technologies, LLC
+            (Tennessee Limited Liability Company)
           </div>
         </div>
       }

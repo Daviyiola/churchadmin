@@ -2,10 +2,14 @@ import type {
   MemberGivingReport,
   MemberGivingSummaryReport,
   MemberGivingDetailedReport,
+  MemberGivingMonthlyReport,
 } from "@/lib/reports/members/types";
 
 function isSummary(r: MemberGivingReport): r is MemberGivingSummaryReport {
   return r.meta.view === "summary";
+}
+function isMonthly(r: MemberGivingReport): r is MemberGivingMonthlyReport {
+  return r.meta.view === "monthly";
 }
 function esc(s: string) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
@@ -21,7 +25,9 @@ export function renderMemberGivingHtml(report: MemberGivingReport, filtersLine?:
   const logo = report.branding.logo_url;
   const header = esc(report.branding.header_text ?? "Report");
   const subheader = esc(report.branding.subheader_text ?? "Member giving report");
-  const memberName = esc(report.member.name);
+  const memberLine = isMonthly(report)
+    ? `Members: ${report.members.length} selected`
+    : `Member: ${esc(report.member.name)}`;
   const period = `${esc(report.period.start)} to ${esc(report.period.end)}`;
 
   const css = `
@@ -43,6 +49,9 @@ export function renderMemberGivingHtml(report: MemberGivingReport, filtersLine?:
     .centerCell { text-align: center; }
     .bold { font-weight: 800; }
     .break-avoid { break-inside: avoid; page-break-inside: avoid; }
+    .monthly { width: 100%; table-layout: fixed; }
+    .monthly th, .monthly td { padding: 4px 5px; font-size: 8pt; white-space: normal; overflow-wrap: anywhere; }
+    .monthly .member-col { width: 18%; text-align: left; }
   `;
 
   const headerHtml = `
@@ -51,12 +60,16 @@ export function renderMemberGivingHtml(report: MemberGivingReport, filtersLine?:
       <div class="h1">${header}</div>
       <div class="h2">${subheader}</div>
       <div class="meta">Time Period: ${period}</div>
-      <div class="meta2">Member: ${memberName}</div>
+      <div class="meta2">${memberLine}</div>
       ${filtersLine ? `<div class="filters">${esc(filtersLine)}</div>` : ``}
     </div>
   `;
 
-  const bodyHtml = isSummary(report) ? renderSummary(report) : renderDetailed(report as MemberGivingDetailedReport);
+  const bodyHtml = isSummary(report)
+    ? renderSummary(report)
+    : isMonthly(report)
+      ? renderMonthly(report)
+      : renderDetailed(report as MemberGivingDetailedReport);
 
   return `<!doctype html>
 <html>
@@ -164,4 +177,47 @@ function renderDetailed(r: MemberGivingDetailedReport) {
   `;
 
   return `${blocks}${grand}`;
+}
+
+function renderMonthly(r: MemberGivingMonthlyReport) {
+  const categories = r.monthly.categories;
+  const table = (
+    rows: MemberGivingMonthlyReport["monthly"]["member_totals"],
+    categoryTotals: Record<string, number>,
+    total: number,
+    totalLabel: string,
+  ) => `
+    <table class="monthly">
+      <thead><tr>
+        <th class="member-col">Member</th>
+        ${categories.map((category) => `<th class="right">${esc(category.name)}</th>`).join("")}
+        <th class="right">Total</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map((row) => `<tr>
+          <td class="member-col">${esc(row.member_name)}</td>
+          ${categories.map((category) => `<td class="right">${esc(money(row.category_amounts[category.id] ?? 0))}</td>`).join("")}
+          <td class="right bold">${esc(money(row.total))}</td>
+        </tr>`).join("")}
+        <tr>
+          <td class="member-col bold" style="background:#f1f5f9">${esc(totalLabel)}</td>
+          ${categories.map((category) => `<td class="right bold" style="background:#f1f5f9">${esc(money(categoryTotals[category.id] ?? 0))}</td>`).join("")}
+          <td class="right bold" style="background:#f1f5f9">${esc(money(total))}</td>
+        </tr>
+      </tbody>
+    </table>`;
+
+  const months = r.monthly.months.map((month) => `
+    <section class="break-avoid" style="margin-bottom:22px;">
+      <div style="border:1px solid #000;border-bottom:0;background:#f1f5f9;padding:5px 7px;font-size:10pt;font-weight:700;">
+        ${esc(month.label)} <span class="muted" style="font-weight:400">(${esc(month.covered_start)} to ${esc(month.covered_end)})</span>
+      </div>
+      ${table(month.rows, month.category_totals, month.subtotal, `${month.label} total`)}
+    </section>`).join("");
+
+  return `${months}
+    <section class="break-avoid">
+      <div style="border:1px solid #000;border-bottom:0;background:#e2e8f0;padding:5px 7px;font-size:10pt;font-weight:700;">Report totals</div>
+      ${table(r.monthly.member_totals, r.monthly.category_totals, r.monthly.grand_total, "Grand total")}
+    </section>`;
 }
