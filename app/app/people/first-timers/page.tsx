@@ -2283,7 +2283,7 @@ export default function FirstTimersPage() {
                       setCampaignOpen(true);
                       setCampaignErr("");
                       setCampaignUrl("");
-                      setCampaignName("First-Timer Campaign");
+                      setCampaignName("First-Timer's Link");
                       setCampaignExpiryMode("never");
                       setCampaignExpiryDate(addDaysISO(campaignToday, 30));
                     }}
@@ -2821,7 +2821,7 @@ export default function FirstTimersPage() {
                               </div>
                             </div>
 
-                            <div className="col-span-4 text-slate-700">
+                            <div className="col-span-3 text-slate-700">
                               Multiple visitors
                             </div>
                             <div className="col-span-2 text-slate-700">—</div>
@@ -2829,7 +2829,7 @@ export default function FirstTimersPage() {
                               QR / campaign link
                             </div>
 
-                            <div className="col-span-3 flex justify-end gap-2">
+                            <div className="col-span-4 flex justify-end gap-2">
                               <button
                                 className="rounded-xl border px-5 py-1 text-xs hover:bg-white"
                                 onClick={() =>
@@ -3878,9 +3878,9 @@ export default function FirstTimersPage() {
 
       {/* ========== Modal D: Create campaign link (QR code) ========== */}
       {campaignOpen ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 backdrop-blur-sm p-4">
-          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-xl">
-            <div className="flex items-start justify-between gap-4">
+        <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto bg-black/40 p-2 backdrop-blur-sm sm:items-center sm:p-4">
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl bg-white shadow-xl sm:max-h-[92vh] sm:rounded-3xl">
+            <div className="flex shrink-0 items-start justify-between gap-4 border-b px-4 py-4 sm:px-6">
               <div>
                 <div className="text-lg font-semibold">
                   Create multiple visitors link
@@ -3901,7 +3901,7 @@ export default function FirstTimersPage() {
               </button>
             </div>
 
-            <div className="mt-5 space-y-3">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
               <div>
                 <div className="mb-1 text-xs font-semibold text-slate-600">
                   Campaign name
@@ -3987,16 +3987,17 @@ export default function FirstTimersPage() {
                   <div className="text-sm font-semibold">Campaign link</div>
 
                   <div className="flex justify-center">
-                    <div className="rounded-3xl border bg-slate-50 p-6">
+                    <div className="max-w-full rounded-3xl border bg-slate-50 p-4 sm:p-6">
                       <QRCodeCanvas
                         value={campaignUrl}
                         size={280}
                         includeMargin
+                        className="h-auto max-w-full"
                       />
                     </div>
                   </div>
 
-                  <div className="mt-2 flex gap-2">
+                  <div className="mt-2 flex flex-col gap-2 sm:flex-row">
                     <input
                       readOnly
                       value={campaignUrl}
@@ -4022,9 +4023,9 @@ export default function FirstTimersPage() {
 
       {/* ========== Modal B: Email intake form (minimal) ========== */}
       {emailOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-          <div className="w-full max-w-lg rounded-3xl bg-white shadow-xl">
-            <div className="border-b px-6 py-4">
+        <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto bg-black/30 p-2 sm:items-center sm:p-4">
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl bg-white shadow-xl sm:max-h-[92vh] sm:rounded-3xl">
+            <div className="shrink-0 border-b px-4 py-4 sm:px-6">
               <div className="text-sm font-semibold">
                 Single visitor intake link
               </div>
@@ -4035,12 +4036,12 @@ export default function FirstTimersPage() {
             </div>
 
             {emailErr ? (
-              <div className="mx-6 mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <div className="mx-4 mt-4 shrink-0 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 sm:mx-6">
                 {emailErr}
               </div>
             ) : null}
 
-            <div className="px-6 py-6 space-y-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6">
               <div>
                 <div className="mb-1 text-xs font-semibold text-slate-600">
                   First name *
@@ -4067,7 +4068,7 @@ export default function FirstTimersPage() {
               {intakeUrl ? (
                 <div className="mt-5 rounded-2xl border p-4">
                   <div className="text-sm font-semibold">Intake link</div>
-                  <div className="mt-2 flex gap-2">
+                  <div className="mt-2 flex flex-col gap-2 sm:flex-row">
                     <input
                       readOnly
                       value={intakeUrl}
@@ -4081,21 +4082,21 @@ export default function FirstTimersPage() {
                     </button>
                   </div>
                   <div className="mt-2 text-xs text-slate-500">
-                    Link created. Expires in 3 days.
+                    Link created. Expires in 7 days.
                   </div>
                 </div>
               ) : null}
 
-              <div className="rounded-2xl border bg-slate-50 px-4 py-3 text-xs text-slate-600">
+              {/* <div className="rounded-2xl border bg-slate-50 px-4 py-3 text-xs text-slate-600">
                 They’ll be able to complete: last name, phone, gender, age
                 group, marital status, children count, home address, and prayer
                 request.
-              </div>
+              </div> */}
             </div>
 
-            <div className="flex items-center justify-between gap-3 border-t px-4 py-4">
+            <div className="flex shrink-0 items-center justify-between gap-3 border-t px-4 py-4">
               <button
-                className="rounded-2xl border min-w-[96px] px-4 py-2 text-sm hover:bg-slate-50"
+                className="rounded-2xl border min-w-[110px] px-4 py-2 text-sm hover:bg-slate-50"
                 onClick={() => {
                   setEmailOpen(false);
                   resetEmailForm();
@@ -4105,10 +4106,10 @@ export default function FirstTimersPage() {
               </button>
 
               <button
-                className={`rounded-2xl min-w-[120px] px-4 py-2 text-sm font-semibold text-white ${
+                className={`rounded-2xl min-w-[140px] px-4 py-2 text-sm font-semibold text-white ${
                   sending || Boolean(intakeUrl)
-                    ? "bg-slate-300"
-                    : "bg-slate-900 hover:bg-slate-800"
+                    ? "bg-primary/85"
+                    : "bg-primary hover:bg-primary/85"
                 }`}
                 disabled={sending || Boolean(intakeUrl)}
                 onClick={sendIntakeForm}
