@@ -54,6 +54,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       { label: "Expense", href: "/app/expense" },
       { label: "Attendance", href: "/app/attendance" },
       { label: "People", href: "/app/people" },
+      ...(["owner", "admin", "finance"].includes(role ?? "")
+        ? [{ label: "Communications", href: "/app/communications" }]
+        : []),
       { label: "Schedule", href: "/app/schedule" },
       { label: "Categories", href: "/app/categories" },
       { label: "Reports", href: "/app/reports" },
@@ -114,10 +117,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-white text-slate-900">
-      <div className="flex">
+    <div className="min-h-dvh bg-white text-slate-900">
+      <div className="flex min-h-dvh">
         {/* Sidebar */}
-        <aside className="w-72 border-r bg-slate-50">
+        <aside className="flex min-h-dvh w-72 flex-col border-r bg-slate-50">
           <div className="p-5">
             <div className="flex items-center gap-3">
               <div className="h-10 w-10 overflow-hidden flex items-center justify-center">
@@ -169,7 +172,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             })}
           </nav>
 
-          <div className="p-4">
+          <div className="mt-auto p-4">
             <div className="rounded-3xl border bg-white p-4">
               <div className="text-xs text-slate-500">Signed in</div>
               <div className="text-sm font-semibold truncate">
@@ -191,7 +194,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </aside>
 
         {/* Main */}
-        <main className="flex-1">{children}</main>
+        <main className="min-h-dvh min-w-0 flex-1">{children}</main>
       </div>
     </div>
   );

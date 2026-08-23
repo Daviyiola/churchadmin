@@ -1,0 +1,3 @@
+-- Reapply the complete_personal_intake definition from
+-- 20260822031212_intake_phase_zero_foundation.sql to restore the legacy rule
+-- that phone is required and every completed personal profile is marked complete.

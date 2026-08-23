@@ -12,12 +12,6 @@ function slugify(s: string) {
     .slice(0, 50);
 }
 
-function addDaysTS(days: number) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString();
-}
-
 function makeSuffix(len = 8) {
   // short unique-ish suffix
   return crypto
@@ -33,17 +27,21 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => null);
     const orgId = String(body?.org_id ?? "").trim();
     const name = String(body?.name ?? "Intake QR").trim();
-    const expiresInDaysRaw = Number(body?.expires_in_days ?? 30);
-
-    const expiresInDays =
-      Number.isFinite(expiresInDaysRaw) &&
-      expiresInDaysRaw > 0 &&
-      expiresInDaysRaw <= 31
-        ? Math.floor(expiresInDaysRaw)
-        : 30; // default 30 days, max 70 days
+    const expiryMode = String(body?.expiry_mode ?? "never").trim();
+    const expiresOn =
+      expiryMode === "date" ? String(body?.expires_on ?? "").trim() : null;
 
     if (!orgId) {
       return NextResponse.json({ error: "Missing org_id" }, { status: 400 });
+    }
+    if (!name) {
+      return NextResponse.json({ error: "Campaign name is required" }, { status: 400 });
+    }
+    if (!['never', 'date'].includes(expiryMode)) {
+      return NextResponse.json({ error: "Invalid expiration option" }, { status: 400 });
+    }
+    if (expiryMode === "date" && !/^\d{4}-\d{2}-\d{2}$/.test(expiresOn ?? "")) {
+      return NextResponse.json({ error: "Choose an expiration date" }, { status: 400 });
     }
 
     // Permission check: must be linked to org with owner/admin/finance
@@ -71,34 +69,40 @@ export async function POST(req: Request) {
     const slugBase = slugify(name) || "intake";
     const slug = `${slugBase}-${makeSuffix(10)}`;
 
-    const expires_at = addDaysTS(expiresInDays);
-
-    const { data: inserted, error: insErr } = await supabaseAdmin
-      .from("intake_campaigns")
-      .insert({
-        org_id: orgId,
-        name,
-        slug,
-        expires_at,
-        is_active: true,
-        created_by: actorId,
-      })
-      .select("id, slug, expires_at")
-      .single();
+    const { data: inserted, error: insErr } = await supabaseAdmin.rpc(
+      "create_intake_campaign_link",
+      {
+        p_org_id: orgId,
+        p_actor_id: actorId,
+        p_name: name,
+        p_slug: slug,
+        p_expiry_mode: expiryMode,
+        p_expires_on: expiresOn,
+      },
+    );
 
     if (insErr)
       return NextResponse.json({ error: insErr.message }, { status: 400 });
 
     const base = (process.env.NEXT_PUBLIC_APP_URL || "").replace(/\/$/, "");
 
-    const campaignUrl = `${base}/intake/c/${inserted.slug}`;
+    const campaign = inserted as {
+      id: string;
+      slug: string;
+      expiry_mode: "never" | "date";
+      expires_on: string | null;
+      expires_at: string;
+    };
+    const campaignUrl = `${base}/intake/c/${campaign.slug}`;
 
     return NextResponse.json({
       ok: true,
       campaign: {
-        id: inserted.id,
-        slug: inserted.slug,
-        expires_at: inserted.expires_at,
+        id: campaign.id,
+        slug: campaign.slug,
+        expiry_mode: campaign.expiry_mode,
+        expires_on: campaign.expires_on,
+        expires_at: campaign.expires_at,
       },
       campaignUrl,
     });

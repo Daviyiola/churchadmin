@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 import { QRCodeCanvas } from "qrcode.react";
+import PersonCustomFields from "@/components/people/PersonCustomFields";
 
 /* ===================== Types ===================== */
 
@@ -59,6 +60,9 @@ type VisitorRow = {
 };
 
 type PrayerItem = { id: string; text: string };
+type CampaignExpiryMode = "never" | "date";
+
+const MAX_ACTIVE_CAMPAIGN_LINKS = 5;
 
 type CampaignRow = {
   id: string;
@@ -67,6 +71,8 @@ type CampaignRow = {
   is_active: boolean;
   created_at: string;
   expires_at: string | null;
+  expiry_mode: CampaignExpiryMode;
+  expires_on: string | null;
   url: string; // computed client-side
 };
 
@@ -77,6 +83,8 @@ type CampaignRowDb = {
   is_active: boolean;
   created_at: string;
   expires_at: string | null;
+  expiry_mode: CampaignExpiryMode;
+  expires_on: string | null;
 };
 
 type ScheduledFollowupStatus =
@@ -177,6 +185,16 @@ function computeSegment(g: Gender, ag: AgeGroup): Segment {
 function todayISODate() {
   return new Date().toISOString().slice(0, 10);
 }
+function todayInTimezone(timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
 function addDaysISO(baseISODate: string, days: number) {
   const d = new Date(`${baseISODate}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
@@ -229,10 +247,10 @@ function isScheduledFollowupRowArray(v: unknown): v is ScheduledFollowupRow[] {
   );
 }
 
-async function canEditPeopleForActiveOrg(orgId: string): Promise<boolean> {
+async function roleForActiveOrg(orgId: string): Promise<OrgRole | null> {
   const { data: sessionRes } = await supabase.auth.getSession();
   const userId = sessionRes.session?.user?.id;
-  if (!userId) return false;
+  if (!userId) return null;
 
   const { data, error } = await supabase
     .from("user_organizations")
@@ -241,10 +259,9 @@ async function canEditPeopleForActiveOrg(orgId: string): Promise<boolean> {
     .eq("user_id", userId)
     .maybeSingle();
 
-  if (error) return false;
+  if (error) return null;
 
-  const role = data?.role as OrgRole | undefined;
-  return role === "owner" || role === "admin" || role === "finance";
+  return (data?.role as OrgRole | undefined) ?? null;
 }
 
 function fillTemplate(template: string, vars: Record<string, string>) {
@@ -284,27 +301,6 @@ const DEFAULT_FOLLOWUP_STEPS: FollowupAutomationTemplate[] = [
 
 function copyDefaultFollowupSteps(): FollowupAutomationTemplate[] {
   return DEFAULT_FOLLOWUP_STEPS.map((step) => ({ ...step }));
-}
-
-function makeScheduledForISO(
-  firstVisitISODate: string,
-  dayOffset: number,
-  sendTime: string,
-) {
-  const [hhRaw, mmRaw] = sendTime.split(":");
-  const hh = Number(hhRaw);
-  const mm = Number(mmRaw);
-
-  const base = new Date(`${firstVisitISODate}T00:00:00`);
-  base.setDate(base.getDate() + dayOffset);
-  base.setHours(
-    Number.isFinite(hh) ? hh : 18,
-    Number.isFinite(mm) ? mm : 0,
-    0,
-    0,
-  );
-
-  return base.toISOString();
 }
 
 function makeDateTimeISO(dateISO: string, timeHHMM: string) {
@@ -354,6 +350,9 @@ export default function FirstTimersPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [orgRole, setOrgRole] = useState<OrgRole | null>(null);
+  const [firstTimerStandardKeys, setFirstTimerStandardKeys] = useState<string[] | null>(null);
+  const firstTimerFieldVisible = (key: string) => firstTimerStandardKeys === null || firstTimerStandardKeys.includes(key);
 
   const [tab, setTab] = useState<"active" | "archived">("active");
 
@@ -386,6 +385,10 @@ export default function FirstTimersPage() {
   >([]);
   const [followupSettings, setFollowupSettings] =
     useState<FollowupSettings | null>(null);
+  const campaignToday = useMemo(
+    () => todayInTimezone(followupSettings?.timezone_name ?? "America/New_York"),
+    [followupSettings?.timezone_name],
+  );
   const [followupTemplates, setFollowupTemplates] = useState<
     FollowupAutomationTemplate[]
   >(copyDefaultFollowupSteps);
@@ -396,13 +399,21 @@ export default function FirstTimersPage() {
   const [savingFollowupSettings, setSavingFollowupSettings] = useState(false);
 
   const activeCampaignCount = campaigns.filter((c) => c.is_active).length;
-  const campaignLimitReached = activeCampaignCount >= 2;
+  const campaignLimitReached =
+    activeCampaignCount >= MAX_ACTIVE_CAMPAIGN_LINKS;
 
   // ===== View link modal =====
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkTitle, setLinkTitle] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
   const [linkShowQr, setLinkShowQr] = useState(false);
+  const [linkCampaignId, setLinkCampaignId] = useState<string | null>(null);
+  const [linkExpiryMode, setLinkExpiryMode] =
+    useState<CampaignExpiryMode>("never");
+  const [linkExpiryDate, setLinkExpiryDate] = useState("");
+  const [linkSaving, setLinkSaving] = useState(false);
+  const [linkErr, setLinkErr] = useState("");
+  const [linkDeleteConfirm, setLinkDeleteConfirm] = useState(false);
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmLoading, setConfirmLoading] = useState(false);
@@ -419,10 +430,16 @@ export default function FirstTimersPage() {
     title: string;
     url: string;
     showQr?: boolean;
+    campaign?: CampaignRow;
   }) {
     setLinkTitle(opts.title);
     setLinkUrl(opts.url);
     setLinkShowQr(Boolean(opts.showQr));
+    setLinkCampaignId(opts.campaign?.id ?? null);
+    setLinkExpiryMode(opts.campaign?.expiry_mode ?? "never");
+    setLinkExpiryDate(opts.campaign?.expires_on ?? "");
+    setLinkErr("");
+    setLinkDeleteConfirm(false);
     setLinkOpen(true);
   }
 
@@ -471,8 +488,12 @@ export default function FirstTimersPage() {
 
   // ===== Modal D: Create campaign link (QR code) =====
   const [campaignOpen, setCampaignOpen] = useState(false);
-  const [campaignName, setCampaignName] = useState("Sunday Service");
-  const [campaignDays, setCampaignDays] = useState("1000");
+  const [campaignName, setCampaignName] = useState("First-Timer Campaign");
+  const [campaignExpiryMode, setCampaignExpiryMode] =
+    useState<CampaignExpiryMode>("never");
+  const [campaignExpiryDate, setCampaignExpiryDate] = useState(
+    addDaysISO(todayISODate(), 30),
+  );
   const [campaignLoading, setCampaignLoading] = useState(false);
   const [campaignErr, setCampaignErr] = useState("");
   const [campaignUrl, setCampaignUrl] = useState("");
@@ -659,54 +680,6 @@ export default function FirstTimersPage() {
     setFollowupTemplates(normalized);
     setTemplateSettingsOpen(false);
     showToast("Follow-up sequence saved");
-  }
-
-  async function createDefaultScheduledFollowupsForMember(opts: {
-    memberId: string;
-    firstName: string;
-    lastName: string;
-    email: string | null;
-    firstVisitAt: string;
-  }) {
-    if (!orgId) return;
-    if (!opts.email) return;
-    if (!followupSettings?.automation_enabled) return;
-
-    const vars = {
-      firstName: opts.firstName,
-      lastName: opts.lastName,
-      churchName: orgName,
-    };
-
-    const sendTime = followupSettings.send_time || "18:00:00";
-
-    const rowsToInsert = followupTemplates.map((step) => ({
-      org_id: orgId,
-      member_id: opts.memberId,
-      channel: "email",
-      followup_label: step.label,
-      day_offset: step.day_offset,
-      scheduled_for: makeScheduledForISO(
-        opts.firstVisitAt || todayISODate(),
-        step.day_offset,
-        sendTime,
-      ),
-      subject: fillTemplate(step.subject, vars),
-      body: fillTemplate(step.body, vars),
-      reply_to: followupSettings.default_reply_to || null,
-      status: "pending",
-    }));
-
-    const { error } = await supabase
-      .from("scheduled_followups")
-      .upsert(rowsToInsert, {
-        onConflict: "org_id,member_id,day_offset",
-        ignoreDuplicates: true,
-      });
-
-    if (error) {
-      showToast(`Saved, but follow-ups were not scheduled: ${error.message}`);
-    }
   }
 
   function downloadQrPng(filenameBase: string) {
@@ -1464,7 +1437,7 @@ export default function FirstTimersPage() {
     try {
       if (campaignLimitReached) {
         throw new Error(
-          "Limit reached: max 2 active multiple-visitor links per organization.",
+          `Limit reached: max ${MAX_ACTIVE_CAMPAIGN_LINKS} active multiple-visitor links per organization.`,
         );
       }
 
@@ -1472,14 +1445,12 @@ export default function FirstTimersPage() {
       const jwt = sessionRes.session?.access_token;
       if (!jwt) throw new Error("Unauthorized. Please sign in again.");
 
-      const days = campaignDays.trim() === "" ? 999 : Number(campaignDays);
-      if (!Number.isFinite(days) || days <= 0)
-        throw new Error("Days must be a valid number.");
-
-      if (days >= 10000)
-        throw new Error(
-          "Maximum allowed expiration is 10,000 days to prevent stale links. Please choose a shorter duration.",
-        );
+      if (
+        campaignExpiryMode === "date" &&
+        (!campaignExpiryDate || campaignExpiryDate < campaignToday)
+      ) {
+        throw new Error("Choose today or a future expiration date.");
+      }
 
       const res = await fetch("/api/intake/campaign/create", {
         method: "POST",
@@ -1490,7 +1461,9 @@ export default function FirstTimersPage() {
         body: JSON.stringify({
           org_id: orgId,
           name: campaignName.trim() || "Intake QR",
-          expires_in_days: Math.floor(days),
+          expiry_mode: campaignExpiryMode,
+          expires_on:
+            campaignExpiryMode === "date" ? campaignExpiryDate : null,
         }),
       });
 
@@ -1509,6 +1482,82 @@ export default function FirstTimersPage() {
     }
   }
 
+  async function saveLinkExpiry() {
+    if (!linkCampaignId) return;
+    setLinkErr("");
+    if (
+      linkExpiryMode === "date" &&
+      (!linkExpiryDate || linkExpiryDate < campaignToday)
+    ) {
+      setLinkErr("Choose today or a future expiration date.");
+      return;
+    }
+
+    setLinkSaving(true);
+    try {
+      const { data: sessionResult } = await supabase.auth.getSession();
+      const accessToken = sessionResult.session?.access_token;
+      if (!accessToken) throw new Error("Please sign in again.");
+
+      const response = await fetch(`/api/intake/campaign/${linkCampaignId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          expiry_mode: linkExpiryMode,
+          expires_on: linkExpiryMode === "date" ? linkExpiryDate : null,
+        }),
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(String(result?.error ?? "Failed to update expiration."));
+      }
+
+      const updated = result?.campaign as
+        | { expiry_mode?: CampaignExpiryMode; expires_on?: string | null }
+        | undefined;
+      setLinkExpiryMode(updated?.expiry_mode ?? linkExpiryMode);
+      setLinkExpiryDate(updated?.expires_on ?? "");
+      showToast("Link expiration updated");
+      await load();
+    } catch (error) {
+      setLinkErr(error instanceof Error ? error.message : "Failed to update expiration.");
+    } finally {
+      setLinkSaving(false);
+    }
+  }
+
+  async function deleteCampaignLink() {
+    if (!linkCampaignId) return;
+    setLinkErr("");
+    setLinkSaving(true);
+    try {
+      const { data: sessionResult } = await supabase.auth.getSession();
+      const accessToken = sessionResult.session?.access_token;
+      if (!accessToken) throw new Error("Please sign in again.");
+
+      const response = await fetch(`/api/intake/campaign/${linkCampaignId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => null);
+        throw new Error(String(result?.error ?? "Failed to delete link."));
+      }
+
+      setLinkOpen(false);
+      setLinkDeleteConfirm(false);
+      showToast("Campaign link deleted");
+      await load();
+    } catch (error) {
+      setLinkErr(error instanceof Error ? error.message : "Failed to delete link.");
+    } finally {
+      setLinkSaving(false);
+    }
+  }
+
   const load = async () => {
     if (!orgId) return;
 
@@ -1524,8 +1573,24 @@ export default function FirstTimersPage() {
     if (!orgErr && org?.name) setOrgName(org.name);
 
     // role
-    const canEdit = await canEditPeopleForActiveOrg(orgId);
-    setIsAdmin(canEdit);
+    const currentRole = await roleForActiveOrg(orgId);
+    setOrgRole(currentRole);
+    setIsAdmin(currentRole === "owner" || currentRole === "admin" || currentRole === "finance");
+
+    const { data: firstTimerForm } = await supabase
+      .from("forms")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("form_kind", "first_timer")
+      .maybeSingle();
+    if (firstTimerForm?.id) {
+      const [{ data: currentFields }, { data: mappings }] = await Promise.all([
+        supabase.from("form_fields").select("field_key").eq("form_id", firstTimerForm.id),
+        supabase.from("form_person_field_mappings").select("field_key,standard_key,target_type").eq("form_id", firstTimerForm.id),
+      ]);
+      const currentKeys = new Set((currentFields ?? []).map((item) => String(item.field_key)));
+      setFirstTimerStandardKeys((mappings ?? []).filter((item) => item.target_type === "standard" && currentKeys.has(String(item.field_key))).map((item) => String(item.standard_key)));
+    }
 
     // follow-up settings
     try {
@@ -1610,11 +1675,13 @@ export default function FirstTimersPage() {
     try {
       const { data: campData, error: campErr } = await supabase
         .from("intake_campaigns")
-        .select("id,name,slug,is_active,created_at,expires_at")
+        .select(
+          "id,name,slug,is_active,created_at,expires_at,expiry_mode,expires_on",
+        )
         .eq("org_id", orgId)
         .eq("is_active", true)
         .order("created_at", { ascending: false })
-        .limit(2);
+        .limit(MAX_ACTIVE_CAMPAIGN_LINKS);
 
       if (campErr) throw campErr;
 
@@ -1631,6 +1698,8 @@ export default function FirstTimersPage() {
           is_active: c.is_active,
           created_at: c.created_at,
           expires_at: c.expires_at,
+          expiry_mode: c.expiry_mode,
+          expires_on: c.expires_on,
           url: `${base}/intake/c/${c.slug}`,
         }));
 
@@ -1819,7 +1888,7 @@ export default function FirstTimersPage() {
       return;
     }
 
-    if (phone.trim().length === 0) {
+    if (firstTimerFieldVisible("phone") && phone.trim().length === 0) {
       setAddErr("Phone is required.");
       return;
     }
@@ -1836,55 +1905,38 @@ export default function FirstTimersPage() {
     setSavingAdd(true);
     try {
       if (mode === "create") {
-        const { data: inserted, error: insErr } = await supabase
-          .from("members")
-          .insert({
-            org_id: orgId,
-            membership_stage: "visitor",
-            profile_complete: true,
+        const { data: sessionResult } = await supabase.auth.getSession();
+        const accessToken = sessionResult.session?.access_token;
+        if (!accessToken) throw new Error("Please sign in again.");
 
+        const response = await fetch("/api/intake/visitor/create", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            org_id: orgId,
             first_name: firstName.trim(),
             last_name: lastName.trim(),
             email: email.trim() || null,
-            phone: phone.trim() || null,
-
+            phone: phone.trim(),
             gender,
             age_group: ageGroup,
-            segment: seg,
-
-            address: address.trim(),
-            marital_status: maritalStatus.trim(),
+            address: address.trim() || null,
+            marital_status: maritalStatus.trim() || null,
             children_count: cc,
-          })
-          .select("id")
-          .single();
-
-        if (insErr) throw new Error(insErr.message);
-
-        const memberId = inserted.id as string;
-
-        const { error: vdErr } = await supabase.from("visitor_details").upsert(
-          {
-            member_id: memberId,
             first_visit_at: firstVisitAt || null,
-            follow_up_status: "new",
             how_heard: howHeard.trim() || null,
             prayer_request_tags: fromPrayerItems(prayerItems),
             follow_up_notes: followUpNotes.trim() || null,
             next_follow_up_at: nextFollowUpAt || null,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "member_id" },
-        );
-        if (vdErr) throw new Error(vdErr.message);
-
-        await createDefaultScheduledFollowupsForMember({
-          memberId,
-          firstName: firstName.trim(),
-          lastName: lastName.trim(),
-          email: email.trim() || null,
-          firstVisitAt: firstVisitAt || todayISODate(),
+          }),
         });
+        const result = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error(String(result?.error ?? "Failed to create first-timer."));
+        }
       } else {
         if (!isAdmin)
           throw new Error("Only finance/admin/owner can edit first-timers.");
@@ -1992,7 +2044,11 @@ export default function FirstTimersPage() {
       const url = String(json?.intakeUrl ?? "");
       setIntakeUrl(url);
 
-      showToast(json?.emailed ? "Email sent" : "Link created");
+      showToast(
+        json?.emailed
+          ? "Email sent"
+          : String(json?.email_warning ?? "Link created; copy it to share manually"),
+      );
       await load();
     } catch (e) {
       setEmailErr(e instanceof Error ? e.message : "Something went wrong.");
@@ -2227,14 +2283,15 @@ export default function FirstTimersPage() {
                       setCampaignOpen(true);
                       setCampaignErr("");
                       setCampaignUrl("");
-                      setCampaignName("Sunday Service");
-                      setCampaignDays("1000");
+                      setCampaignName("First-Timer Campaign");
+                      setCampaignExpiryMode("never");
+                      setCampaignExpiryDate(addDaysISO(campaignToday, 30));
                     }}
                   >
                     Multiple visitors (QR Code)
                     {campaignLimitReached ? (
                       <div className="mt-1 text-xs text-slate-400">
-                        Limit reached (max 2 active)
+                        Limit reached (max {MAX_ACTIVE_CAMPAIGN_LINKS} active)
                       </div>
                     ) : null}
                   </button>
@@ -2757,6 +2814,11 @@ export default function FirstTimersPage() {
                               <div className="mt-1 text-xs text-slate-600">
                                 Multiple visitors link
                               </div>
+                              <div className="mt-1 text-xs text-slate-500">
+                                {c.expiry_mode === "never"
+                                  ? "No scheduled expiry"
+                                  : `Expires ${c.expires_on}`}
+                              </div>
                             </div>
 
                             <div className="col-span-4 text-slate-700">
@@ -2775,6 +2837,7 @@ export default function FirstTimersPage() {
                                     title: c.name,
                                     url: c.url,
                                     showQr: true,
+                                    campaign: c,
                                   })
                                 }
                               >
@@ -2788,6 +2851,7 @@ export default function FirstTimersPage() {
                                     title: c.name,
                                     url: c.url,
                                     showQr: true,
+                                    campaign: c,
                                   });
                                   setAutoDownload(true);
                                 }}
@@ -3024,17 +3088,17 @@ export default function FirstTimersPage() {
           onClick={() => setLinkOpen(false)}
         >
           <div
-            className="w-full max-w-xl rounded-3xl bg-white shadow-xl"
+            className="flex max-h-[80dvh] w-full max-w-xl flex-col overflow-hidden rounded-3xl bg-white shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="border-b px-6 py-4">
+            <div className="shrink-0 border-b px-6 py-4">
               <div className="text-sm font-semibold">{linkTitle || "Link"}</div>
               <div className="text-xs text-slate-600">
                 Copy the link or use the QR code.
               </div>
             </div>
 
-            <div className="px-6 py-6 space-y-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-6">
               {linkShowQr ? (
                 <div className="flex justify-center">
                   <div
@@ -3068,6 +3132,99 @@ export default function FirstTimersPage() {
                   Copy
                 </button>
               </div>
+
+              {linkCampaignId ? (
+                <div className="space-y-4 rounded-2xl border bg-slate-50 p-4">
+                  <div>
+                    <div className="text-sm font-semibold">Link expiration</div>
+                    {/* <div className="mt-1 text-xs text-slate-500">
+                      “Never” is stored as 9,999 days so the link still has a
+                      finite safety boundary.
+                    </div> */}
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-[180px_1fr_auto] sm:items-end">
+                    <label className="text-xs font-semibold text-slate-600">
+                      Expiration
+                      <select
+                        value={linkExpiryMode}
+                        disabled={linkSaving}
+                        onChange={(event) =>
+                          setLinkExpiryMode(event.target.value as CampaignExpiryMode)
+                        }
+                        className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm font-normal outline-none focus:ring-2 focus:ring-slate-200"
+                      >
+                        <option value="never">Never</option>
+                        <option value="date">Choose date</option>
+                      </select>
+                    </label>
+
+                    <label className="text-xs font-semibold text-slate-600">
+                      Expiration date
+                      <input
+                        type="date"
+                        min={campaignToday}
+                        value={linkExpiryDate}
+                        disabled={linkSaving || linkExpiryMode !== "date"}
+                        onChange={(event) => setLinkExpiryDate(event.target.value)}
+                        className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm font-normal outline-none focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                      />
+                    </label>
+
+                    <button
+                      onClick={saveLinkExpiry}
+                      disabled={linkSaving}
+                      className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-300"
+                    >
+                      {linkSaving ? "Saving..." : "Save"}
+                    </button>
+                  </div>
+
+                  {linkErr ? (
+                    <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                      {linkErr}
+                    </div>
+                  ) : null}
+
+                  <div className="border-t pt-4">
+                    {linkDeleteConfirm ? (
+                      <div className="rounded-xl border border-red-200 bg-red-50 p-3">
+                        <div className="text-sm font-semibold text-red-800">
+                          Delete this campaign link?
+                        </div>
+                        <div className="mt-1 text-xs text-red-700">
+                          The URL and QR code will stop working immediately.
+                          Visitors already created through it will remain.
+                        </div>
+                        <div className="mt-3 flex flex-wrap justify-end gap-2">
+                          <button
+                            onClick={() => setLinkDeleteConfirm(false)}
+                            disabled={linkSaving}
+                            className="rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-red-50"
+                          >
+                            Keep link
+                          </button>
+                          <button
+                            onClick={deleteCampaignLink}
+                            disabled={linkSaving}
+                            className="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:bg-red-300"
+                          >
+                            {linkSaving ? "Deleting..." : "Delete permanently"}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setLinkDeleteConfirm(true)}
+                        disabled={linkSaving}
+                        className="text-sm font-semibold text-red-700 underline underline-offset-4 hover:text-red-900"
+                      >
+                        Delete link
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : null}
               {/* 
               {linkShowQr ? (
                 <button
@@ -3079,7 +3236,7 @@ export default function FirstTimersPage() {
               ) : null} */}
             </div>
 
-            <div className="border-t px-4 py-4 flex justify-end">
+            <div className="flex shrink-0 justify-end border-t px-4 py-4">
               <button
                 className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
                 onClick={() => setLinkOpen(false)}
@@ -3402,6 +3559,11 @@ export default function FirstTimersPage() {
             ) : null}
 
             <div className="max-h-[75vh] overflow-auto px-6 py-6 space-y-6">
+              {mode === "edit" && orgRole === "finance" ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  Finance can edit visitor details, but identity fields are read-only.
+                </div>
+              ) : null}
               {/* Basics */}
               <div>
                 <div className="text-xs font-semibold text-slate-600">
@@ -3415,6 +3577,7 @@ export default function FirstTimersPage() {
                     </div>
                     <input
                       className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      disabled={mode === "edit" && orgRole === "finance"}
                       value={firstName}
                       onChange={(e) => setFirstName(e.target.value)}
                     />
@@ -3426,6 +3589,7 @@ export default function FirstTimersPage() {
                     </div>
                     <input
                       className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      disabled={mode === "edit" && orgRole === "finance"}
                       value={lastName}
                       onChange={(e) => setLastName(e.target.value)}
                     />
@@ -3433,7 +3597,7 @@ export default function FirstTimersPage() {
                 </div>
 
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <div>
+                  <div className={firstTimerFieldVisible("email") ? "" : "hidden"}>
                     <div className="mb-1 text-xs font-semibold text-slate-600">
                       Email
                     </div>
@@ -3444,7 +3608,7 @@ export default function FirstTimersPage() {
                     />
                   </div>
 
-                  <div>
+                  <div className={firstTimerFieldVisible("phone") ? "" : "hidden"}>
                     <div className="mb-1 text-xs font-semibold text-slate-600">
                       Phone *
                     </div>
@@ -3456,7 +3620,7 @@ export default function FirstTimersPage() {
                   </div>
                 </div>
 
-                <div className="mt-3">
+                <div className={firstTimerFieldVisible("address") ? "mt-3" : "hidden"}>
                   <div className="mb-1 text-xs font-semibold text-slate-600">
                     Home address
                   </div>
@@ -3481,6 +3645,7 @@ export default function FirstTimersPage() {
                     </div>
                     <select
                       className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      disabled={mode === "edit" && orgRole === "finance"}
                       value={gender}
                       onChange={(e) => {
                         const v = e.target.value;
@@ -3499,6 +3664,7 @@ export default function FirstTimersPage() {
                     </div>
                     <select
                       className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                      disabled={mode === "edit" && orgRole === "finance"}
                       value={ageGroup}
                       onChange={(e) => {
                         const v = e.target.value;
@@ -3531,7 +3697,7 @@ export default function FirstTimersPage() {
                 </div>
 
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <div>
+                  <div className={firstTimerFieldVisible("marital_status") ? "" : "hidden"}>
                     <div className="mb-1 text-xs font-semibold text-slate-600">
                       Marital status
                     </div>
@@ -3542,7 +3708,7 @@ export default function FirstTimersPage() {
                     />
                   </div>
 
-                  <div>
+                  <div className={firstTimerFieldVisible("children_count") ? "" : "hidden"}>
                     <div className="mb-1 text-xs font-semibold text-slate-600">
                       Children count
                     </div>
@@ -3564,7 +3730,7 @@ export default function FirstTimersPage() {
                 </div>
 
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <div>
+                  <div className={firstTimerFieldVisible("first_visit_at") ? "" : "hidden"}>
                     <div className="mb-1 text-xs font-semibold text-slate-600">
                       First visit
                     </div>
@@ -3597,7 +3763,7 @@ export default function FirstTimersPage() {
                   </div>
                 </div>
 
-                <div className="mt-3">
+                <div className={firstTimerFieldVisible("how_heard") ? "mt-3" : "hidden"}>
                   <div className="mb-1 text-xs font-semibold text-slate-600">
                     How did you hear about us?
                   </div>
@@ -3609,7 +3775,7 @@ export default function FirstTimersPage() {
                   />
                 </div>
 
-                <div className="mt-3">
+                <div className={firstTimerFieldVisible("prayer_requests") ? "mt-3" : "hidden"}>
                   <div className="mb-2 text-xs font-semibold text-slate-600">
                     Prayer requests
                   </div>
@@ -3677,6 +3843,8 @@ export default function FirstTimersPage() {
                   />
                 </div>
               </div>
+
+              {mode === "edit" && editId ? <PersonCustomFields memberId={editId} visitor onStandardKeys={setFirstTimerStandardKeys} /> : null}
             </div>
 
             <div className="flex items-center justify-between gap-3 border-t px-4 py-4">
@@ -3721,7 +3889,8 @@ export default function FirstTimersPage() {
                   Generates a shareable link you can turn into a QR code.
                 </div>
                 <div className="mt-2 text-xs text-slate-500">
-                  Limit: max 2 active multiple-visitor links per organization.
+                  Limit: max {MAX_ACTIVE_CAMPAIGN_LINKS} active
+                  multiple-visitor links per organization.
                 </div>
               </div>
               <button
@@ -3735,7 +3904,7 @@ export default function FirstTimersPage() {
             <div className="mt-5 space-y-3">
               <div>
                 <div className="mb-1 text-xs font-semibold text-slate-600">
-                  Service name
+                  Campaign name
                 </div>
                 <input
                   value={campaignName}
@@ -3748,17 +3917,46 @@ export default function FirstTimersPage() {
 
               <div>
                 <div className="mb-1 text-xs font-semibold text-slate-600">
-                  Expires in (days)
+                  Expiration
                 </div>
-                <input
-                  inputMode="numeric"
-                  value={campaignDays}
+                <select
+                  value={campaignExpiryMode}
                   disabled={Boolean(campaignUrl) || campaignLoading}
-                  onChange={(e) => setCampaignDays(e.target.value)}
+                  onChange={(event) =>
+                    setCampaignExpiryMode(
+                      event.target.value as CampaignExpiryMode,
+                    )
+                  }
                   className="w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-slate-200 disabled:bg-slate-50"
-                  placeholder="1000"
-                />
+                >
+                  <option value="never">Never</option>
+                  <option value="date">Choose date</option>
+                </select>
+                {/* <div className="mt-1 text-xs text-slate-500">
+                  “Never” is stored as 9,999 days.
+                </div> */}
               </div>
+
+              {campaignExpiryMode === "date" ? (
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-slate-600">
+                    Expiration date
+                  </div>
+                  <input
+                    type="date"
+                    min={campaignToday}
+                    value={campaignExpiryDate}
+                    disabled={Boolean(campaignUrl) || campaignLoading}
+                    onChange={(event) =>
+                      setCampaignExpiryDate(event.target.value)
+                    }
+                    className="w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-slate-200 disabled:bg-slate-50"
+                  />
+                  <div className="mt-1 text-xs text-slate-500">
+                    The link remains active through the selected date.
+                  </div>
+                </div>
+              ) : null}
 
               <button
                 onClick={createCampaign}
@@ -3774,7 +3972,7 @@ export default function FirstTimersPage() {
                 {campaignUrl
                   ? "Link generated"
                   : campaignLimitReached
-                    ? "Limit reached (max 2 active)"
+                    ? `Limit reached (max ${MAX_ACTIVE_CAMPAIGN_LINKS} active)`
                     : campaignLoading
                       ? "Creating..."
                       : "Create link"}

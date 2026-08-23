@@ -1,0 +1,1 @@
+export const PERSONAL_INTAKE_EXPIRY_DAYS = 7;

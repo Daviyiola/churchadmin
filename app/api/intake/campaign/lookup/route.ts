@@ -1,63 +1,49 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-type ErrorJson = { error: string };
-
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const slug = String(searchParams.get("slug") ?? "").trim();
+  const slug = String(new URL(req.url).searchParams.get("slug") ?? "").trim();
+  if (!slug) return NextResponse.json({ error: "Missing slug" }, { status: 400 });
 
-  if (!slug) {
-    return NextResponse.json<ErrorJson>({ error: "Missing slug" }, { status: 400 });
-  }
-
-  const { data: camp, error: campErr } = await supabaseAdmin
+  const { data: campaign, error: campaignError } = await supabaseAdmin
     .from("intake_campaigns")
     .select("id,org_id,name,slug,is_active,expires_at")
     .eq("slug", slug)
     .maybeSingle();
-
-  if (campErr) return NextResponse.json<ErrorJson>({ error: campErr.message }, { status: 400 });
-  if (!camp) return NextResponse.json<ErrorJson>({ error: "Invalid or expired link." }, { status: 404 });
-
-  if (!camp.is_active) {
-    return NextResponse.json<ErrorJson>({ error: "This campaign link is inactive." }, { status: 410 });
+  if (campaignError) return NextResponse.json({ error: "Unable to load this link." }, { status: 400 });
+  if (!campaign) return NextResponse.json({ error: "Invalid or expired link." }, { status: 404 });
+  if (!campaign.is_active) return NextResponse.json({ error: "This campaign link is inactive." }, { status: 410 });
+  if (campaign.expires_at && new Date(campaign.expires_at).getTime() <= Date.now()) {
+    return NextResponse.json({ error: "This campaign link has expired." }, { status: 410 });
   }
 
-  if (camp.expires_at && new Date(camp.expires_at).getTime() < Date.now()) {
-    return NextResponse.json<ErrorJson>({ error: "This campaign link has expired." }, { status: 410 });
+  const [formResult, organizationResult, settingsResult] = await Promise.all([
+    supabaseAdmin.from("forms")
+      .select("id,title,description,status,revision")
+      .eq("org_id", campaign.org_id).eq("form_kind", "first_timer").eq("is_system", true).maybeSingle(),
+    supabaseAdmin.from("organizations").select("name").eq("id", campaign.org_id).maybeSingle(),
+    supabaseAdmin.from("organization_settings").select("logo_path,use_default_logo").eq("organization_id", campaign.org_id).maybeSingle(),
+  ]);
+  if (formResult.error || organizationResult.error || settingsResult.error) {
+    return NextResponse.json({ error: "Unable to load this form." }, { status: 400 });
   }
+  const form = formResult.data;
+  if (!form) return NextResponse.json({ error: "This form is unavailable." }, { status: 404 });
+  if (form.status !== "open") return NextResponse.json({ error: "This form is no longer accepting responses." }, { status: 410 });
 
-  const [{ data: org, error: orgErr }, { data: settings, error: setErr }] =
-    await Promise.all([
-      supabaseAdmin
-        .from("organizations")
-        .select("id,name")
-        .eq("id", camp.org_id)
-        .maybeSingle(),
-      supabaseAdmin
-        .from("organization_settings")
-        .select("logo_path,use_default_logo")
-        .eq("organization_id", camp.org_id)
-        .maybeSingle(),
-    ]);
-
-  if (orgErr) return NextResponse.json<ErrorJson>({ error: orgErr.message }, { status: 400 });
-
-  // settings row is optional
-  if (setErr && setErr.code !== "PGRST116") {
-    return NextResponse.json<ErrorJson>({ error: setErr.message }, { status: 400 });
-  }
-
-  if (!org) return NextResponse.json<ErrorJson>({ error: "Invalid or expired link." }, { status: 404 });
+  const { data: fields, error: fieldsError } = await supabaseAdmin.from("form_fields")
+    .select("field_key,field_type,label,help_text,placeholder,is_required,options,layout_width,position")
+    .eq("form_id", form.id).eq("org_id", campaign.org_id).order("position", { ascending: true });
+  if (fieldsError) return NextResponse.json({ error: "Unable to load this form." }, { status: 400 });
 
   return NextResponse.json({
-    ok: true,
-    org: { id: org.id, name: org.name },
-    campaign: { id: camp.id, name: camp.name, slug: camp.slug },
+    form: { title: form.title, description: form.description, revision: form.revision },
+    fields: fields ?? [],
+    organization: { name: organizationResult.data?.name ?? "" },
     settings: {
-      logo_path: settings?.logo_path ?? null,
-      use_default_logo: settings?.use_default_logo ?? true,
+      logo_path: settingsResult.data?.logo_path ?? null,
+      use_default_logo: settingsResult.data?.use_default_logo ?? true,
     },
+    source: { type: "campaign", label: campaign.name },
   });
 }

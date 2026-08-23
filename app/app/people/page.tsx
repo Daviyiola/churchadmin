@@ -95,14 +95,6 @@ export default function PeopleHomePage() {
         requiresAdmin: false,
       },
       {
-        title: "Email communications",
-        desc: "Send announcements and broadcasts to members or visitors by email.",
-        href: "/app/people/email-communications",
-        badge: "",
-        requiresAdmin: true,
-        financeAllowed: true,
-      },
-      {
         title: "Community Groups",
         desc: "Organize people into ministries and fellowship communities like Virtous Women, Men of Valor, and more.",
         href: "/app/people/community-groups",
@@ -119,14 +111,6 @@ export default function PeopleHomePage() {
         disabled: true, // not built yet
       },
       
-      {
-        title: "SMS communications",
-        desc: "Text message campaigns and reminders (coming soon).",
-        href: "/app/people/sms-communications",
-        badge: "Coming soon",
-        requiresAdmin: false,
-        disabled: true, // not built yet
-      },
     ],
     [],
   );

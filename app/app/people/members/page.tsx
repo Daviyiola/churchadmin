@@ -3,6 +3,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
+import PersonCustomFields from "@/components/people/PersonCustomFields";
+import {
+  daysForMonth,
+  formatMonthDay,
+  isValidMonthDay,
+  monthDayFromIsoDate,
+  type BirthDatePrecision,
+} from "@/lib/people/birthDate";
 
 type Role = "owner" | "admin" | "finance" | "viewer" | "member";
 
@@ -23,8 +31,10 @@ type MemberRow = {
 
   gender: "male" | "female";
   dob: string | null;
-  age_group: AgeGroup;
-  segment: Segment;
+  birth_month: number | null;
+  birth_day: number | null;
+  age_group: AgeGroup | null;
+  segment: Segment | null;
   address: string | null;
   notes: string | null;
 
@@ -56,6 +66,17 @@ type MemberMerge = {
   reason: string;
   field_sources: { use_b?: string[] };
   relationship_counts: Record<string, number>;
+};
+
+type PersonRecordEvent = {
+  id: string;
+  member_id: string | null;
+  person_name: string;
+  event_type: "created_member_from_form" | "created_visitor_from_form" | "updated_member_from_form" | "updated_visitor_from_form";
+  actor_email: string | null;
+  actor_role: string;
+  changes: { standard?: Record<string, { old?: unknown; new?: unknown }>; custom?: Record<string, { label?: string; old?: unknown; new?: unknown }> };
+  created_at: string;
 };
 
 const MERGE_PREVIEW_RELATIONSHIPS = [
@@ -94,6 +115,11 @@ type DupCandidate = {
 };
 
 type KpiKey = "total" | "kids" | "teens" | "young" | "adults";
+
+const BIRTH_MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
 
 function isYesNo(v: string): v is YesNo {
   return v === "" || v === "yes" || v === "no";
@@ -337,7 +363,7 @@ function isPostgresUniqueViolation(err: unknown): boolean {
 export default function MembersPage() {
   const orgId = getActiveOrgId();
 
-  const [tab, setTab] = useState<"active" | "archived" | "merged">("active");
+  const [tab, setTab] = useState<"active" | "archived" | "merged" | "activity">("active");
   const [q, setQ] = useState("");
   const [ageGroupFilter, setAgeGroupFilter] = useState<AgeGroup | null>(null);
 
@@ -349,6 +375,8 @@ export default function MembersPage() {
     role === "finance" || role === "admin" || role === "owner";
 
   const [mergeRows, setMergeRows] = useState<MemberMerge[]>([]);
+  const [personEvents, setPersonEvents] = useState<PersonRecordEvent[]>([]);
+  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [expandedMergeId, setExpandedMergeId] = useState<string | null>(null);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [mergeStep, setMergeStep] = useState<1 | 2 | 3>(1);
@@ -392,6 +420,9 @@ export default function MembersPage() {
 
   const [gender, setGender] = useState<"male" | "female" | "">("");
   const [dob, setDob] = useState<string>("");
+  const [birthDatePrecision, setBirthDatePrecision] = useState<BirthDatePrecision>("full");
+  const [birthMonth, setBirthMonth] = useState<number | null>(null);
+  const [birthDay, setBirthDay] = useState<number | null>(null);
   const [ageGroup, setAgeGroup] = useState<AgeGroup | "">("");
 
   const [baptized, setBaptized] = useState<YesNo>("");
@@ -419,9 +450,17 @@ export default function MembersPage() {
   const [qdErr, setQdErr] = useState("");
   const [qdSaving, setQdSaving] = useState(false);
 
-  // DOB drives age group when present
+  // Only a complete DOB can drive age and age group. A month/day-only
+  // birthday is deliberately never assigned a made-up year.
   const hasDob = dob.trim().length > 0;
   const dobAge = hasDob ? computeAgeFromDobOnDate(dob) : null;
+  const hasPartialBirthday =
+    birthDatePrecision === "month_day" &&
+    (birthMonth !== null || birthDay !== null);
+  const partialBirthdayValid =
+    birthMonth !== null &&
+    birthDay !== null &&
+    isValidMonthDay(birthMonth, birthDay);
 
   const effectiveAgeGroup = (
     hasDob ? (dobAge !== null ? ageGroupForAge(dobAge) : "") : ageGroup
@@ -431,21 +470,22 @@ export default function MembersPage() {
     firstName.trim().length > 0 &&
     lastName.trim().length > 0 &&
     gender !== "" &&
-    (hasDob ? dobAge !== null : ageGroup !== "");
+    (birthDatePrecision === "full"
+      ? (hasDob ? dobAge !== null : ageGroup !== "")
+      : (hasPartialBirthday ? partialBirthdayValid : ageGroup !== ""));
 
   const segment = computeSegment(gender, effectiveAgeGroup);
 
   const formError = !requiredOk
-    ? hasDob
+    ? birthDatePrecision === "full" && hasDob
       ? "First name, last name, gender, and a valid date of birth are required."
-      : "First name, last name, gender, and age group are required."
-    : segment === ""
-      ? "Segment could not be computed."
-      : "";
+      : hasPartialBirthday
+        ? "Choose both a valid birth month and day."
+        : "First name, last name, gender, and either birthday or age group are required."
+    : "";
 
   const canSave =
     requiredOk &&
-    segment !== "" &&
     (mode === "create" || (mode === "edit" ? canManageMembers : true));
 
   const deptNameById = useMemo(() => {
@@ -533,6 +573,9 @@ export default function MembersPage() {
 
     setGender("");
     setDob("");
+    setBirthDatePrecision("full");
+    setBirthMonth(null);
+    setBirthDay(null);
     setAgeGroup("");
 
     setBaptized("");
@@ -565,7 +608,10 @@ export default function MembersPage() {
     setJoinedAt(m.joined_at || "");
     setGender(m.gender);
     setDob(m.dob || "");
-    setAgeGroup(m.age_group);
+    setBirthDatePrecision(m.dob || (!m.birth_month && !m.birth_day) ? "full" : "month_day");
+    setBirthMonth(m.birth_month);
+    setBirthDay(m.birth_day);
+    setAgeGroup(m.age_group || "");
     setAddress(m.address || "");
     setNotes(m.notes || "");
 
@@ -594,12 +640,12 @@ export default function MembersPage() {
     setDeptErr("");
 
     const memberRequest =
-      tab === "merged"
+      tab === "merged" || tab === "activity"
         ? Promise.resolve({ data: [], error: null })
         : supabase
             .from("members")
             .select(
-              "id,first_name,last_name,email,phone,joined_at,status,created_at,gender,dob,age_group,segment,address,notes,baptized,baptism_date,born_again,born_again_date,department_category_id",
+              "id,first_name,last_name,email,phone,joined_at,status,created_at,gender,dob,birth_month,birth_day,age_group,segment,address,notes,baptized,baptism_date,born_again,born_again_date,department_category_id",
             )
             .eq("org_id", orgId)
             .eq("membership_stage", "member")
@@ -607,7 +653,7 @@ export default function MembersPage() {
             .order("last_name", { ascending: true })
             .order("first_name", { ascending: true });
 
-    const [activeRole, deptRes, memRes, mergesRes] = await Promise.all([
+    const [activeRole, deptRes, memRes, mergesRes, eventsRes] = await Promise.all([
       getRoleForActiveOrg(orgId),
       supabase
         .from("categories")
@@ -624,6 +670,12 @@ export default function MembersPage() {
         )
         .eq("org_id", orgId)
         .order("merged_at", { ascending: false }),
+      supabase
+        .from("person_record_events")
+        .select("id,member_id,person_name,event_type,actor_email,actor_role,changes,created_at")
+        .eq("org_id", orgId)
+        .order("created_at", { ascending: false })
+        .limit(200),
     ]);
 
     setRole(activeRole);
@@ -660,8 +712,10 @@ export default function MembersPage() {
           | "male"
           | "female",
         dob: toStringOrNull(r.dob),
-        age_group: (r.age_group ?? "") as AgeGroup,
-        segment: (r.segment ?? "") as Segment,
+        birth_month: r.birth_month === null ? null : Number(r.birth_month),
+        birth_day: r.birth_day === null ? null : Number(r.birth_day),
+        age_group: (r.age_group ?? null) as AgeGroup | null,
+        segment: (r.segment ?? null) as Segment | null,
         address: toStringOrNull(r.address),
         notes: toStringOrNull(r.notes),
 
@@ -681,6 +735,13 @@ export default function MembersPage() {
       setMergeRows([]);
     } else {
       setMergeRows((mergesRes.data ?? []) as MemberMerge[]);
+    }
+
+    if (eventsRes.error) {
+      if (!eventsRes.error.message.includes("person_record_events")) setErr(eventsRes.error.message);
+      setPersonEvents([]);
+    } else {
+      setPersonEvents((eventsRes.data ?? []) as PersonRecordEvent[]);
     }
 
     setLoading(false);
@@ -812,21 +873,22 @@ export default function MembersPage() {
       return;
     }
 
-    if (!hasDob && !ageGroup) {
-      setErr("Age group is required unless date of birth is provided.");
+    if (birthDatePrecision === "month_day" && hasPartialBirthday && !partialBirthdayValid) {
+      setErr("Choose both a valid birth month and day.");
       return;
     }
 
-    if (!effectiveAgeGroup) {
-      setErr("Could not compute age group.");
+    const hasBirthday = hasDob || partialBirthdayValid;
+    if (!hasBirthday && !ageGroup) {
+      setErr("Provide a birthday or choose an age group.");
       return;
     }
 
     const segmentToSave = computeSegment(gender, effectiveAgeGroup);
-    if (!segmentToSave) {
-      setErr("Segment could not be computed.");
-      return;
-    }
+    const dobToSave = birthDatePrecision === "full" && hasDob ? dob.trim() : null;
+    const fullMonthDay = dobToSave ? monthDayFromIsoDate(dobToSave) : null;
+    const birthMonthToSave = fullMonthDay?.month ?? (partialBirthdayValid ? birthMonth : null);
+    const birthDayToSave = fullMonthDay?.day ?? (partialBirthdayValid ? birthDay : null);
 
     // department: if query doesn't match a real department and user typed something, nudge them
     if (deptQuery.trim().length > 0 && !departmentId) {
@@ -864,8 +926,10 @@ export default function MembersPage() {
       notes: string | null;
       gender: "male" | "female";
       dob: string | null;
-      age_group: AgeGroup;
-      segment: Segment;
+      birth_month: number | null;
+      birth_day: number | null;
+      age_group: AgeGroup | null;
+      segment: Segment | null;
       address: string | null;
       baptized: boolean | null;
       baptism_date: string | null;
@@ -882,9 +946,11 @@ export default function MembersPage() {
       status: "active",
       notes: notes.trim() || null,
       gender,
-      dob: dob.trim() ? dob.trim() : null,
-      age_group: effectiveAgeGroup,
-      segment: segmentToSave,
+      dob: dobToSave,
+      birth_month: birthMonthToSave,
+      birth_day: birthDayToSave,
+      age_group: effectiveAgeGroup || null,
+      segment: segmentToSave || null,
       address: address.trim() || null,
       baptized: baptizedBool,
       baptism_date: baptismDateToSave,
@@ -901,7 +967,7 @@ export default function MembersPage() {
         lastName,
         email: email.trim() || null,
         phone: phone.trim() || null,
-        dob: dob.trim() ? dob.trim() : null,
+        dob: dobToSave,
       });
 
       if (dup.error) {
@@ -969,9 +1035,11 @@ export default function MembersPage() {
         notes: notes.trim() || null,
         updated_at: new Date().toISOString(),
         gender,
-        dob: dob.trim() ? dob.trim() : null,
-        age_group: effectiveAgeGroup,
-        segment: segmentToSave,
+        dob: dobToSave,
+        birth_month: birthMonthToSave,
+        birth_day: birthDayToSave,
+        age_group: effectiveAgeGroup || null,
+        segment: segmentToSave || null,
         address: address.trim() || null,
 
         baptized: baptizedBool,
@@ -1056,7 +1124,7 @@ export default function MembersPage() {
     const { data, error } = await supabase
       .from("members")
       .select(
-        "id,first_name,last_name,email,phone,joined_at,status,created_at,gender,dob,age_group,segment,address,notes,baptized,baptism_date,born_again,born_again_date,department_category_id,marital_status,children_count",
+        "id,first_name,last_name,email,phone,joined_at,status,created_at,gender,dob,birth_month,birth_day,age_group,segment,address,notes,baptized,baptism_date,born_again,born_again_date,department_category_id,marital_status,children_count",
       )
       .eq("org_id", orgId)
       .eq("membership_stage", "member")
@@ -1152,8 +1220,8 @@ export default function MembersPage() {
       {
         key: "demographics",
         label: "Demographics",
-        a: `${show(a.gender)} • ${show(a.dob || a.age_group)}`,
-        b: `${show(b.gender)} • ${show(b.dob || b.age_group)}`,
+        a: `${show(a.gender)} • ${show(a.dob || formatMonthDay(a.birth_month, a.birth_day) || a.age_group)}`,
+        b: `${show(b.gender)} • ${show(b.dob || formatMonthDay(b.birth_month, b.birth_day) || b.age_group)}`,
       },
       {
         key: "marital_status",
@@ -1215,7 +1283,9 @@ export default function MembersPage() {
                 ? "Active members"
                 : tab === "archived"
                   ? "Archived members"
-                  : "Merged member history"}
+                  : tab === "merged"
+                    ? "Merged member history"
+                    : "People record activity"}
             </div>
           </div>
 
@@ -1282,9 +1352,19 @@ export default function MembersPage() {
               >
                 Merged
               </button>
+              <button
+                className={`rounded-2xl px-4 py-2 text-sm ${
+                  tab === "activity"
+                    ? "bg-white border shadow-sm"
+                    : "text-slate-600 hover:bg-white"
+                }`}
+                onClick={() => setTab("activity")}
+              >
+                Activity
+              </button>
             </div>
 
-            {tab !== "merged" ? (
+            {tab === "active" || tab === "archived" ? (
               <input
                 className="w-full sm:w-96 rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
                 placeholder="Search name, phone, email, department…"
@@ -1309,7 +1389,23 @@ export default function MembersPage() {
       </div>
 
       {/* Body */}
-      {tab === "merged" ? (
+      {tab === "activity" ? (
+        <div className="p-6">
+          <div className="rounded-3xl border bg-white p-5">
+            <div className="text-sm font-semibold">People activity</div>
+            <div className="mt-1 text-xs text-slate-600">Form-created and form-updated person records. Submission answers remain in the form inbox.</div>
+            <div className="mt-4 space-y-3">
+              {loading ? <div className="text-sm text-slate-600">Loading…</div> : personEvents.length === 0 ? <div className="rounded-2xl border bg-slate-50 p-4 text-sm text-slate-600">No form-to-person activity yet.</div> : personEvents.map((event) => {
+                const expanded = expandedEventId === event.id;
+                const label = event.event_type === "created_member_from_form" ? "Member created" : event.event_type === "created_visitor_from_form" ? "Visitor created" : event.event_type === "updated_member_from_form" ? "Member updated" : "Visitor updated";
+                const standard = Object.entries(event.changes?.standard ?? {});
+                const custom = Object.values(event.changes?.custom ?? {});
+                return <div key={event.id} className="rounded-2xl border p-4"><button type="button" className="w-full text-left" onClick={() => setExpandedEventId(expanded ? null : event.id)}><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="font-semibold">{label}: {event.person_name}</div><div className="mt-1 text-xs text-slate-600">{new Date(event.created_at).toLocaleString()} • By {event.actor_email ?? (event.actor_role === "public" ? "Public form" : "Unknown editor")}</div></div><span className="text-xs font-semibold text-slate-500">{expanded ? "Hide details" : "View details"}</span></div></button>{expanded ? <div className="mt-4 border-t pt-4 text-sm"><div className="font-semibold text-slate-600">Applied fields</div>{standard.length === 0 && custom.length === 0 ? <div className="mt-1 text-slate-500">No field-level changes recorded.</div> : <div className="mt-2 grid gap-2 sm:grid-cols-2">{standard.map(([key,value]) => <div key={key} className="rounded-xl bg-slate-50 p-3"><b className="capitalize">{key.replaceAll("_", " ")}</b><div className="mt-1 text-xs text-slate-600">{String(value.old ?? "Not set")} → {String(value.new ?? "Cleared")}</div></div>)}{custom.map((value,index) => <div key={`${value.label}-${index}`} className="rounded-xl bg-slate-50 p-3"><b>{value.label ?? "Custom field"}</b><div className="mt-1 text-xs text-slate-600">{String(value.old ?? "Not set")} → {String(value.new ?? "Cleared")}</div></div>)}</div>}</div> : null}</div>;
+              })}
+            </div>
+          </div>
+        </div>
+      ) : tab === "merged" ? (
         <div className="p-6">
           <div className="rounded-3xl border bg-white p-5">
             <div className="text-sm font-semibold">Merge history</div>
@@ -2110,6 +2206,11 @@ export default function MembersPage() {
             </div>
 
             <div className="max-h-[75vh] overflow-auto px-6 py-6 space-y-6">
+              {mode === "edit" && role === "finance" ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  Finance can edit contact and ministry details, but identity fields are read-only.
+                </div>
+              ) : null}
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
                   <div className="mb-1 text-xs font-semibold text-slate-600">
@@ -2117,6 +2218,7 @@ export default function MembersPage() {
                   </div>
                   <input
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    disabled={mode === "edit" && role === "finance"}
                     value={firstName}
                     onChange={(e) => {
                       setFirstName(e.target.value);
@@ -2131,6 +2233,7 @@ export default function MembersPage() {
                   </div>
                   <input
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    disabled={mode === "edit" && role === "finance"}
                     value={lastName}
                     onChange={(e) => {
                       setLastName(e.target.value);
@@ -2147,6 +2250,7 @@ export default function MembersPage() {
                   </div>
                   <select
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    disabled={mode === "edit" && role === "finance"}
                     value={gender}
                     onChange={(e) => {
                       const v = e.target.value;
@@ -2163,12 +2267,12 @@ export default function MembersPage() {
 
                 <div>
                   <div className="mb-1 text-xs font-semibold text-slate-600">
-                    Age group *
+                    Age group
                   </div>
                   <select
                     className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200 disabled:bg-slate-50 disabled:text-slate-600"
                     value={effectiveAgeGroup}
-                    disabled={hasDob}
+                    disabled={hasDob || (mode === "edit" && role === "finance")}
                     onChange={(e) => {
                       const v = e.target.value;
                       if (!isAgeGroup(v)) return;
@@ -2185,45 +2289,105 @@ export default function MembersPage() {
 
                   {hasDob ? (
                     <div className="mt-1 text-xs text-slate-500">
-                      Age group is set automatically from date of birth. Clear
-                      DOB to choose manually.
+                      Set automatically because a complete birth date is available.
                     </div>
-                  ) : null}
+                  ) : (
+                    <div className="mt-1 text-xs text-slate-500">
+                      Optional when a birthday is provided without a year; otherwise required.
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* DOB + Segment */}
+              {/* Birthday + Segment */}
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
                   <div className="mb-1 text-xs font-semibold text-slate-600">
-                    Date of birth
+                    Birthday
                   </div>
+                  <select
+                    className="w-full rounded-2xl border bg-white px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                    disabled={mode === "edit" && role === "finance"}
+                    value={birthDatePrecision}
+                    onChange={(event) => {
+                      const next = event.target.value as BirthDatePrecision;
+                      setBirthDatePrecision(next);
+                      if (next === "full") {
+                        setBirthMonth(null);
+                        setBirthDay(null);
+                      } else {
+                        const fromFull = monthDayFromIsoDate(dob);
+                        setBirthMonth(fromFull?.month ?? null);
+                        setBirthDay(fromFull?.day ?? null);
+                        setDob("");
+                      }
+                      setErr("");
+                    }}
+                  >
+                    <option value="full">Full date (includes year)</option>
+                    <option value="month_day">Month and day only</option>
+                  </select>
 
-                  <div className="flex gap-2">
-                    <input
-                      type="date"
-                      className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-                      value={dob}
-                      onChange={(e) => {
-                        setDob(e.target.value);
-                        setErr("");
-                      }}
-                    />
-
-                    {dob ? (
-                      <button
-                        type="button"
-                        className="shrink-0 rounded-2xl border px-3 py-2 text-sm hover:bg-slate-50"
-                        onClick={() => {
-                          setDob("");
+                  {birthDatePrecision === "full" ? (
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        type="date"
+                        className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                        disabled={mode === "edit" && role === "finance"}
+                        value={dob}
+                        onChange={(e) => {
+                          setDob(e.target.value);
                           setErr("");
                         }}
-                        title="Clear date of birth"
+                      />
+                      {dob ? (
+                        <button
+                          type="button"
+                          className="shrink-0 rounded-2xl border px-3 py-2 text-sm hover:bg-slate-50"
+                          disabled={mode === "edit" && role === "finance"}
+                          onClick={() => {
+                            setDob("");
+                            setErr("");
+                          }}
+                          title="Clear birthday"
+                        >
+                          Clear
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <select
+                        aria-label="Birth month"
+                        className="w-full rounded-2xl border bg-white px-3 py-2 text-sm"
+                        disabled={mode === "edit" && role === "finance"}
+                        value={birthMonth ?? ""}
+                        onChange={(event) => {
+                          const next = event.target.value ? Number(event.target.value) : null;
+                          setBirthMonth(next);
+                          if (next !== null && birthDay !== null && birthDay > daysForMonth(next)) setBirthDay(null);
+                          setErr("");
+                        }}
                       >
-                        Clear
-                      </button>
-                    ) : null}
-                  </div>
+                        <option value="">Month</option>
+                        {BIRTH_MONTHS.map((label, index) => <option key={label} value={index + 1}>{label}</option>)}
+                      </select>
+                      <select
+                        aria-label="Birth day"
+                        className="w-full rounded-2xl border bg-white px-3 py-2 text-sm disabled:bg-slate-50"
+                        disabled={(mode === "edit" && role === "finance") || birthMonth === null}
+                        value={birthDay ?? ""}
+                        onChange={(event) => {
+                          setBirthDay(event.target.value ? Number(event.target.value) : null);
+                          setErr("");
+                        }}
+                      >
+                        <option value="">Day</option>
+                        {Array.from({ length: daysForMonth(birthMonth ?? 1) }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  {partialBirthdayValid ? <div className="mt-1 text-xs text-slate-500">Saved as {formatMonthDay(birthMonth, birthDay)} without a birth year.</div> : null}
                 </div>
 
                 <div>
@@ -2235,6 +2399,7 @@ export default function MembersPage() {
                     className="w-full rounded-2xl border bg-slate-50 px-4 py-2 text-sm text-slate-700"
                     value={segment || "—"}
                   />
+                  {!segment ? <div className="mt-1 text-xs text-slate-500">Available when both gender and age group are known.</div> : null}
                 </div>
               </div>
 
@@ -2475,6 +2640,8 @@ export default function MembersPage() {
                   ) : null}
                 </div>
               </div>
+
+              {mode === "edit" && editId ? <PersonCustomFields memberId={editId} /> : null}
 
               {formError ? (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">

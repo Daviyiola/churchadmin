@@ -3,17 +3,10 @@ import crypto from "crypto";
 import { Resend } from "resend";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { requireActorId } from "@/lib/server/authUser";
+import { PERSONAL_INTAKE_EXPIRY_DAYS } from "@/lib/server/intake/constants";
 
 const resend = new Resend(process.env.RESEND_API_KEY!);
 
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
-}
-function addDaysISO(days: number) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
-}
 function addDaysTS(days: number) {
   const d = new Date();
   d.setDate(d.getDate() + days);
@@ -166,68 +159,23 @@ export async function POST(req: Request) {
 
     const orgName = String(org?.name ?? "Church Admin").trim() || "Church Admin";
 
-    // Create member
-    const { data: inserted, error: insErr } = await supabaseAdmin
-      .from("members")
-      .insert({
-        org_id: orgId,
-        membership_stage: "visitor",
-        profile_complete: false,
-
-        first_name: firstName,
-        last_name: "_", // schema requires NOT NULL
-        email,
-        phone: null,
-
-        gender: null,
-        age_group: null,
-        segment: null,
-        address: null,
-        marital_status: null,
-        children_count: null,
-        status: "active",
-
-        created_by: actorId,
-        updated_by: actorId,
-      })
-      .select("id")
-      .single();
-
-    if (insErr) return NextResponse.json({ error: insErr.message }, { status: 400 });
-    const memberId = inserted.id as string;
-
-    const { error: vdErr } = await supabaseAdmin.from("visitor_details").upsert(
-      {
-        member_id: memberId,
-        first_visit_at: todayISO(),
-        follow_up_status: "new",
-        next_follow_up_at: addDaysISO(3),
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "member_id" },
-    );
-    if (vdErr) return NextResponse.json({ error: vdErr.message }, { status: 400 });
-
-    // expire old tokens for this member
-    await supabaseAdmin
-      .from("intake_tokens")
-      .update({ used_at: new Date().toISOString() })
-      .eq("member_id", memberId)
-      .is("used_at", null);
-
     const token = makeToken();
-    const expiresAt = addDaysTS(3);
+    const expiresAt = addDaysTS(PERSONAL_INTAKE_EXPIRY_DAYS);
 
-    const { error: tokErr } = await supabaseAdmin.from("intake_tokens").insert({
-      token,
-      org_id: orgId,
-      member_id: memberId,
-      invited_email: email,
-      expires_at: expiresAt,
-      used_at: null,
-      created_by: actorId,
-    });
-    if (tokErr) return NextResponse.json({ error: tokErr.message }, { status: 400 });
+    const { error: invitationError } = await supabaseAdmin.rpc(
+      "create_personal_intake_invitation",
+      {
+        p_org_id: orgId,
+        p_actor_id: actorId,
+        p_first_name: firstName,
+        p_email: email,
+        p_token: token,
+        p_expires_at: expiresAt,
+      },
+    );
+    if (invitationError) {
+      return NextResponse.json({ error: invitationError.message }, { status: 400 });
+    }
 
     const base = process.env.NEXT_PUBLIC_APP_URL!.replace(/\/$/, "");
     const intakeUrl = `${base}/intake/${token}`;
@@ -239,18 +187,25 @@ export async function POST(req: Request) {
       orgName,
       firstName,
       intakeUrl,
-      expiresInDays: 3,
+      expiresInDays: PERSONAL_INTAKE_EXPIRY_DAYS,
       appName: "Church Admin",
     });
 
-    await resend.emails.send({
+    const { error: emailError } = await resend.emails.send({
       from,
       to: email,
       subject: `Complete your guest form – ${orgName}`,
       html,
     });
 
-    return NextResponse.json({ ok: true, intakeUrl, emailed: true });
+    return NextResponse.json({
+      ok: true,
+      intakeUrl,
+      emailed: !emailError,
+      email_warning: emailError
+        ? "The secure link was created, but the email could not be sent. You can copy and share the link manually."
+        : null,
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Error";
 
