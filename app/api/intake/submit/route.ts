@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { parsePublicFormAnswers } from "@/lib/server/forms/publicSubmission";
 import { enforceIntakeRateLimit, IntakeRateLimitError, isHoneypotFilled } from "@/lib/server/intake/security";
+import { TurnstileVerificationError, verifyPublicFormTurnstile } from "@/lib/server/forms/turnstile";
 
 function submissionError(message: string) {
   if (message.includes("INTAKE_USED")) return NextResponse.json({ error: "This link has already been used." }, { status: 410 });
@@ -16,13 +17,14 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     if (!body || Array.isArray(body)) throw new Error("Invalid submission.");
-    if (Object.keys(body).some((key) => !["token", "request_id", "answers", "website"].includes(key))) throw new Error("Invalid submission.");
+    if (Object.keys(body).some((key) => !["token", "request_id", "answers", "website", "turnstile_token"].includes(key))) throw new Error("Invalid submission.");
     if (isHoneypotFilled(body)) return NextResponse.json({ ok: true });
     const token = String(body.token ?? "").trim();
     const requestId = String(body.request_id ?? "").trim();
     if (!token || !/^[0-9a-f-]{36}$/i.test(requestId)) throw new Error("Invalid submission request.");
     const answers = parsePublicFormAnswers(body.answers);
     await enforceIntakeRateLimit(req, "personal-intake-submit", 10, 600);
+    await verifyPublicFormTurnstile(req, body.turnstile_token, requestId);
     const { data, error } = await supabaseAdmin.rpc("submit_personal_first_timer_form", {
       p_token: token, p_request_id: requestId, p_answers: answers,
     });
@@ -30,6 +32,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, ...data });
   } catch (error) {
     if (error instanceof IntakeRateLimitError) return NextResponse.json({ error: error.message }, { status: 429 });
+    if (error instanceof TurnstileVerificationError) return NextResponse.json({ error: error.message }, { status: error.status });
     return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to submit the form." }, { status: 400 });
   }
 }

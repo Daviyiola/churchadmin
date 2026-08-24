@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { parsePublicFormAnswers } from "@/lib/server/forms/publicSubmission";
 import { enforceIntakeRateLimit, IntakeRateLimitError, isHoneypotFilled } from "@/lib/server/intake/security";
+import { TurnstileVerificationError, verifyPublicFormTurnstile } from "@/lib/server/forms/turnstile";
 
 function submissionError(message: string) {
   if (message.includes("INTAKE_EXPIRED")) return NextResponse.json({ error: "This campaign link has expired." }, { status: 410 });
@@ -17,7 +18,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     if (!body || Array.isArray(body)) throw new Error("Invalid submission.");
-    if (Object.keys(body).some((key) => !["slug", "request_id", "answers", "website"].includes(key))) throw new Error("Invalid submission.");
+    if (Object.keys(body).some((key) => !["slug", "request_id", "answers", "website", "turnstile_token"].includes(key))) throw new Error("Invalid submission.");
     if (isHoneypotFilled(body)) return NextResponse.json({ ok: true });
     const slug = String(body.slug ?? "").trim();
     const requestId = String(body.request_id ?? "").trim();
@@ -27,6 +28,7 @@ export async function POST(req: Request) {
       enforceIntakeRateLimit(req, `campaign:${slug}`, 5, 600),
       enforceIntakeRateLimit(req, "campaign-intake-global", 20, 3600),
     ]);
+    await verifyPublicFormTurnstile(req, body.turnstile_token, requestId);
     const { data, error } = await supabaseAdmin.rpc("submit_campaign_first_timer_form", {
       p_slug: slug, p_request_id: requestId, p_answers: answers,
     });
@@ -34,6 +36,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, ...data });
   } catch (error) {
     if (error instanceof IntakeRateLimitError) return NextResponse.json({ error: error.message }, { status: 429 });
+    if (error instanceof TurnstileVerificationError) return NextResponse.json({ error: error.message }, { status: error.status });
     return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to submit the form." }, { status: 400 });
   }
 }

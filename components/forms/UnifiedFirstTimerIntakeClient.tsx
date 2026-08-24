@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import FormRenderer, { type RenderableFormField } from "@/components/forms/FormRenderer";
 import { supabase } from "@/lib/supabaseClient";
+import TurnstileWidget from "@/components/forms/TurnstileWidget";
 
 type FieldRow = {
   field_key: string;
@@ -39,6 +40,8 @@ export default function UnifiedFirstTimerIntakeClient({ lookupUrl, submitUrl, su
   const [submitting, setSubmitting] = useState(false);
   const [complete, setComplete] = useState(false);
   const [requestId] = useState(() => crypto.randomUUID());
+  const [turnstileToken, setTurnstileToken] = useState("");
+  const [turnstileReset, setTurnstileReset] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -81,13 +84,15 @@ export default function UnifiedFirstTimerIntakeClient({ lookupUrl, submitUrl, su
       const response = await fetch(submitUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...submitContext, request_id: requestId, answers, website }),
+        body: JSON.stringify({ ...submitContext, request_id: requestId, answers, website, turnstile_token: turnstileToken }),
       });
       const body = await response.json().catch(() => null) as { error?: string } | null;
       if (!response.ok) throw new Error(body?.error || "Unable to submit the form.");
       setComplete(true);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to submit the form.");
+      setTurnstileToken("");
+      setTurnstileReset((value) => value + 1);
     } finally {
       setSubmitting(false);
     }
@@ -100,7 +105,7 @@ export default function UnifiedFirstTimerIntakeClient({ lookupUrl, submitUrl, su
 
   return <main className="min-h-screen bg-slate-100 px-4 py-6 sm:px-6 sm:py-10"><div className="mx-auto max-w-4xl space-y-4">
     {error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
-    <FormRenderer title={payload.form.title} description={payload.form.description} fields={fields} organizationName={payload.organization.name} organizationLogoUrl={logoUrl} initialAnswers={payload.initial_answers} readOnlyFieldKeys={payload.readonly_field_keys} onSubmitAnswers={(answers, website) => void submit(answers, website)} submitting={submitting} />
+    <FormRenderer title={payload.form.title} description={payload.form.description} fields={fields} organizationName={payload.organization.name} organizationLogoUrl={logoUrl} initialAnswers={payload.initial_answers} readOnlyFieldKeys={payload.readonly_field_keys} onSubmitAnswers={(answers, website) => void submit(answers, website)} submitting={submitting} submitDisabled={!turnstileToken} verificationSlot={<TurnstileWidget onToken={setTurnstileToken} resetSignal={turnstileReset} />} />
     {expiringLink ? <p className="px-1 text-xs text-slate-500">This secure link expires automatically and can be submitted once.</p> : null}
   </div></main>;
 }

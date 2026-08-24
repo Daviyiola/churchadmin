@@ -6,6 +6,7 @@ import {
   isHoneypotFilled,
 } from "@/lib/server/intake/security";
 import { parsePublicFormAnswers } from "@/lib/server/forms/publicSubmission";
+import { TurnstileVerificationError, verifyPublicFormTurnstile } from "@/lib/server/forms/turnstile";
 
 function publicError(message: string) {
   if (message.includes("FORM_NOT_ACTIVE")) {
@@ -86,7 +87,7 @@ export async function POST(
       throw new Error("Invalid submission.");
     }
     const body = bodyUnknown as Record<string, unknown>;
-    const allowed = new Set(["request_id", "answers", "website"]);
+    const allowed = new Set(["request_id", "answers", "website", "turnstile_token"]);
     if (Object.keys(body).some((key) => !allowed.has(key))) throw new Error("Invalid submission.");
     if (isHoneypotFilled(body)) return NextResponse.json({ ok: true });
 
@@ -98,6 +99,7 @@ export async function POST(
       enforceIntakeRateLimit(req, `public-form:${slug}`, 5, 600),
       enforceIntakeRateLimit(req, "public-forms-global", 30, 3600),
     ]);
+    await verifyPublicFormTurnstile(req, body.turnstile_token, requestId);
 
     const { data, error } = await supabaseAdmin.rpc("submit_public_form", {
       p_slug: slug,
@@ -109,6 +111,9 @@ export async function POST(
   } catch (error) {
     if (error instanceof IntakeRateLimitError) {
       return NextResponse.json({ error: error.message }, { status: 429 });
+    }
+    if (error instanceof TurnstileVerificationError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
     }
     return NextResponse.json({
       error: error instanceof Error ? error.message : "Unable to submit the form.",

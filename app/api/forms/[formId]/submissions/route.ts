@@ -4,6 +4,7 @@ import {
   managedFormErrorStatus,
   requireManagedFormContext,
 } from "@/lib/server/forms/access";
+import { fetchOrganizationTimezone, localDateStartIso, nextLocalDate } from "@/lib/server/forms/timezone";
 
 const PAGE_SIZE = 25;
 const SUBMISSION_COLUMNS = "id,form_revision,status,form_snapshot,answers,result_member_id,person_action,processed_at,submitted_at,reviewed_at,archived_at,source_type,source_label";
@@ -29,23 +30,33 @@ export async function GET(
     }
     const search = (url.searchParams.get("q") ?? "").trim().toLowerCase();
     if (search.length > 120) throw new Error("Search is too long");
+    const from = url.searchParams.get("from") ?? "";
+    const to = url.searchParams.get("to") ?? "";
+    if (from && !/^\d{4}-\d{2}-\d{2}$/.test(from)) throw new Error("Invalid start date");
+    if (to && !/^\d{4}-\d{2}-\d{2}$/.test(to)) throw new Error("Invalid end date");
+    if (from && to && from > to) throw new Error("Start date must be on or before end date");
+    const timezone = await fetchOrganizationTimezone(form.org_id);
+    const exclusiveEnd = to ? localDateStartIso(nextLocalDate(to), timezone) : "";
     const page = Math.max(1, Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
     const start = (page - 1) * PAGE_SIZE;
     let data: Record<string, unknown>[] = [];
     let total = 0;
     let counts = { all: 0, new: 0, reviewed: 0, archived: 0 };
 
-    if (search) {
+    if (search || from || to) {
       const allRows: Record<string, unknown>[] = [];
       for (let offset = 0; ; offset += 1000) {
-        const { data: batch, error } = await supabaseAdmin.from("form_submissions")
+        let request = supabaseAdmin.from("form_submissions")
           .select(SUBMISSION_COLUMNS).eq("form_id", formId).eq("org_id", form.org_id)
-          .order("submitted_at", { ascending: false }).range(offset, offset + 999);
+          .order("submitted_at", { ascending: false }).order("id", { ascending: false }).range(offset, offset + 999);
+        if (from) request = request.gte("submitted_at", localDateStartIso(from, timezone));
+        if (exclusiveEnd) request = request.lt("submitted_at", exclusiveEnd);
+        const { data: batch, error } = await request;
         if (error) throw new Error(error.message);
         allRows.push(...((batch ?? []) as Record<string, unknown>[]));
         if ((batch ?? []).length < 1000) break;
       }
-      const matches = allRows.filter((row) => searchableSubmission(row).includes(search));
+      const matches = search ? allRows.filter((row) => searchableSubmission(row).includes(search)) : allRows;
       counts = {
         all: matches.length,
         new: matches.filter((row) => row.status === "new").length,
@@ -85,6 +96,7 @@ export async function GET(
     return NextResponse.json({
       form: {
         ...form,
+        timezone_name: timezone,
         created_by_email: creator.data.user?.email ?? "Unknown user",
         updated_by_email: editor.data.user?.email ?? "Unknown user",
       },

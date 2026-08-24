@@ -147,7 +147,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </div>
           </div>
 
-          <nav className="px-3 pb-6 space-y-1">
+          <nav className="space-y-1 px-3 pb-2">
             {navItems.map((item) => {
               const active =
                 item.href === "/app"
@@ -172,7 +172,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             })}
           </nav>
 
-          <div className="mt-auto p-4">
+          <div className="px-4 pb-4 pt-4">
             <div className="rounded-3xl border bg-white p-4">
               <div className="text-xs text-slate-500">Signed in</div>
               <div className="text-sm font-semibold truncate">

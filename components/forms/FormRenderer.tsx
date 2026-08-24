@@ -2,6 +2,7 @@
 
 import BrandLogo from "@/components/BrandLogo";
 import Image from "next/image";
+import type { ReactNode } from "react";
 import { useState } from "react";
 import { daysForMonth, monthDayValue, parseMonthDay } from "@/lib/people/birthDate";
 
@@ -43,6 +44,8 @@ type Props = {
   submitting?: boolean;
   initialAnswers?: Record<string, string | string[]>;
   readOnlyFieldKeys?: string[];
+  verificationSlot?: ReactNode;
+  submitDisabled?: boolean;
 };
 
 const controlClass =
@@ -169,6 +172,8 @@ export default function FormRenderer({
   submitting = false,
   initialAnswers = {},
   readOnlyFieldKeys = [],
+  verificationSlot,
+  submitDisabled = false,
 }: Props) {
   return <div className={`overflow-hidden border bg-white shadow-sm ${compact ? "rounded-2xl" : "rounded-3xl"}`}>
     {organizationName ? <header className={`border-b bg-white ${compact ? "p-4" : "px-6 py-5 sm:px-8"}`}>
@@ -229,7 +234,8 @@ export default function FormRenderer({
       </div>
 
       {!compact ? <div className="mt-8 border-t pt-5">
-        <button type="submit" disabled={previewMode || submitting} className="rounded-2xl bg-primary px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60">
+        {verificationSlot ? <div className="mb-4">{verificationSlot}</div> : null}
+        <button type="submit" disabled={previewMode || submitting || submitDisabled} className="rounded-2xl bg-primary px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60">
           {previewMode ? "Submission disabled in preview" : submitting ? "Submitting…" : "Submit"}
         </button>
       </div> : null}

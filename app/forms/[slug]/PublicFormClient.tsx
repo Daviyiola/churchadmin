@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import FormRenderer, { type RenderableFormField } from "@/components/forms/FormRenderer";
 import { supabase } from "@/lib/supabaseClient";
+import TurnstileWidget from "@/components/forms/TurnstileWidget";
 
 type PublicFieldRow = {
   field_key: string;
@@ -29,6 +30,8 @@ export default function PublicFormClient({ slug }: { slug: string }) {
   const [submitting, setSubmitting] = useState(false);
   const [complete, setComplete] = useState(false);
   const [requestId] = useState(() => crypto.randomUUID());
+  const [turnstileToken, setTurnstileToken] = useState("");
+  const [turnstileReset, setTurnstileReset] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -71,13 +74,15 @@ export default function PublicFormClient({ slug }: { slug: string }) {
       const response = await fetch(`/api/forms/public/${encodeURIComponent(slug)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ request_id: requestId, answers, website }),
+        body: JSON.stringify({ request_id: requestId, answers, website, turnstile_token: turnstileToken }),
       });
       const body = await response.json().catch(() => null) as { error?: string } | null;
       if (!response.ok) throw new Error(body?.error || "Unable to submit the form.");
       setComplete(true);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to submit the form.");
+      setTurnstileToken("");
+      setTurnstileReset((value) => value + 1);
     } finally {
       setSubmitting(false);
     }
@@ -99,6 +104,8 @@ export default function PublicFormClient({ slug }: { slug: string }) {
         organizationLogoUrl={logoUrl}
         onSubmitAnswers={(answers, website) => void submit(answers, website)}
         submitting={submitting}
+        submitDisabled={!turnstileToken}
+        verificationSlot={<TurnstileWidget onToken={setTurnstileToken} resetSignal={turnstileReset} />}
       />
     </div>
   </main>;

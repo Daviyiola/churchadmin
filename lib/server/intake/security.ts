@@ -8,13 +8,18 @@ export class IntakeRateLimitError extends Error {
   }
 }
 
-function requestFingerprint(req: Request) {
+export function getRequestIp(req: Request) {
   const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const ip =
+  return (
     req.headers.get("cf-connecting-ip")?.trim() ||
     req.headers.get("x-real-ip")?.trim() ||
     forwarded ||
-    "unknown";
+    "unknown"
+  );
+}
+
+function requestFingerprint(req: Request) {
+  const ip = getRequestIp(req);
   const secret = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!secret) throw new Error("Server intake security is not configured.");
   return crypto.createHmac("sha256", secret).update(ip).digest("hex");
@@ -43,4 +48,3 @@ export async function enforceIntakeRateLimit(
 export function isHoneypotFilled(body: Record<string, unknown>) {
   return String(body.website ?? "").trim().length > 0;
 }
-
