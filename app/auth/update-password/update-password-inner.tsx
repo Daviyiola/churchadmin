@@ -1,33 +1,85 @@
-// app/auth/update-password/update-password-inner.tsx
 "use client";
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import BrandLogo from "@/components/BrandLogo";
 import { supabase } from "@/lib/supabaseClient";
-import { applyOrgContext } from "@/lib/auth";
+
+type RecoveryState = "checking" | "ready" | "invalid";
 
 export default function UpdatePasswordInner() {
   const router = useRouter();
-  const sp = useSearchParams();
-
-  const orgId = sp.get("orgId") || "";
-  const email = sp.get("email") || "";
-
-  const [pw1, setPw1] = useState("");
-  const [pw2, setPw2] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
   const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState("");
+  const [message, setMessage] = useState("");
+  const [recoveryState, setRecoveryState] = useState<RecoveryState>("checking");
 
   useEffect(() => {
-    (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (!data.session) {
-        setMsg("Recovery link not active. Please request a new reset email.");
+    let active = true;
+    let invalidTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (active && session) {
+        setRecoveryState("ready");
+        if (invalidTimer) clearTimeout(invalidTimer);
       }
-    })();
+    });
+
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!active) return;
+      if (data.session) {
+        setRecoveryState("ready");
+        return;
+      }
+
+      // Supabase may still be consuming the recovery fragment when this page mounts.
+      invalidTimer = setTimeout(() => {
+        if (active) setRecoveryState("invalid");
+      }, 2500);
+    });
+
+    return () => {
+      active = false;
+      if (invalidTimer) clearTimeout(invalidTimer);
+      listener.subscription.unsubscribe();
+    };
   }, []);
+
+  async function updatePassword() {
+    setMessage("");
+
+    if (recoveryState !== "ready") {
+      setMessage("Recovery link not active. Please request a new reset email.");
+      return;
+    }
+    if (!password || password.length < 8) {
+      setMessage("Password must be at least 8 characters.");
+      return;
+    }
+    if (password !== confirmation) {
+      setMessage("Passwords do not match.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password });
+      if (error) {
+        setMessage(error.message);
+        return;
+      }
+
+      // Recovery is account-level. Normal sign-in freshly resolves memberships.
+      localStorage.removeItem("active_org_id");
+      localStorage.removeItem("active_org_role");
+      await supabase.auth.signOut({ scope: "local" });
+      router.replace("/signin?passwordUpdated=1");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <main className="min-h-screen bg-white text-slate-900">
@@ -52,72 +104,51 @@ export default function UpdatePasswordInner() {
 
       <section className="mx-auto max-w-md px-6 pt-14">
         <h1 className="text-3xl font-semibold tracking-tight">Set a new password</h1>
-        <p className="mt-2 text-slate-600">
-          {email ? `Account: ${email}` : "Choose a new password for your account."}
-        </p>
+        <p className="mt-2 text-slate-600">Choose a new password for your account.</p>
 
         <div className="mt-8 rounded-3xl border p-6">
-          <label className="block text-sm font-medium">New password</label>
-          <input
-            type="password"
-            value={pw1}
-            onChange={(e) => setPw1(e.target.value)}
-            className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-            placeholder="••••••••"
-          />
+          {recoveryState === "checking" ? (
+            <p className="text-sm text-slate-600">Checking your recovery link…</p>
+          ) : recoveryState === "invalid" ? (
+            <div>
+              <p className="text-sm text-slate-600">
+                This recovery link is invalid or has expired. Please request a new one.
+              </p>
+              <Link className="mt-4 inline-block text-sm font-medium underline" href="/signin">
+                Return to sign in
+              </Link>
+            </div>
+          ) : (
+            <>
+              <label className="block text-sm font-medium">New password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                placeholder="••••••••"
+              />
 
-          <label className="mt-4 block text-sm font-medium">Confirm new password</label>
-          <input
-            type="password"
-            value={pw2}
-            onChange={(e) => setPw2(e.target.value)}
-            className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-            placeholder="••••••••"
-          />
+              <label className="mt-4 block text-sm font-medium">Confirm new password</label>
+              <input
+                type="password"
+                value={confirmation}
+                onChange={(event) => setConfirmation(event.target.value)}
+                className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                placeholder="••••••••"
+              />
 
-          <button
-            onClick={async () => {
-              setMsg("");
+              <button
+                onClick={updatePassword}
+                disabled={loading}
+                className="mt-6 w-full rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-white hover:opacity-95 disabled:opacity-50"
+              >
+                {loading ? "Updating…" : "Update password"}
+              </button>
+            </>
+          )}
 
-              if (!orgId) {
-                setMsg("Missing organization context. Go back and start reset again.");
-                return;
-              }
-              if (!pw1 || pw1.length < 8) {
-                setMsg("Password must be at least 8 characters.");
-                return;
-              }
-              if (pw1 !== pw2) {
-                setMsg("Passwords do not match.");
-                return;
-              }
-
-              setLoading(true);
-              try {
-                const { error } = await supabase.auth.updateUser({ password: pw1 });
-                if (error) {
-                  setMsg(error.message);
-                  return;
-                }
-
-                const applied = await applyOrgContext(orgId);
-                if (!applied.ok) {
-                  setMsg(applied.message);
-                  return;
-                }
-
-                router.replace("/app");
-              } finally {
-                setLoading(false);
-              }
-            }}
-            disabled={loading}
-            className="mt-6 w-full rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-white hover:opacity-95 disabled:opacity-50"
-          >
-            {loading ? "Updating..." : "Update password"}
-          </button>
-
-          {msg ? <div className="mt-3 text-sm text-slate-600">{msg}</div> : null}
+          {message ? <div className="mt-3 text-sm text-slate-600">{message}</div> : null}
         </div>
       </section>
     </main>
