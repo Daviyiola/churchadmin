@@ -1,0 +1,13 @@
+begin;
+create index community_groups_created_by_idx on public.community_groups(created_by) where created_by is not null;
+create index community_groups_updated_by_idx on public.community_groups(updated_by) where updated_by is not null;
+create index community_group_members_group_org_idx on public.community_group_members(group_id,org_id);
+create index community_group_members_member_id_idx on public.community_group_members(member_id);
+create index community_group_members_created_by_idx on public.community_group_members(created_by) where created_by is not null;
+create index community_group_members_updated_by_idx on public.community_group_members(updated_by) where updated_by is not null;
+create index member_departments_department_id_idx on public.member_departments(department_category_id);
+create index member_departments_created_by_idx on public.member_departments(created_by) where created_by is not null;
+create index member_departments_updated_by_idx on public.member_departments(updated_by) where updated_by is not null;
+create index people_membership_events_actor_idx on public.people_membership_events(actor_id) where actor_id is not null;
+create policy member_merge_membership_counts_service_only on public.member_merge_membership_counts for all to service_role using (true) with check (true);
+commit;

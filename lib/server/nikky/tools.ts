@@ -1776,33 +1776,58 @@ async function scheduleRows(context: NikkyContext, args: Record<string, unknown>
 
 async function coverageGaps(context: NikkyContext, args: Record<string, unknown>) {
   const { startDate, endDate } = assertDateRange(args.start_date, args.end_date);
-  const { data: requirements, error } = await context.supabase
-    .from("schedule_coverage_requirements")
-    .select("id,requirement_date,service_category_id,department_category_id,role,required_count")
-    .eq("org_id", context.organizationId)
-    .gte("requirement_date", startDate)
-    .lte("requirement_date", endDate)
-    .order("requirement_date");
-  if (error) throw new Error(error.message);
-  if (!requirements?.length) return result("unavailable", { start_date: startDate, end_date: endDate }, null, 0,
-    "No schedule coverage requirements are configured for that range.");
-  const { data: entries, error: entryError } = await context.supabase
-    .from("schedule_entries")
-    .select("date,service_category_id,department_category_id,role,status")
-    .eq("org_id", context.organizationId)
-    .gte("date", startDate)
-    .lte("date", endDate)
-    .in("status", ["approved", "pending"]);
-  if (entryError) throw new Error(entryError.message);
+  const [defaultResult, exactResult, entryResult] = await Promise.all([
+    context.supabase.from("schedule_coverage_requirements")
+      .select("id,is_default,requirement_date,service_category_id,department_category_id,role,required_count")
+      .eq("org_id", context.organizationId).eq("is_default", true),
+    context.supabase.from("schedule_coverage_requirements")
+      .select("id,is_default,requirement_date,service_category_id,department_category_id,role,required_count")
+      .eq("org_id", context.organizationId).eq("is_default", false)
+      .gte("requirement_date", startDate).lte("requirement_date", endDate).order("requirement_date"),
+    context.supabase.from("schedule_entries")
+      .select("date,service_category_id,department_category_id,role,status")
+      .eq("org_id", context.organizationId).gte("date", startDate).lte("date", endDate)
+      .in("status", ["approved", "pending"]),
+  ]);
+  if (defaultResult.error) throw new Error(defaultResult.error.message);
+  if (exactResult.error) throw new Error(exactResult.error.message);
+  if (entryResult.error) throw new Error(entryResult.error.message);
+  const defaults = defaultResult.data ?? [];
+  const exact = exactResult.data ?? [];
+  const entries = entryResult.data ?? [];
+  if (!defaults.length && !exact.length) return result("unavailable", { start_date: startDate, end_date: endDate }, null, 0,
+    "No staffing targets are configured for that range.");
   const key = (date: string, service: unknown, department: unknown, role: unknown) => `${date}|${service}|${department}|${role}`;
   const approved = new Map<string, number>();
   const pending = new Map<string, number>();
-  for (const row of entries ?? []) {
+  const scheduledServices = new Set<string>();
+  for (const row of entries) {
     const map = row.status === "approved" ? approved : pending;
     const k = key(String(row.date), row.service_category_id, row.department_category_id, row.role);
     map.set(k, (map.get(k) ?? 0) + 1);
+    if (row.service_category_id) scheduledServices.add(`${row.date}|${row.service_category_id}`);
   }
-  const ids = requirements.flatMap((row) => [String(row.service_category_id), String(row.department_category_id)]);
+  const targets = new Map<string, { requirement_date: string; service_category_id: string; department_category_id: string; role: string; required_count: number; source: "default" | "date_override" }>();
+  for (const pair of scheduledServices) {
+    const separator = pair.indexOf("|");
+    const date = pair.slice(0, separator);
+    const serviceId = pair.slice(separator + 1);
+    for (const target of defaults.filter((row) => String(row.service_category_id) === serviceId)) {
+      targets.set(key(date, target.service_category_id, target.department_category_id, target.role), {
+        requirement_date: date, service_category_id: String(target.service_category_id), department_category_id: String(target.department_category_id), role: String(target.role), required_count: Number(target.required_count), source: "default",
+      });
+    }
+  }
+  for (const target of exact) {
+    const date = String(target.requirement_date);
+    targets.set(key(date, target.service_category_id, target.department_category_id, target.role), {
+      requirement_date: date, service_category_id: String(target.service_category_id), department_category_id: String(target.department_category_id), role: String(target.role), required_count: Number(target.required_count), source: "date_override",
+    });
+  }
+  const requirements = [...targets.values()];
+  if (!requirements.length) return result("unavailable", { start_date: startDate, end_date: endDate }, null, 0,
+    "Default staffing targets exist, but no matching services are scheduled in that range.");
+  const ids = requirements.flatMap((row) => [row.service_category_id, row.department_category_id]);
   const names = await categoryNames(context, ids);
   const rows = requirements.map((row) => {
     const k = key(String(row.requirement_date), row.service_category_id, row.department_category_id, row.role);
@@ -1816,6 +1841,7 @@ async function coverageGaps(context: NikkyContext, args: Record<string, unknown>
       approved: approvedCount,
       pending: pending.get(k) ?? 0,
       shortfall: Math.max(0, Number(row.required_count) - approvedCount),
+      target_source: row.source,
     };
   }).filter((row) => row.shortfall > 0);
   return result(rows.length ? "ok" : "no_records", { start_date: startDate, end_date: endDate }, rows, rows.length,

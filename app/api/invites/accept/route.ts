@@ -42,20 +42,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "This invite is for a different email address" }, { status: 403 });
   }
 
-  // Link user to org
-  const { error: linkErr } = await supabaseAdmin.from("user_organizations").upsert({
-    user_id: user.id,
-    organization_id: invite.organization_id,
-    role: invite.role,
-  });
-
-  if (linkErr) return NextResponse.json({ error: linkErr.message }, { status: 400 });
-
-  // Mark invite used
-  await supabaseAdmin.from("invites").update({
-    used_at: new Date().toISOString(),
-    used_by: user.id,
-  }).eq("id", invite.id);
-
-  return NextResponse.json({ ok: true });
+  const { data: organizationId, error: acceptError } = await supabaseAdmin.rpc(
+    "accept_organization_invite",
+    { p_token: token, p_user_id: user.id },
+  );
+  if (acceptError) {
+    const capacity = acceptError.message.includes("PLAN_CAPACITY_REACHED");
+    return NextResponse.json(
+      { error: capacity ? "This organization has reached its management-seat limit. Ask an owner to upgrade or free a seat." : acceptError.message },
+      { status: capacity ? 409 : 400 },
+    );
+  }
+  return NextResponse.json({ ok: true, organization_id: organizationId });
 }

@@ -1,0 +1,5 @@
+drop policy if exists communication_audience_snapshot_recipients_service_only
+  on public.communication_audience_snapshot_recipients;
+drop policy if exists communication_audience_snapshots_service_only
+  on public.communication_audience_snapshots;
+drop index if exists public.communication_audience_snapshots_created_by_idx;

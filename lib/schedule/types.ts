@@ -81,6 +81,14 @@ export type AdminMonthResponse = {
     status: ScheduleStatus;
     created_at: string;
   }>;
+  settings: {
+    show_birthdays: boolean;
+  };
+  birthdays: Array<{
+    member_id: string;
+    date: string;
+    name: string;
+  }>;
 };
 
 export type AdminEntryPatchBody = {

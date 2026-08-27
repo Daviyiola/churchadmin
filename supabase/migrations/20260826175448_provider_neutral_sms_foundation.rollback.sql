@@ -1,0 +1,11 @@
+drop function if exists public.complete_sms_onboarding(uuid,uuid,text,text,text);
+drop table if exists public.sms_usage_ledger;
+alter table if exists public.sms_campaigns drop column if exists latest_snapshot_id;
+drop table if exists public.sms_audience_snapshot_recipients;
+drop table if exists public.sms_audience_snapshots;
+drop table if exists public.sms_campaigns;
+drop table if exists public.sms_suppressions;
+drop table if exists public.sms_contact_consents;
+drop table if exists public.sms_consent_attestations;
+drop table if exists public.sms_onboarding_drafts;
+drop table if exists public.sms_organization_settings;

@@ -88,6 +88,15 @@ export function patchAdminMonthSettings(body: AdminMonthSettingsPatchBody, jwt: 
   );
 }
 
+export function patchScheduleSettings(body: { org_id: string; show_birthdays: boolean }, jwt: string) {
+  return apiSend<{ ok: true; settings: { show_birthdays: boolean } }>(
+    "/api/schedule/admin/settings",
+    "PATCH",
+    body,
+    jwt,
+  );
+}
+
 export function patchAdminEntry(body: AdminEntryPatchBody, jwt: string) {
   return apiSend<{ ok: true; entry: AdminMonthResponse["entries"][number] }>(
     `/api/schedule/admin/entry`,

@@ -7,6 +7,7 @@ import {
   patchAdminMonthSettings,
   patchAdminEntry,
   createAdminEntry,
+  patchScheduleSettings,
 } from "@/lib/client/scheduleApi";
 import type {
   AdminMonthResponse,
@@ -215,6 +216,10 @@ export default function AdminSchedulePage() {
   const [jwt, setJwt] = useState<string>("");
 
   const [month, setMonth] = useState<string>(() => monthFromDate(new Date()));
+  const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+  const [pickerYear, setPickerYear] = useState(() => new Date().getFullYear());
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const [data, setData] = useState<AdminMonthResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [err, setErr] = useState<UiError>(null);
@@ -647,12 +652,21 @@ export default function AdminSchedulePage() {
 
   const entries = data?.entries ?? [];
   const byDate = useMemo(() => groupByDate(entries), [entries]);
+  const birthdaysByDate = useMemo(() => {
+    const grouped: Record<string, AdminMonthResponse["birthdays"]> = {};
+    for (const birthday of data?.birthdays ?? []) {
+      if (!grouped[birthday.date]) grouped[birthday.date] = [];
+      grouped[birthday.date].push(birthday);
+    }
+    return grouped;
+  }, [data?.birthdays]);
   const { cells } = useMemo(() => buildMonthGridWithMuted(month), [month]);
 
   const rawDraftOpen: unknown = data?.month?.draft_open;
   const draftOpen = coerceBool(rawDraftOpen, true);
 
   const modalDate = modal.open ? modal.date : null;
+  const modalBirthdays = modalDate ? birthdaysByDate[modalDate] ?? [] : [];
 
   const modalEntries = useMemo(() => {
     if (!modalDate) return [];
@@ -879,23 +893,8 @@ export default function AdminSchedulePage() {
               </div>
             </div>
 
-            {/* Right: month nav + view public link */}
+            {/* Right: month navigation */}
             <div className="flex w-full flex-wrap items-center justify-end gap-2 lg:w-auto">
-              <button
-                type="button"
-                onClick={() => router.push("/app/schedule/coverage")}
-                className="rounded-2xl border bg-white px-4 py-2 text-sm hover:bg-slate-50"
-              >
-                Coverage requirements
-              </button>
-              <button
-                type="button"
-                onClick={openPublicLinkModal}
-                className="rounded-2xl border bg-white px-4 py-2 text-sm hover:bg-slate-50"
-              >
-                View public link
-              </button>
-
               <div className="inline-flex items-center rounded-2xl border bg-white p-1">
                 <button
                   type="button"
@@ -918,9 +917,12 @@ export default function AdminSchedulePage() {
 
                 <button
                   type="button"
-                  onClick={() => setMonth(monthFromDate(new Date()))}
+                  onClick={() => {
+                    setPickerYear(parseYYYYMM(month)?.y ?? new Date().getFullYear());
+                    setMonthPickerOpen(true);
+                  }}
                   className="mx-1 rounded-xl px-4 py-2 text-sm font-semibold hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-primary/30"
-                  title="Jump to current month"
+                  title="Choose a month"
                 >
                   {fmtMonthTitle(month)}
                 </button>
@@ -947,7 +949,7 @@ export default function AdminSchedulePage() {
             </div>
           </div>
 
-          {/* ROW B: Tabs (left) + dept/toggles (right) */}
+          {/* ROW B: Tabs (left) + filters/settings (right) */}
           <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             {/* Left: tabs */}
             <div className="inline-flex rounded-2xl border bg-slate-50 p-1 w-fit">
@@ -975,7 +977,7 @@ export default function AdminSchedulePage() {
               </button>
             </div>
 
-            {/* Right: department filter + toggles */}
+            {/* Right: department filter + settings */}
             <div className="flex w-full flex-wrap items-center justify-end gap-2 lg:w-auto">
               <div className="inline-flex items-center gap-2 rounded-2xl border bg-white px-3 py-2">
                 <div className="text-sm font-semibold text-slate-800">
@@ -995,58 +997,13 @@ export default function AdminSchedulePage() {
                 </select>
               </div>
 
-              <div className="inline-flex items-center gap-2 rounded-2xl border bg-white px-4 py-2">
-                <div className="text-sm font-semibold text-slate-800">
-                  Allow Edits
-                </div>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (!orgId || !jwt) return;
-                    try {
-                      await patchAdminMonthSettings(
-                        { org_id: orgId, month, edits_open: !editsOpen },
-                        jwt,
-                      );
-                      await refresh(month);
-                    } catch (e) {
-                      setErr({
-                        message: e instanceof Error ? e.message : "Error",
-                      });
-                    }
-                  }}
-                  title={editsOpen ? "Allow edits: On" : "Allow edits: Off"}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition
-    ${editsOpen ? "bg-emerald-500" : "bg-slate-300"}`}
-                >
-                  <span
-                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition
-      ${editsOpen ? "translate-x-5" : "translate-x-1"}`}
-                  />
-                </button>
-              </div>
-
-              <div className="inline-flex items-center gap-2 rounded-2xl border bg-white px-4 py-2">
-                <div className="text-sm font-semibold text-slate-800">
-                  Allow signups
-                </div>
-                <button
-                  type="button"
-                  onClick={() => toggleDraft(!draftOpen)}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
-                    draftOpen ? "bg-emerald-600" : "bg-slate-300"
-                  }`}
-                  title={
-                    draftOpen ? "Draft signups: Open" : "Draft signups: Closed"
-                  }
-                >
-                  <span
-                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-                      draftOpen ? "translate-x-5" : "translate-x-1"
-                    }`}
-                  />
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(true)}
+                className="rounded-2xl border bg-white px-4 py-2 text-sm hover:bg-slate-50"
+              >
+                Schedule settings
+              </button>
             </div>
           </div>
 
@@ -1148,6 +1105,7 @@ export default function AdminSchedulePage() {
                       names.slice(0, 3).join(", ");
 
                     const isEmpty = !c.inMonth;
+                    const birthdays = birthdaysByDate[c.iso] ?? [];
 
                     return (
                       <button
@@ -1196,6 +1154,12 @@ export default function AdminSchedulePage() {
                                 ) : null}
                               </div>
                             </div>
+
+                            {birthdays.length ? (
+                              <div className="mt-2 truncate rounded-lg border border-pink-200 bg-pink-50 px-2 py-1 text-[11px] font-medium text-pink-800">
+                                🎂 {birthdays.length === 1 ? birthdays[0].name : `${birthdays.length} birthdays`}
+                              </div>
+                            ) : null}
 
                             <div className="mt-4 flex-1 space-y-2 min-h-0">
                               {showApprovedInline && approved.length > 0 ? (
@@ -1297,6 +1261,45 @@ export default function AdminSchedulePage() {
         )}
       </div>
 
+      {monthPickerOpen ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={() => setMonthPickerOpen(false)}>
+          <div className="w-full max-w-md rounded-3xl bg-white p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <button type="button" onClick={() => setPickerYear((year) => year - 1)} className="rounded-xl border px-3 py-2" aria-label="Previous year">←</button>
+              <div className="text-lg font-semibold">{pickerYear}</div>
+              <button type="button" onClick={() => setPickerYear((year) => year + 1)} className="rounded-xl border px-3 py-2" aria-label="Next year">→</button>
+            </div>
+            <div className="mt-5 grid grid-cols-3 gap-2">
+              {Array.from({ length: 12 }, (_, index) => {
+                const value = `${pickerYear}-${String(index + 1).padStart(2, "0")}`;
+                const label = new Date(pickerYear, index, 1).toLocaleString(undefined, { month: "short" });
+                return <button key={value} type="button" onClick={() => { setMonth(value); setMonthPickerOpen(false); }} className={`rounded-xl border px-3 py-3 text-sm ${month === value ? "border-primary bg-primary text-white" : "hover:bg-slate-50"}`}>{label}</button>;
+              })}
+            </div>
+            <div className="mt-5 flex justify-between">
+              <button type="button" onClick={() => { const now = new Date(); setPickerYear(now.getFullYear()); setMonth(monthFromDate(now)); setMonthPickerOpen(false); }} className="rounded-xl border px-4 py-2 text-sm">Today</button>
+              <button type="button" onClick={() => setMonthPickerOpen(false)} className="rounded-xl border px-4 py-2 text-sm">Close</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {settingsOpen ? (
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={() => setSettingsOpen(false)}>
+          <div className="flex h-full w-full max-w-lg flex-col bg-white shadow-xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between border-b px-6 py-5"><div><div className="text-lg font-semibold">Schedule settings</div><div className="text-sm text-slate-600">Public access, calendar display, and planning.</div></div><button type="button" onClick={() => setSettingsOpen(false)} className="rounded-xl border px-3 py-1.5 text-sm">Close</button></div>
+            <div className="flex-1 space-y-5 overflow-y-auto p-6">
+              <section className="rounded-3xl border p-5"><h3 className="font-semibold">Public access</h3><p className="mt-1 text-sm text-slate-600">Control signups and department-head editing for {fmtMonthTitle(month)}.</p><div className="mt-4 divide-y rounded-2xl border">
+                <div className="flex items-center justify-between gap-4 p-4"><div><div className="text-sm font-medium">Allow signups</div><div className="text-xs text-slate-500">People can submit schedule requests through the public link.</div></div><button type="button" onClick={() => toggleDraft(!draftOpen)} className={`relative h-6 w-11 shrink-0 rounded-full ${draftOpen ? "bg-emerald-600" : "bg-slate-300"}`}><span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition ${draftOpen ? "left-[22px]" : "left-0.5"}`} /></button></div>
+                <div className="flex items-center justify-between gap-4 p-4"><div><div className="text-sm font-medium">Allow department-head edits</div><div className="text-xs text-slate-500">The monthly code can be used to approve and edit assignments.</div></div><button type="button" onClick={async () => { if (!orgId || !jwt) return; try { await patchAdminMonthSettings({ org_id: orgId, month, edits_open: !editsOpen }, jwt); await refresh(month); } catch (caught) { setErr({ message: caught instanceof Error ? caught.message : "Error" }); } }} className={`relative h-6 w-11 shrink-0 rounded-full ${editsOpen ? "bg-emerald-600" : "bg-slate-300"}`}><span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition ${editsOpen ? "left-[22px]" : "left-0.5"}`} /></button></div>
+              </div><button type="button" onClick={openPublicLinkModal} className="mt-4 rounded-xl border px-4 py-2 text-sm font-medium hover:bg-slate-50">Share schedule</button></section>
+              <section className="rounded-3xl border p-5"><h3 className="font-semibold">Calendar display</h3><div className="mt-4 flex items-center justify-between gap-4"><div><div className="text-sm font-medium">Show member birthdays</div><div className="text-xs text-slate-500">Names appear only on this internal calendar. Birth years and ages remain hidden.</div></div><button type="button" disabled={settingsSaving} onClick={async () => { if (!orgId || !jwt || !data) return; setSettingsSaving(true); try { await patchScheduleSettings({ org_id: orgId, show_birthdays: !data.settings.show_birthdays }, jwt); await refresh(month); } catch (caught) { setErr({ message: caught instanceof Error ? caught.message : "Error" }); } finally { setSettingsSaving(false); } }} className={`relative h-6 w-11 shrink-0 rounded-full ${data?.settings.show_birthdays ?? true ? "bg-emerald-600" : "bg-slate-300"}`}><span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition ${data?.settings.show_birthdays ?? true ? "left-[22px]" : "left-0.5"}`} /></button></div></section>
+              <section className="rounded-3xl border p-5"><h3 className="font-semibold">Planning</h3><p className="mt-1 text-sm text-slate-600">Set normal staffing targets and exact-date exceptions.</p><button type="button" onClick={() => router.push("/app/schedule/coverage")} className="mt-4 rounded-xl border px-4 py-2 text-sm font-medium hover:bg-slate-50">Manage staffing targets</button></section>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* Day Modal */}
       {modal.open ? (
         <div
@@ -1336,6 +1339,13 @@ export default function AdminSchedulePage() {
             {/* Scroll body */}
             <div className="flex-1 overflow-y-auto overscroll-contain">
               <div className="px-6 py-6 space-y-5">
+                {modalBirthdays.length ? (
+                  <div className="rounded-2xl border border-pink-200 bg-pink-50 px-4 py-3">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-pink-700">Birthdays</div>
+                    <div className="mt-1 text-sm font-medium text-pink-950">{modalBirthdays.map((birthday) => birthday.name).join(", ")}</div>
+                    <div className="mt-1 text-xs text-pink-700">Visible only on the internal schedule.</div>
+                  </div>
+                ) : null}
                 <div className="flex items-center justify-between gap-3">
                   <div className="inline-flex rounded-2xl border bg-slate-50 p-1">
                     <button

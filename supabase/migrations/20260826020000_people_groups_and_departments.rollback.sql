@@ -1,0 +1,16 @@
+begin;
+drop trigger if exists members_sync_primary_department on public.members;
+drop trigger if exists members_transfer_people_memberships on public.members;
+drop trigger if exists member_merges_attach_people_counts on public.member_merges;
+drop trigger if exists member_departments_validate on public.member_departments;
+drop trigger if exists community_group_members_validate on public.community_group_members;
+drop function if exists public.sync_primary_department_from_member();
+drop function if exists public.transfer_people_memberships_on_merge();
+drop function if exists public.attach_people_counts_to_member_merge();
+drop function if exists public.validate_people_membership_target();
+drop table if exists public.member_merge_membership_counts;
+drop table if exists public.people_membership_events;
+drop table if exists public.member_departments;
+drop table if exists public.community_group_members;
+drop table if exists public.community_groups;
+commit;

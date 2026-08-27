@@ -1,0 +1,13 @@
+begin;
+drop policy if exists member_merge_membership_counts_service_only on public.member_merge_membership_counts;
+drop index if exists public.people_membership_events_actor_idx;
+drop index if exists public.member_departments_updated_by_idx;
+drop index if exists public.member_departments_created_by_idx;
+drop index if exists public.member_departments_department_id_idx;
+drop index if exists public.community_group_members_updated_by_idx;
+drop index if exists public.community_group_members_created_by_idx;
+drop index if exists public.community_group_members_member_id_idx;
+drop index if exists public.community_group_members_group_org_idx;
+drop index if exists public.community_groups_updated_by_idx;
+drop index if exists public.community_groups_created_by_idx;
+commit;

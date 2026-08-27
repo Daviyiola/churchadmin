@@ -59,9 +59,12 @@ export default function TurnstileWidget({
 
   useEffect(() => {
     if (!resetSignal || !widgetIdRef.current || !window.turnstile) return;
-    onToken("");
-    setMessage("Refreshing the security check…");
-    window.turnstile.reset(widgetIdRef.current);
+    const timer = window.setTimeout(() => {
+      onToken("");
+      setMessage("Refreshing the security check…");
+      if (widgetIdRef.current && window.turnstile) window.turnstile.reset(widgetIdRef.current);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [onToken, resetSignal]);
 
   if (!siteKey) {

@@ -7,6 +7,11 @@ export default function SettingsHomePage() {
 
   const items = [
     {
+      title: "Billing & Plan",
+      desc: "Review plan limits, usage, renewal, invoices, and upgrades.",
+      href: "/app/settings/billing",
+    },
+    {
       title: "Organization",
       desc: "Profile, branding, regional settings, and report preferences.",
       href: "/app/settings/org",
@@ -20,6 +25,11 @@ export default function SettingsHomePage() {
       title: "Nikky",
       desc: "Configure the assistant allowance and rollout.",
       href: "/app/settings/nikky",
+    },
+    {
+      title: "SMS",
+      desc: "Manage SMS readiness, consent attestation, and provider setup.",
+      href: "/app/communications/sms/setup",
     },
     {
       title: "Terms & Privacy",

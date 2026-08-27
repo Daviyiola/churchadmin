@@ -5,13 +5,13 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 import { getAccessToken, getActiveOrgId } from "@/lib/auth";
 import { TipTap, type TipTapHandle } from "@/components/TipTap";
-import { useCallback } from "react";
+import { RecipientPicker } from "@/components/communications/RecipientPicker";
+import type { AudiencePreview } from "@/lib/communications/audience";
 
 type TabKey = "compose" | "audience" | "preview" | "history";
 
 type Gender = "male" | "female";
 type AgeGroup = "1-12" | "13-17" | "18-35" | "36+";
-type MembershipStage = "visitor" | "member";
 type UploadMode = "inline" | "attachment";
 type PendingSendAction = "test" | "broadcast";
 
@@ -43,16 +43,6 @@ type HistoryRow = {
   subject: string;
   total_recipients: number;
   total_success: number;
-};
-
-type MemberDbRow = {
-  id: string;
-  first_name: string | null;
-  last_name: string | null;
-  email: string | null;
-  gender: Gender | null;
-  age_group: AgeGroup | null;
-  membership_stage: string | null;
 };
 
 type HistoryDetailRecipient = {
@@ -286,14 +276,16 @@ export default function CommunicationsPage() {
 
   // Audience
   const [memberQ, setMemberQ] = useState("");
-  const [members, setMembers] = useState<MemberRow[]>([]);
-  const [membersLoading, setMembersLoading] = useState(false);
+  const [members] = useState<MemberRow[]>([]);
+  const [membersLoading] = useState(false);
 
   const [genderFilter, setGenderFilter] = useState<string[]>([]); // ["male","female"]
   const [ageFilter, setAgeFilter] = useState<string[]>([]); // ["1-12",...]
   const [stageFilter, setStageFilter] = useState<string[]>([]); // ["visitor","member"]
 
   const [sendMap, setSendMap] = useState<Record<string, boolean>>({}); // memberId -> send?
+  const [audiencePreview, setAudiencePreview] =
+    useState<AudiencePreview | null>(null);
 
   // Preview sending
   const [sending, setSending] = useState(false);
@@ -370,48 +362,6 @@ export default function CommunicationsPage() {
     const raw = stripOuterHtmlDoc(fillVars(bodyHtml, vars));
     return normalizePreviewHtml(raw);
   }, [bodyHtml, vars]);
-
-  const loadMembers = useCallback(async () => {
-    if (!orgId) return;
-    setMembersLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from("members")
-        .select(
-          "id,first_name,last_name,email,gender,age_group,membership_stage",
-        )
-        .eq("org_id", orgId)
-        .eq("status", "active")
-        .not("email", "is", null)
-        .order("last_name", { ascending: true });
-
-      if (error) throw new Error(error.message);
-
-      const rows = (data ?? []) as MemberDbRow[];
-      const normalized: MemberRow[] = rows
-        .map((r) => ({
-          id: r.id,
-          first_name: r.first_name ?? "",
-          last_name: r.last_name,
-          email: String(r.email ?? "").toLowerCase(),
-          gender: r.gender,
-          age_group: r.age_group,
-          membership_stage: r.membership_stage,
-        }))
-        .filter((m) => isValidEmail(m.email));
-
-      setMembers(normalized);
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : "Failed to load members");
-      setMembers([]);
-    } finally {
-      setMembersLoading(false);
-    }
-  }, [orgId]);
-
-  useEffect(() => {
-    if (tab === "audience") loadMembers();
-  }, [tab, loadMembers]);
 
   useEffect(() => {
     function onDocPointerDown() {
@@ -706,11 +656,6 @@ export default function CommunicationsPage() {
     editorRef.current?.removeImagesByUploadId(upload_id);
   }
 
-  useEffect(() => {
-    if (tab === "audience") loadMembers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, orgId]);
-
   const filteredMembers = useMemo(() => {
     const q = memberQ.trim().toLowerCase();
 
@@ -743,13 +688,7 @@ export default function CommunicationsPage() {
     return Object.keys(sendMap).filter((id) => sendMap[id] === true);
   }, [sendMap]);
 
-  const selectedRecipients = useMemo(() => {
-    const byId = new Map(members.map((m) => [m.id, m]));
-    return selectedMemberIds
-      .map((id) => byId.get(id))
-      .filter(Boolean)
-      .map((m) => (m as MemberRow).email);
-  }, [members, selectedMemberIds]);
+  const selectedRecipientCount = audiencePreview?.total_recipients ?? 0;
 
   async function sendTestInternal() {
     setSendErr("");
@@ -816,8 +755,7 @@ export default function CommunicationsPage() {
     setSendErr("");
     if (!orgId) return;
 
-    const tos = selectedRecipients;
-    if (tos.length === 0) {
+    if (selectedRecipientCount === 0) {
       setSendErr("Select at least one recipient in Audience.");
       return;
     }
@@ -855,7 +793,7 @@ export default function CommunicationsPage() {
             upload_mode: u.mode,
             inline_cid: u.mode === "inline" ? u.inline_cid : undefined,
           })),
-          total_recipients: tos.length,
+          audience_snapshot_id: audiencePreview?.snapshot_id,
         }),
       });
 
@@ -865,13 +803,19 @@ export default function CommunicationsPage() {
           String(createJson?.error ?? "Failed to start campaign"),
         );
       const campaignId = String(createJson.campaign_id);
+      const recipientIds = Array.isArray(createJson?.recipient_ids)
+        ? createJson.recipient_ids.map(String)
+        : [];
+      if (recipientIds.length !== audiencePreview?.total_recipients) {
+        throw new Error("The recipient preview changed. Review the audience again.");
+      }
 
       // Loop send one-by-one so we can show progress
       let ok = 0;
       let fail = 0;
 
-      for (let i = 0; i < tos.length; i++) {
-        const to = tos[i];
+      for (let i = 0; i < recipientIds.length; i++) {
+        const recipientId = recipientIds[i];
 
         const res = await fetch("/api/communications/send-one", {
           method: "POST",
@@ -883,7 +827,8 @@ export default function CommunicationsPage() {
             organization_id: orgId,
             mode: "broadcast",
             campaign_id: campaignId,
-            to_email: to,
+            audience_snapshot_id: audiencePreview?.snapshot_id,
+            audience_recipient_id: recipientId,
           }),
         });
 
@@ -893,7 +838,7 @@ export default function CommunicationsPage() {
 
         setSentOk(ok);
         setSentFail(fail);
-        setProgressPct(Math.round(((i + 1) / tos.length) * 100));
+        setProgressPct(Math.round(((i + 1) / recipientIds.length) * 100));
       }
 
       showToast(`Broadcast done ✓ (${ok} ok, ${fail} failed)`);
@@ -1183,7 +1128,17 @@ export default function CommunicationsPage() {
         ) : null}
 
         {/* AUDIENCE */}
-        {tab === "audience" ? (
+        {tab === "audience" && orgId ? (
+          <RecipientPicker
+            orgId={orgId}
+            value={audiencePreview}
+            onApply={setAudiencePreview}
+            onContinue={() => setTab("preview")}
+          />
+        ) : null}
+
+        {/* Legacy audience retained temporarily for reference while the new picker settles. */}
+        {false && tab === "audience" ? (
           <div className="rounded-3xl border bg-white overflow-hidden">
             <div className="border-b px-6 py-4">
               <div className="text-sm font-semibold">Audience</div>
@@ -1409,7 +1364,7 @@ export default function CommunicationsPage() {
                       <div className="text-slate-700">
                         Selected recipients:{" "}
                         <span className="font-semibold text-slate-900">
-                          {selectedRecipients.length}
+                          {selectedRecipientCount}
                         </span>
                       </div>
 
@@ -1504,7 +1459,7 @@ export default function CommunicationsPage() {
                     }`}
                     disabled={sending}
                     onClick={() =>
-                      requestSend("broadcast", selectedRecipients.length)
+                      requestSend("broadcast", selectedRecipientCount)
                     }
                   >
                     Send broadcast

@@ -1,0 +1,26 @@
+-- Safe rollback before any self-service organizations or Stripe subscriptions exist.
+drop trigger if exists protect_last_owner_trigger on public.user_organizations;
+drop trigger if exists enforce_invite_seat_capacity_trigger on public.invites;
+drop trigger if exists enforce_management_seat_capacity_trigger on public.user_organizations;
+drop trigger if exists enforce_form_capacity_trigger on public.forms;
+drop trigger if exists enforce_people_capacity_trigger on public.members;
+drop function if exists public.protect_last_owner();
+drop function if exists public.enforce_invite_seat_capacity();
+drop function if exists public.enforce_management_seat_capacity();
+drop function if exists public.enforce_form_capacity_trigger();
+drop function if exists public.enforce_people_capacity();
+drop function if exists public.accept_organization_invite(text,uuid);
+drop function if exists public.provision_owner_organization(uuid,text,text,text,timestamptz,timestamptz);
+drop function if exists public.assert_organization_capacity(uuid,text,uuid);
+drop function if exists public.effective_organization_plan(uuid);
+drop table if exists public.billing_plan_events;
+drop table if exists public.stripe_webhook_events;
+drop table if exists public.owner_onboarding_intents;
+drop table if exists public.organization_subscriptions;
+drop table if exists public.billing_plan_catalog;
+alter table public.form_submissions drop column if exists capacity_reason,drop column if exists capacity_status;
+alter table public.plan_entitlements drop column if exists management_seat_limit,drop column if exists first_timer_count_limit,drop column if exists member_count_limit;
+delete from public.plan_entitlements where plan_key='growth';
+alter table public.plan_entitlements drop constraint if exists plan_entitlements_plan_key_check;
+alter table public.plan_entitlements add constraint plan_entitlements_plan_key_check check (plan_key in ('free','basic','pro','enterprise'));
+alter table public.organizations drop column if exists creation_source,drop column if exists created_by_user_id;

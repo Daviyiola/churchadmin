@@ -31,10 +31,10 @@ const items: Array<{
   },
   {
     title: "SMS",
-    description: "Send text-message campaigns and reminders.",
+    description: "Prepare text-message campaigns, consent, and provider readiness.",
     href: "/app/communications/sms",
-    badge: "Coming soon",
-    disabled: true,
+    badge: "New",
+    disabled: false,
   },
 ];
 

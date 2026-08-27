@@ -7,7 +7,7 @@ import {
 import { fetchOrganizationTimezone, localDateStartIso, nextLocalDate } from "@/lib/server/forms/timezone";
 
 const PAGE_SIZE = 25;
-const SUBMISSION_COLUMNS = "id,form_revision,status,form_snapshot,answers,result_member_id,person_action,processed_at,submitted_at,reviewed_at,archived_at,source_type,source_label";
+const SUBMISSION_COLUMNS = "id,form_revision,status,form_snapshot,answers,result_member_id,person_action,processed_at,submitted_at,reviewed_at,archived_at,source_type,source_label,capacity_status,capacity_reason";
 
 function searchableSubmission(row: Record<string, unknown>) {
   return [row.form_snapshot, row.answers, row.source_label, row.person_action]

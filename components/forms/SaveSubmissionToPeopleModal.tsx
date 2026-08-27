@@ -136,6 +136,10 @@ export default function SaveSubmissionToPeopleModal({
     return target.startsWith("standard:") && validations[field.key].valid ? [{ field, key: target.slice(9), value: answerValue(submission.answers[field.key]) }] : [];
   });
   const customRows = fields.filter((field) => (targets[field.key] ?? "").startsWith("custom:") && validations[field.key].valid);
+  const selectedUpdateCount = action === "update_person"
+    ? standardRows.filter((row) => chosenStandard.has(row.key)).length
+      + customRows.filter((field) => chosenCustom.has(field.key)).length
+    : 0;
   const mappedRequiredValues = Object.fromEntries(standardRows.filter((row) => PROTECTED.has(row.key)).map((row) => [row.key, answerText(submission.answers[row.field.key])]));
   const mappedDob = standardRows.find((row) => row.key === "dob");
   const dobText = mappedDob ? answerText(submission.answers[mappedDob.field.key]).trim() : "";
@@ -195,6 +199,7 @@ export default function SaveSubmissionToPeopleModal({
     try {
       if (action === "update_person" && !candidate) throw new Error("Choose the existing person to update.");
       if (fields.some((field) => !validations[field.key].valid)) throw new Error("Fix the incompatible field mappings before saving.");
+      if (action === "update_person" && selectedUpdateCount === 0) throw new Error("Select at least one submitted value to apply.");
       if (action === "create_person" && missingRequired.length) throw new Error("Add the missing required person details before saving.");
       const standardValues: Record<string, string | string[]> = {};
       const standardMappings: Record<string, string> = {};
@@ -305,7 +310,10 @@ export default function SaveSubmissionToPeopleModal({
           </section> : null}
         </div>}
       </div>
-      <div className="flex justify-end gap-2 border-t bg-slate-50 px-5 py-4 sm:px-7"><button type="button" onClick={onClose} className="rounded-xl border bg-white px-4 py-2 text-sm font-semibold">Cancel</button><button type="button" disabled={loading || saving || fields.some((field) => !validations[field.key]?.valid) || (action === "update_person" && !candidate) || (action === "create_person" && missingRequired.length > 0)} onClick={() => void save()} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{saving ? "Saving…" : action === "update_person" ? "Apply selected changes" : saveAsFirstTimer ? "Create first-timer" : "Create member"}</button></div>
+      <div className="flex flex-col gap-3 border-t bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">
+        <div className="text-xs text-slate-500">{action === "update_person" && candidate ? selectedUpdateCount ? `${selectedUpdateCount} submitted ${selectedUpdateCount === 1 ? "value" : "values"} selected` : "Select at least one submitted value to apply." : null}</div>
+        <div className="flex justify-end gap-2"><button type="button" onClick={onClose} className="rounded-xl border bg-white px-4 py-2 text-sm font-semibold">Cancel</button><button type="button" disabled={loading || saving || fields.some((field) => !validations[field.key]?.valid) || (action === "update_person" && (!candidate || selectedUpdateCount === 0)) || (action === "create_person" && missingRequired.length > 0)} onClick={() => void save()} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{saving ? "Saving…" : action === "update_person" ? `Apply ${selectedUpdateCount || "selected"} ${selectedUpdateCount === 1 ? "change" : "changes"}` : saveAsFirstTimer ? "Create first-timer" : "Create member"}</button></div>
+      </div>
     </div>
   </div>;
 }

@@ -36,6 +36,12 @@ type FormRow = {
   response_count: number;
 };
 
+type FormUsage = {
+  used: number;
+  limit: number | null;
+  plan: "free" | "basic" | "pro" | "enterprise";
+};
+
 type FieldRow = {
   form_id: string;
   field_key: string;
@@ -124,6 +130,10 @@ export default function FormsPage() {
   const [createName, setCreateName] = useState("");
   const [createDescription, setCreateDescription] = useState("");
   const [creating, setCreating] = useState(false);
+  const [formUsage, setFormUsage] = useState<FormUsage | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<FormRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [exportingDeleteCsv, setExportingDeleteCsv] = useState(false);
 
   const [editing, setEditing] = useState<FormRow | null>(null);
   const [editTitle, setEditTitle] = useState("");
@@ -181,7 +191,7 @@ export default function FormsPage() {
           .eq("organization_id", orgId)
           .maybeSingle(),
       ]);
-      const formsPayload = await formsResponse.json().catch(() => null) as { forms?: FormRow[]; error?: string } | null;
+      const formsPayload = await formsResponse.json().catch(() => null) as { forms?: FormRow[]; form_usage?: FormUsage; error?: string } | null;
       if (!formsResponse.ok) throw new Error(formsPayload?.error || "Unable to load forms.");
       if (fieldsResult.error) throw fieldsResult.error;
       if (organizationResult.error) throw organizationResult.error;
@@ -192,6 +202,7 @@ export default function FormsPage() {
         if (leftPriority !== rightPriority) return leftPriority - rightPriority;
         return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
       }));
+      setFormUsage(formsPayload?.form_usage ?? null);
       setFields((fieldsResult.data ?? []) as FieldRow[]);
       setOrganizationName(organizationResult.data?.name ?? "");
       const logoPath = settingsResult.data?.logo_path;
@@ -322,12 +333,8 @@ export default function FormsPage() {
     window.setTimeout(() => target.focus({ preventScroll: true }), 250);
   }
 
-  async function saveForm() {
-    if (!editing) return;
-    setSaving(true);
-    setEditorError("");
-    try {
-      const response = await fetch(`/api/forms/${editing.id}`, {
+  async function persistForm(form: FormRow) {
+    const response = await fetch(`/api/forms/${form.id}`, {
         method: "PATCH",
         headers: await authHeaders(),
         body: JSON.stringify({
@@ -337,11 +344,61 @@ export default function FormsPage() {
           fields: editFields,
         }),
       });
-      if (!response.ok) throw new Error(await responseError(response));
+    if (!response.ok) throw new Error(await responseError(response));
+    return await response.json() as { ok: true; revision: number };
+  }
+
+  async function saveForm() {
+    if (!editing) return;
+    setSaving(true);
+    setEditorError("");
+    try {
+      await persistForm(editing);
       setEditing(null);
       await load();
       showToast("Form saved");
     } catch (cause) {
+      setEditorError(cause instanceof Error ? cause.message : "Unable to save form.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveAndOpenPreview() {
+    if (!editing) return;
+    const previewUrl = `/forms/preview/${editing.id}`;
+
+    if (editing.status === "closed") {
+      window.open(previewUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+
+    if (!editTitle.trim()) {
+      setEditorError("Form heading is required.");
+      return;
+    }
+
+    const previewWindow = window.open("about:blank", "_blank");
+    if (!previewWindow) {
+      setEditorError("Please allow pop-ups for Church Admin, then try again.");
+      return;
+    }
+    previewWindow.opener = null;
+
+    setSaving(true);
+    setEditorError("");
+    try {
+      const result = await persistForm(editing);
+      setEditing((current) => current?.id === editing.id
+        ? { ...current, title: editTitle.trim(), description: editDescription.trim() || null, revision: result.revision }
+        : current);
+      setForms((current) => current.map((form) => form.id === editing.id
+        ? { ...form, title: editTitle.trim(), description: editDescription.trim() || null, revision: result.revision, updated_at: new Date().toISOString() }
+        : form));
+      showToast("Form saved");
+      previewWindow.location.replace(new URL(previewUrl, window.location.origin).toString());
+    } catch (cause) {
+      previewWindow.close();
       setEditorError(cause instanceof Error ? cause.message : "Unable to save form.");
     } finally {
       setSaving(false);
@@ -385,7 +442,7 @@ export default function FormsPage() {
 
   async function deleteForm(form: FormRow) {
     if (form.is_system || form.status === "open") return;
-    if (!window.confirm(`Delete “${form.title}”? Only forms without submissions can be deleted.`)) return;
+    setDeleting(true);
     try {
       const response = await fetch(`/api/forms/${form.id}`, {
         method: "PATCH",
@@ -394,9 +451,37 @@ export default function FormsPage() {
       });
       if (!response.ok) throw new Error(await responseError(response));
       await load();
+      setDeleteTarget(null);
       showToast("Form deleted");
     } catch (cause) {
       showToast(cause instanceof Error ? cause.message : "Unable to delete form.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function exportFormResponses(form: FormRow) {
+    setExportingDeleteCsv(true);
+    try {
+      const response = await fetch(`/api/forms/${form.id}/submissions/export`, {
+        headers: await authHeaders(),
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      const blob = await response.blob();
+      const href = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.download = response.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1] ?? "form-responses.csv";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(href);
+      showToast("CSV downloaded");
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : "Unable to export responses.");
+    } finally {
+      setExportingDeleteCsv(false);
     }
   }
 
@@ -412,9 +497,12 @@ export default function FormsPage() {
             <p className="mt-1 text-sm text-slate-600">
               Build reusable forms, publish them when ready, and close them when needed.
             </p>
+            {formUsage ? <p className="mt-1 text-xs text-slate-500">
+              {formUsage.used} of {formUsage.limit ?? "unlimited"} custom forms used · {formUsage.plan === "pro" ? "Pro / Growth" : formUsage.plan.charAt(0).toUpperCase() + formUsage.plan.slice(1)} plan
+            </p> : null}
           </div>
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => { setCreateOpen(true); setError(""); }} className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90">
+            <button type="button" disabled={formUsage !== null && formUsage.limit !== null && formUsage.used >= formUsage.limit} title={formUsage !== null && formUsage.limit !== null && formUsage.used >= formUsage.limit ? "Delete a custom form or upgrade your plan to create another." : undefined} onClick={() => { setCreateOpen(true); setError(""); }} className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50">
               Create form
             </button>
             <Link href="/app/communications" className="rounded-2xl border bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50">
@@ -466,7 +554,7 @@ export default function FormsPage() {
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${statusClasses(form.status)}`}>{statusLabel(form.status)}</span>
-                  {!form.is_system && form.status !== "open" ? <button type="button" title="Delete form" aria-label={`Delete ${form.title}`} onClick={() => void deleteForm(form)} className="rounded-lg p-1.5 text-slate-400 transition hover:bg-rose-50 hover:text-rose-700">
+                  {!form.is_system && form.status !== "open" ? <button type="button" title="Delete form" aria-label={`Delete ${form.title}`} onClick={() => setDeleteTarget(form)} className="rounded-lg p-1.5 text-slate-400 transition hover:bg-rose-50 hover:text-rose-700">
                     <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" strokeLinecap="round" strokeLinejoin="round" /></svg>
                   </button> : null}
                 </div>
@@ -487,6 +575,27 @@ export default function FormsPage() {
         </div>}
       </div>
     </div>
+
+    {deleteTarget ? <div className="fixed inset-0 z-[80] flex items-end justify-center bg-black/45 p-0 sm:items-center sm:p-4" onClick={() => deleting ? null : setDeleteTarget(null)}>
+      <div className="w-full max-w-lg rounded-t-3xl bg-white shadow-2xl sm:rounded-3xl" onClick={(event) => event.stopPropagation()}>
+        <div className="border-b px-6 py-5">
+          <h2 className="text-lg font-semibold">Delete “{deleteTarget.title}”?</h2>
+          <p className="mt-1 text-sm text-slate-600">This is permanent and cannot be undone.</p>
+        </div>
+        <div className="space-y-4 px-6 py-5">
+          {deleteTarget.response_count > 0 ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+            <div className="font-semibold">This form contains {deleteTarget.response_count} {deleteTarget.response_count === 1 ? "response" : "responses"}.</div>
+            <p className="mt-1">Deleting it also removes its submission inbox and response history. We strongly recommend exporting the inbox as CSV first.</p>
+          </div> : <div className="rounded-2xl border bg-slate-50 px-4 py-3 text-sm text-slate-700">The form, its questions, and revision history will be permanently removed.</div>}
+          <p className="text-xs leading-5 text-slate-500">People records previously created or updated from these responses will remain; deleting the form does not reverse those changes.</p>
+        </div>
+        <div className="flex flex-col-reverse gap-2 border-t px-6 py-4 sm:flex-row sm:justify-end">
+          <button type="button" disabled={deleting} onClick={() => setDeleteTarget(null)} className="rounded-2xl border px-4 py-2 text-sm disabled:opacity-50">Cancel</button>
+          {deleteTarget.response_count > 0 ? <button type="button" disabled={deleting || exportingDeleteCsv} onClick={() => void exportFormResponses(deleteTarget)} className="rounded-2xl border px-4 py-2 text-sm font-semibold disabled:opacity-50">{exportingDeleteCsv ? "Preparing CSV…" : "Export CSV"}</button> : null}
+          <button type="button" disabled={deleting || exportingDeleteCsv} onClick={() => void deleteForm(deleteTarget)} className="rounded-2xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-50">{deleting ? "Deleting…" : "Yes, Delete"}</button>
+        </div>
+      </div>
+    </div> : null}
 
     {createOpen ? <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4">
       <div className="w-full max-w-lg rounded-t-3xl bg-white p-6 shadow-xl sm:rounded-3xl">
@@ -541,7 +650,7 @@ export default function FormsPage() {
             </div>}
           </div>
 
-          <aside className="border-t bg-slate-50 p-5 lg:border-l lg:border-t-0 sm:p-6"><div className="sticky top-0"><div className="flex items-center justify-between gap-3"><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Preview</div><Link target="_blank" rel="noopener noreferrer" href={`/forms/preview/${editing.id}`} className="text-xs font-semibold text-primary underline underline-offset-2">Open saved preview</Link></div><p className="mt-1 text-xs text-slate-500">Select a question in the preview to jump to its editor.</p><div className="mt-3"><FormRenderer title={editTitle} description={editDescription} fields={editFields} organizationName={organizationName} organizationLogoUrl={organizationLogoUrl} compact previewMode onFieldSelect={jumpToField} /></div></div></aside>
+          <aside className="border-t bg-slate-50 p-5 lg:border-l lg:border-t-0 sm:p-6"><div className="sticky top-0"><div className="flex items-center justify-between gap-3"><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Preview</div><button type="button" disabled={saving || !editTitle.trim()} onClick={() => void saveAndOpenPreview()} className="text-xs font-semibold text-primary underline underline-offset-2 disabled:cursor-not-allowed disabled:opacity-50">{saving ? "Saving…" : "Save and open preview"}</button></div><p className="mt-1 text-xs text-slate-500">Select a question in the preview to jump to its editor.</p><div className="mt-3"><FormRenderer title={editTitle} description={editDescription} fields={editFields} organizationName={organizationName} organizationLogoUrl={organizationLogoUrl} compact previewMode onFieldSelect={jumpToField} /></div></div></aside>
         </div>
         <div className="flex items-center justify-between gap-3 border-t px-5 py-4 sm:px-6">{editorError ? <div className="text-sm text-rose-600">{editorError}</div> : <div className="text-xs text-slate-500">Version number: {editing.revision}</div>}<button type="button" disabled={saving || editing.status === "closed" || !editTitle.trim()} onClick={() => void saveForm()} className="rounded-2xl bg-primary px-5 py-2 text-sm font-semibold text-white disabled:opacity-50">{saving ? "Saving…" : "Save changes"}</button></div>
       </div>

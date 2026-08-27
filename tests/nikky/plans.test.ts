@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { normalizePlanKey } from "@/lib/plans";
 
 describe("plan normalization", () => {
-  it("treats legacy Growth as Pro", () => expect(normalizePlanKey("growth")).toBe("pro"));
+  it("keeps Growth distinct from Pro", () => expect(normalizePlanKey("growth")).toBe("growth"));
   it("keeps canonical plans", () => {
     expect(normalizePlanKey("free")).toBe("free");
     expect(normalizePlanKey("pro")).toBe("pro");

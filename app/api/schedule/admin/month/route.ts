@@ -45,21 +45,42 @@ export async function GET(req: Request) {
 
     const monthId = ensured.monthRow.id;
 
-    const { data: entries, error: eErr } = await supabaseAdmin
-      .from("schedule_entries")
-      .select(
-        "id,date,service_category_id,department_category_id,role,name,notes,status,created_at",
-      )
-      .eq("org_id", orgId)
-      .eq("month_id", monthId)
-      .order("date", { ascending: true })
-      .order("created_at", { ascending: true });
+    const [{ data: entries, error: eErr }, { data: settings, error: settingsError }] = await Promise.all([
+      supabaseAdmin.from("schedule_entries")
+        .select("id,date,service_category_id,department_category_id,role,name,notes,status,created_at")
+        .eq("org_id", orgId).eq("month_id", monthId)
+        .order("date", { ascending: true }).order("created_at", { ascending: true }),
+      supabaseAdmin.from("schedule_settings").select("show_birthdays").eq("org_id", orgId).maybeSingle(),
+    ]);
 
     if (eErr)
       return NextResponse.json<ErrorJson>(
         { error: eErr.message },
         { status: 400 },
       );
+    if (settingsError) throw new Error(settingsError.message);
+
+    const showBirthdays = settings?.show_birthdays ?? true;
+    const birthdayRows: Array<{ id: string; first_name: string | null; last_name: string | null; birth_month: number | null; birth_day: number | null }> = [];
+    if (showBirthdays) {
+      const selectedMonth = Number(month.slice(5, 7));
+      const pageSize = 1000;
+      for (let from = 0; ; from += pageSize) {
+        const { data: members, error: memberError } = await supabaseAdmin
+          .from("members")
+          .select("id,first_name,last_name,birth_month,birth_day")
+          .eq("org_id", orgId)
+          .eq("membership_stage", "member")
+          .eq("status", "active")
+          .eq("birth_month", selectedMonth)
+          .not("birth_day", "is", null)
+          .order("first_name", { ascending: true })
+          .range(from, from + pageSize - 1);
+        if (memberError) throw new Error(memberError.message);
+        birthdayRows.push(...((members ?? []) as typeof birthdayRows));
+        if ((members ?? []).length < pageSize) break;
+      }
+    }
 
     const out: AdminMonthResponse = {
       ok: true,
@@ -90,6 +111,12 @@ export async function GET(req: Request) {
         notes: r.notes ? String(r.notes) : null,
         status: r.status,
         created_at: String(r.created_at),
+      })),
+      settings: { show_birthdays: showBirthdays },
+      birthdays: birthdayRows.map((member) => ({
+        member_id: member.id,
+        date: `${month}-${String(member.birth_day).padStart(2, "0")}`,
+        name: [member.first_name, member.last_name].filter(Boolean).join(" ").trim() || "Member",
       })),
     };
 

@@ -92,6 +92,11 @@ export async function POST(req: Request, context: RouteContext) {
     if (typeof body.standard_values !== "object" || Array.isArray(body.standard_values) || body.standard_values === null) throw new Error("Invalid request");
     if (typeof body.standard_mappings !== "object" || Array.isArray(body.standard_mappings) || body.standard_mappings === null) throw new Error("Invalid request");
     if (!Array.isArray(body.custom_values)) throw new Error("Invalid request");
+    if (action === "update_person"
+      && Object.keys(body.standard_values as Record<string, unknown>).length === 0
+      && body.custom_values.length === 0) {
+      throw new Error("Select at least one submitted value to apply.");
+    }
     for (const [key, value] of Object.entries(body.standard_values as Record<string, unknown>)) {
       const validation = validatePersonFieldMapping(`standard:${key}`, value, []);
       if (!validation.valid) throw new Error(validation.message ?? "PERSON_PROCESSING_INVALID");

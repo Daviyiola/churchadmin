@@ -231,6 +231,12 @@ export async function POST(req: Request) {
         { status: 409 },
       );
     }
+    if (insertError?.message?.includes("PLAN_CAPACITY_REACHED")) {
+      return NextResponse.json(
+        { error: "This organization has reached its management-seat limit." },
+        { status: 409 },
+      );
+    }
     if (insertError) {
       return NextResponse.json(
         { error: "We couldn't create the invitation. Please try again." },

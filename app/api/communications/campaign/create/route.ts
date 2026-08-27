@@ -5,7 +5,7 @@ import { requireUser, requireOrgFinanceOrAbove } from "@/lib/serverAuthz";
 export const runtime = "nodejs";
 
 type ErrorJson = { error: string };
-type OkJson = { ok: true; campaign_id: string };
+type OkJson = { ok: true; campaign_id: string; recipient_ids?: string[] };
 
 type UploadIn = {
   upload_id: string;
@@ -18,6 +18,7 @@ type Body = {
   subject?: string;
   body_html?: string;
   total_recipients?: number;
+  audience_snapshot_id?: string;
   uploads?: UploadIn[];
 };
 
@@ -39,7 +40,9 @@ export async function POST(req: Request) {
     const organization_id = String(body?.organization_id ?? "").trim();
     const subject = String(body?.subject ?? "").trim();
     const body_html = String(body?.body_html ?? "").trim();
-    const total_recipients = Number(body?.total_recipients ?? 0);
+    const audienceSnapshotId = String(body?.audience_snapshot_id ?? "").trim();
+    const audienceRecipientIds: string[] = [];
+    let total_recipients = Number(body?.total_recipients ?? 0);
 
     if (!organization_id)
       return NextResponse.json<ErrorJson>(
@@ -69,6 +72,24 @@ export async function POST(req: Request) {
         { status: authz.status },
       );
 
+    if (audienceSnapshotId) {
+      const { data: snapshot, error: snapshotError } = await supabaseAdmin
+        .from("communication_audience_snapshots")
+        .select("id,total_recipients,expires_at,campaign_id")
+        .eq("id", audienceSnapshotId)
+        .eq("org_id", organization_id)
+        .eq("created_by", u.userId)
+        .maybeSingle<{ id: string; total_recipients: number; expires_at: string; campaign_id: string | null }>();
+      if (snapshotError) throw new Error(snapshotError.message);
+      if (!snapshot) return NextResponse.json<ErrorJson>({ error: "Recipient preview not found" }, { status: 404 });
+      if (snapshot.campaign_id) return NextResponse.json<ErrorJson>({ error: "This recipient preview has already been used" }, { status: 409 });
+      if (new Date(snapshot.expires_at).getTime() <= Date.now()) {
+        return NextResponse.json<ErrorJson>({ error: "Recipient preview expired. Review the audience again." }, { status: 409 });
+      }
+      total_recipients = snapshot.total_recipients;
+      if (total_recipients < 1) return NextResponse.json<ErrorJson>({ error: "No recipients selected" }, { status: 400 });
+    }
+
     // 1) Create campaign
     const { data, error } = await supabaseAdmin
       .from("communication_campaigns")
@@ -87,6 +108,41 @@ export async function POST(req: Request) {
     if (!data?.id) throw new Error("Failed to create campaign");
 
     const campaign_id = data.id;
+
+    if (audienceSnapshotId) {
+      const { data: claimed, error: claimError } = await supabaseAdmin
+        .from("communication_audience_snapshots")
+        .update({ campaign_id, consumed_at: new Date().toISOString() })
+        .eq("id", audienceSnapshotId)
+        .eq("org_id", organization_id)
+        .eq("created_by", u.userId)
+        .is("campaign_id", null)
+        .gt("expires_at", new Date().toISOString())
+        .select("id")
+        .maybeSingle();
+      if (claimError || !claimed) {
+        await supabaseAdmin.from("communication_campaigns").delete().eq("id", campaign_id);
+        return NextResponse.json<ErrorJson>({ error: "Recipient preview could not be claimed. Review the audience again." }, { status: 409 });
+      }
+      for (let from = 0; ; from += 1000) {
+        const { data: recipientRows, error: recipientError } = await supabaseAdmin
+          .from("communication_audience_snapshot_recipients")
+          .select("id")
+          .eq("snapshot_id", audienceSnapshotId)
+          .eq("org_id", organization_id)
+          .order("created_at")
+          .order("id")
+          .range(from, from + 999);
+        if (recipientError) throw new Error(recipientError.message);
+        audienceRecipientIds.push(...(recipientRows ?? []).map((row) => row.id));
+        if ((recipientRows ?? []).length < 1000) break;
+      }
+      if (audienceRecipientIds.length !== total_recipients) {
+        await supabaseAdmin.from("communication_audience_snapshots").update({ campaign_id: null, consumed_at: null }).eq("id", audienceSnapshotId).eq("campaign_id", campaign_id);
+        await supabaseAdmin.from("communication_campaigns").delete().eq("id", campaign_id);
+        return NextResponse.json<ErrorJson>({ error: "Recipient preview changed. Review the audience again." }, { status: 409 });
+      }
+    }
 
     // 2) Link uploads to this campaign (so send-one can fetch attachments/inline)
     const uploads = Array.isArray(body?.uploads) ? body!.uploads! : [];
@@ -132,7 +188,11 @@ export async function POST(req: Request) {
       }
     }
     
-    return NextResponse.json<OkJson>({ ok: true, campaign_id });
+    return NextResponse.json<OkJson>({
+      ok: true,
+      campaign_id,
+      ...(audienceSnapshotId ? { recipient_ids: audienceRecipientIds } : {}),
+    });
   } catch (e) {
     return NextResponse.json<ErrorJson>(
       { error: e instanceof Error ? e.message : "Error" },

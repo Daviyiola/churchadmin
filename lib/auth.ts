@@ -36,6 +36,12 @@ export async function signInWithOrg(email: string, password: string, orgId: stri
   return { ok: true as const };
 }
 
+export async function signIn(email: string, password: string) {
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error || !data.user) return { ok: false as const, message: error?.message ?? "Unable to sign in." };
+  return { ok: true as const, user: data.user };
+}
+
 export async function signOut() {
   localStorage.removeItem("active_org_id");
   localStorage.removeItem("active_org_role");

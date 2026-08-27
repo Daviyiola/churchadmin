@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
-import PersonCustomFields from "@/components/people/PersonCustomFields";
+import PersonCustomFields, { type PersonCustomFieldSaveValue } from "@/components/people/PersonCustomFields";
+import PersonCommunityServing from "@/components/people/PersonCommunityServing";
 import {
   daysForMonth,
   formatMonthDay,
@@ -417,6 +418,14 @@ export default function MembersPage() {
 
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string>("");
+  const [customFieldValues, setCustomFieldValues] = useState<PersonCustomFieldSaveValue[]>([]);
+  const [customFieldsReady, setCustomFieldsReady] = useState(false);
+  const handleCustomFieldValues = useCallback((values: PersonCustomFieldSaveValue[]) => {
+    setCustomFieldValues(values);
+  }, []);
+  const handleCustomFieldsReady = useCallback((ready: boolean) => {
+    setCustomFieldsReady(ready);
+  }, []);
 
   const [gender, setGender] = useState<"male" | "female" | "">("");
   const [dob, setDob] = useState<string>("");
@@ -486,7 +495,7 @@ export default function MembersPage() {
 
   const canSave =
     requiredOk &&
-    (mode === "create" || (mode === "edit" ? canManageMembers : true));
+    (mode === "create" || (mode === "edit" ? canManageMembers && customFieldsReady : true));
 
   const deptNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -570,6 +579,8 @@ export default function MembersPage() {
     setAddress("");
     setErr("");
     setEditId(null);
+    setCustomFieldValues([]);
+    setCustomFieldsReady(false);
 
     setGender("");
     setDob("");
@@ -1024,9 +1035,23 @@ export default function MembersPage() {
       return;
     }
 
-    const { error } = await supabase
-      .from("members")
-      .update({
+    if (!editId) {
+      setErr("Member record not found.");
+      setSaving(false);
+      return;
+    }
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) {
+      setErr("Your session has expired. Please sign in again.");
+      setSaving(false);
+      return;
+    }
+    const response = await fetch(`/api/people/${editId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        values: {
         first_name: firstName.trim(),
         last_name: lastName.trim(),
         email: email.trim() || null,
@@ -1039,7 +1064,6 @@ export default function MembersPage() {
         birth_month: birthMonthToSave,
         birth_day: birthDayToSave,
         age_group: effectiveAgeGroup || null,
-        segment: segmentToSave || null,
         address: address.trim() || null,
 
         baptized: baptizedBool,
@@ -1048,10 +1072,13 @@ export default function MembersPage() {
         born_again_date: bornAgainDateToSave,
 
         department_category_id: departmentId || null,
-      })
-      .eq("id", editId);
+        },
+        custom_values: customFieldValues,
+      }),
+    });
+    const responseBody = await response.json().catch(() => null) as { error?: string } | null;
 
-    if (error) setErr(error.message);
+    if (!response.ok) setErr(responseBody?.error || "Unable to update member.");
     else {
       setOpen(false);
       resetForm();
@@ -2287,15 +2314,19 @@ export default function MembersPage() {
                     <option value="36+">36 and above</option>
                   </select>
 
-                  {hasDob ? (
+                  <div className="mt-1 text-xs text-slate-500">
+                      Set automatically when a complete birth date is available.
+                    </div>
+
+                  {/* {hasDob ? (
                     <div className="mt-1 text-xs text-slate-500">
                       Set automatically because a complete birth date is available.
                     </div>
                   ) : (
-                    <div className="mt-1 text-xs text-slate-500">
-                      Optional when a birthday is provided without a year; otherwise required.
-                    </div>
-                  )}
+                    // <div className="mt-1 text-xs text-slate-500">
+                    //   Optional when a birthday is provided without a year; otherwise required.
+                    // </div>
+                  )} */}
                 </div>
               </div>
 
@@ -2641,7 +2672,8 @@ export default function MembersPage() {
                 </div>
               </div>
 
-              {mode === "edit" && editId ? <PersonCustomFields memberId={editId} /> : null}
+              {mode === "edit" && editId ? <PersonCommunityServing memberId={editId} /> : null}
+              {mode === "edit" && editId ? <PersonCustomFields memberId={editId} showSaveButton={false} onValuesChange={handleCustomFieldValues} onReadyChange={handleCustomFieldsReady} /> : null}
 
               {formError ? (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">

@@ -59,7 +59,7 @@ export async function PATCH(
       if (Object.keys(row).some((key) => !allowed.has(key))) {
         throw new Error("Invalid request properties.");
       }
-      const { error } = await supabaseAdmin.rpc("delete_empty_managed_form", {
+      const { error } = await supabaseAdmin.rpc("delete_managed_form", {
         p_form_id: formId,
         p_actor_id: actorId,
       });
@@ -71,10 +71,6 @@ export async function PATCH(
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to update form.";
     const status = message === "UNAUTHORIZED" ? 401 : message === "Forbidden" ? 403 : 400;
-    return NextResponse.json({
-      error: message.includes("FORM_HAS_SUBMISSIONS")
-        ? "Forms with submissions cannot be deleted. Close the form to preserve its inbox."
-        : message,
-    }, { status });
+    return NextResponse.json({ error: message }, { status });
   }
 }

@@ -1,0 +1,9 @@
+drop index if exists public.sms_suppressions_suppressed_by_idx;
+drop index if exists public.sms_suppressions_released_by_idx;
+drop index if exists public.sms_organization_settings_updated_by_idx;
+drop index if exists public.sms_onboarding_drafts_updated_by_idx;
+drop index if exists public.sms_contact_consents_form_id_idx;
+drop index if exists public.sms_contact_consents_created_by_idx;
+drop index if exists public.sms_consent_attestations_revoked_by_idx;
+drop index if exists public.sms_consent_attestations_attested_by_idx;
+drop index if exists public.sms_audience_snapshots_created_by_idx;

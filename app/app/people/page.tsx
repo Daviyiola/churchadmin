@@ -98,17 +98,17 @@ export default function PeopleHomePage() {
         title: "Community Groups",
         desc: "Organize people into ministries and fellowship communities like Virtous Women, Men of Valor, and more.",
         href: "/app/people/community-groups",
-        badge: "Coming soon",
-        requiresAdmin: false,
-        disabled: true, // not built yet
+        badge: "New",
+        requiresAdmin: true,
+        financeAllowed: true,
       },
       {
         title: "Worker Departments",
         desc: "Manage church workers by department such as Choir, Ushering, Media, Protocol, and others.",
         href: "/app/people/worker-departments",
-        badge: "Coming soon",
-        requiresAdmin: false,
-        disabled: true, // not built yet
+        badge: "New",
+        requiresAdmin: true,
+        financeAllowed: true,
       },
       
     ],

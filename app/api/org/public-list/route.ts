@@ -1,15 +1,6 @@
-import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
-
 export async function GET() {
-  const { data, error } = await supabaseAdmin
-    .from("organizations")
-    .select("id,name,slug")
-    .order("name", { ascending: true });
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
-  }
-
-  return NextResponse.json({ orgs: data ?? [] });
+  return Response.json(
+    { error: "Organization discovery requires an authenticated account." },
+    { status: 410 },
+  );
 }

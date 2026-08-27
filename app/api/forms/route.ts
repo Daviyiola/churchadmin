@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { requireActorId } from "@/lib/server/authUser";
 import { optionalFormText, requireFormText } from "@/lib/server/forms/validation";
+import { getOrganizationEntitlements } from "@/lib/server/planEntitlements";
 
 function formSlug(title: string) {
   const base = title
@@ -59,10 +60,18 @@ export async function GET(req: Request) {
     }));
     const counts = new Map(responseCounts);
 
-    return NextResponse.json({ forms: (forms ?? []).map((form) => ({
-      ...form,
-      response_count: counts.get(form.id) ?? 0,
-    })) });
+    const entitlements = await getOrganizationEntitlements(organizationId);
+    return NextResponse.json({
+      forms: (forms ?? []).map((form) => ({
+        ...form,
+        response_count: counts.get(form.id) ?? 0,
+      })),
+      form_usage: {
+        used: (forms ?? []).filter((form) => !form.is_system).length,
+        limit: entitlements.formCountLimit,
+        plan: entitlements.plan,
+      },
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load forms.";
     const status = message === "UNAUTHORIZED" ? 401 : message === "Forbidden" ? 403 : 400;

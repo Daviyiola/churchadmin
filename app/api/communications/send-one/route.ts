@@ -20,6 +20,9 @@ type Body = {
   organization_id?: string;
   campaign_id?: string;
   to_email?: string;
+  mode?: "test" | "broadcast";
+  audience_snapshot_id?: string;
+  audience_recipient_id?: string;
   // optional overrides for test mode:
   subject?: string;
   body_html?: string;
@@ -110,7 +113,10 @@ export async function POST(req: Request) {
     const body = (await req.json().catch(() => null)) as Body | null;
     const organization_id = String(body?.organization_id ?? "").trim();
     const campaign_id = String(body?.campaign_id ?? "").trim();
-    const to_email = String(body?.to_email ?? "")
+    const mode = body?.mode === "broadcast" ? "broadcast" : "test";
+    const audienceSnapshotId = String(body?.audience_snapshot_id ?? "").trim();
+    const audienceRecipientId = String(body?.audience_recipient_id ?? "").trim();
+    let to_email = String(body?.to_email ?? "")
       .trim()
       .toLowerCase();
 
@@ -124,17 +130,45 @@ export async function POST(req: Request) {
         { error: "campaign_id required" },
         { status: 400 },
       );
-    if (!to_email || !isValidEmail(to_email))
-      return NextResponse.json<ErrorJson>(
-        { error: "Valid to_email required" },
-        { status: 400 },
-      );
-
     const authz = await requireOrgFinanceOrAbove(organization_id, u.userId);
     if (!authz.ok)
       return NextResponse.json<ErrorJson>(
         { error: authz.error },
         { status: authz.status },
+      );
+
+    if (mode === "broadcast") {
+      if (!audienceSnapshotId || !audienceRecipientId) {
+        return NextResponse.json<ErrorJson>({ error: "Recipient snapshot required" }, { status: 400 });
+      }
+      const { data: snapshot, error: snapshotError } = await supabaseAdmin
+        .from("communication_audience_snapshots")
+        .select("id,campaign_id")
+        .eq("id", audienceSnapshotId)
+        .eq("org_id", organization_id)
+        .eq("created_by", u.userId)
+        .eq("campaign_id", campaign_id)
+        .maybeSingle<{ id: string; campaign_id: string }>();
+      if (snapshotError) throw new Error(snapshotError.message);
+      if (!snapshot) return NextResponse.json<ErrorJson>({ error: "Recipient snapshot not found" }, { status: 404 });
+
+      const { data: recipient, error: recipientError } = await supabaseAdmin
+        .from("communication_audience_snapshot_recipients")
+        .select("id,email,processed_at")
+        .eq("id", audienceRecipientId)
+        .eq("snapshot_id", audienceSnapshotId)
+        .eq("org_id", organization_id)
+        .maybeSingle<{ id: string; email: string; processed_at: string | null }>();
+      if (recipientError) throw new Error(recipientError.message);
+      if (!recipient) return NextResponse.json<ErrorJson>({ error: "Recipient not found" }, { status: 404 });
+      if (recipient.processed_at) return NextResponse.json<OkJson>({ ok: true });
+      to_email = recipient.email.trim().toLowerCase();
+    }
+
+    if (!to_email || !isValidEmail(to_email))
+      return NextResponse.json<ErrorJson>(
+        { error: "Valid recipient email required" },
+        { status: 400 },
       );
 
     // Rate limit (burst)
@@ -249,6 +283,21 @@ export async function POST(req: Request) {
 
     const providerId = sendRes.data?.id ?? null;
     const success = !sendRes.error;
+
+    if (mode === "broadcast") {
+      await supabaseAdmin
+        .from("communication_audience_snapshot_recipients")
+        .update({
+          processed_at: new Date().toISOString(),
+          success,
+          provider_id: providerId,
+          error: sendRes.error?.message ?? null,
+        })
+        .eq("id", audienceRecipientId)
+        .eq("snapshot_id", audienceSnapshotId)
+        .eq("org_id", organization_id)
+        .is("processed_at", null);
+    }
 
     // Log recipient
     await supabaseAdmin.from("communication_campaign_recipients").insert({
