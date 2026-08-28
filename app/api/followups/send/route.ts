@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { Resend } from "resend";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { sendManagedEmail } from "@/lib/server/email";
 import { requireActorId } from "@/lib/server/authUser";
 import {
   assertBurstLimit,
@@ -11,8 +11,6 @@ import {
 import { canSendFollowupEmail } from "@/lib/emailPermissions";
 
 export const runtime = "nodejs";
-
-const resend = new Resend(process.env.RESEND_API_KEY!);
 
 type ErrorJson = { error: string };
 type OkJson = { ok: true; provider_id: string | null };
@@ -304,22 +302,43 @@ export async function POST(req: Request) {
     });
 
     // Send
-    const sendRes = await resend.emails.send({
+    const sendRes = await sendManagedEmail({
+      kind: "optional",
+      topic: "followup",
+      organizationId: orgId,
+      memberId,
       from,
       to,
       subject,
       html,
       ...(replyTo ? { replyTo } : {}),
+      tags: [{ name: "message_type", value: "followup" }],
     });
 
-    if (sendRes.error) {
+    if (!sendRes.sent && sendRes.skipped) {
+      if (scheduledFollowupId) {
+        await supabaseAdmin
+          .from("scheduled_followups")
+          .update({ status: "blocked_preference", error_message: sendRes.reason, updated_at: new Date().toISOString() })
+          .eq("id", scheduledFollowupId)
+          .eq("org_id", orgId)
+          .eq("member_id", memberId)
+          .eq("status", "pending");
+      }
       return NextResponse.json<ErrorJson>(
-        { error: sendRes.error.message },
+        { error: "This recipient has disabled follow-up emails or cannot receive email." },
+        { status: 409 },
+      );
+    }
+
+    if (!sendRes.sent) {
+      return NextResponse.json<ErrorJson>(
+        { error: sendRes.error },
         { status: 400 },
       );
     }
 
-    const resendId = sendRes.data?.id ?? null;
+    const resendId = sendRes.providerId;
 
     const sentAt = new Date().toISOString();
 

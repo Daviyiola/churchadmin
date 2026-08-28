@@ -33,6 +33,8 @@ export type AudiencePreview = {
   total_recipients: number;
   invalid_count: number;
   duplicate_count: number;
+  unsubscribed_count: number;
+  suppressed_count: number;
   source_counts: Record<string, number>;
   recipients: AudienceRecipient[];
   recipients_truncated: boolean;

@@ -43,6 +43,8 @@ type HistoryRow = {
   subject: string;
   total_recipients: number;
   total_success: number;
+  total_failure: number;
+  total_skipped: number;
 };
 
 type HistoryDetailRecipient = {
@@ -100,6 +102,7 @@ function isHistoryDetailPayload(v: unknown): v is HistoryDetailPayload {
     typeof o.total_recipients === "number" &&
     typeof o.total_success === "number" &&
     typeof o.total_failure === "number" &&
+    typeof o.total_skipped === "number" &&
     Array.isArray(o.recipients) &&
     o.recipients.every(
       (r) =>
@@ -160,6 +163,7 @@ type HistoryDetailPayload = {
   total_recipients: number;
   total_success: number;
   total_failure: number;
+  total_skipped: number;
   recipients: HistoryDetailRecipient[];
   errors?: string[];
 };
@@ -813,6 +817,7 @@ export default function CommunicationsPage() {
       // Loop send one-by-one so we can show progress
       let ok = 0;
       let fail = 0;
+      let skipped = 0;
 
       for (let i = 0; i < recipientIds.length; i++) {
         const recipientId = recipientIds[i];
@@ -833,7 +838,8 @@ export default function CommunicationsPage() {
         });
 
         const json = await res.json().catch(() => null);
-        if (res.ok && json?.ok) ok++;
+        if (res.ok && json?.ok && json?.skipped) skipped++;
+        else if (res.ok && json?.ok) ok++;
         else fail++;
 
         setSentOk(ok);
@@ -841,7 +847,7 @@ export default function CommunicationsPage() {
         setProgressPct(Math.round(((i + 1) / recipientIds.length) * 100));
       }
 
-      showToast(`Broadcast done ✓ (${ok} ok, ${fail} failed)`);
+      showToast(`Broadcast done ✓ (${ok} sent, ${skipped} skipped, ${fail} failed)`);
       // refresh history
       await loadHistory();
       setTab("history");
@@ -1501,7 +1507,7 @@ export default function CommunicationsPage() {
                 <div>Date</div>
                 <div>Subject</div>
                 <div className="text-right">Total recipients</div>
-                <div className="text-right">Total success</div>
+                <div className="text-right">Results</div>
               </div>
 
               {historyLoading ? (
@@ -1528,7 +1534,7 @@ export default function CommunicationsPage() {
                         {h.total_recipients}
                       </div>
                       <div className="text-right text-slate-700">
-                        {h.total_success}
+                        {h.total_success} sent · {h.total_skipped ?? 0} skipped · {h.total_failure ?? 0} failed
                       </div>
                     </button>
                   ))}
@@ -1800,7 +1806,7 @@ export default function CommunicationsPage() {
             </div>
 
             <div className="px-6 py-6 space-y-4">
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-4">
                 <div className="rounded-2xl border bg-slate-50 px-4 py-3">
                   <div className="text-xs font-semibold text-slate-600">
                     Total recipients
@@ -1808,6 +1814,11 @@ export default function CommunicationsPage() {
                   <div className="mt-1 text-lg font-semibold">
                     {historyDetail?.total_recipients ?? 0}
                   </div>
+                </div>
+
+                <div className="rounded-2xl border bg-slate-50 px-4 py-3">
+                  <div className="text-xs font-semibold text-slate-600">Skipped</div>
+                  <div className="mt-1 text-lg font-semibold">{historyDetail?.total_skipped ?? 0}</div>
                 </div>
 
                 <div className="rounded-2xl border bg-slate-50 px-4 py-3">

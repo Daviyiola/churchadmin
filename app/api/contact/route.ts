@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { Resend } from "resend";
+import { sendManagedEmail } from "@/lib/server/email";
 
 export async function POST(req: Request) {
   try {
@@ -56,9 +56,6 @@ export async function POST(req: Request) {
       // Don't fail the whole request if DB insert fails
     }
 
-    // Email you via Resend
-    const resend = new Resend(process.env.RESEND_API_KEY!);
-
     const subject = `New Contact Message${cleanChurch ? ` — ${cleanChurch}` : ""}`;
 
     const html = `
@@ -101,13 +98,16 @@ export async function POST(req: Request) {
 </div>
 `;
 
-    await resend.emails.send({
+    const sendResult = await sendManagedEmail({
+      kind: "internal",
       from: `${fromName} <${fromEmail}>`,
       to: toEmail,
       subject,
       html,
       replyTo: cleanEmail || undefined,
+      tags: [{ name: "message_type", value: "contact_notification" }],
     });
+    if (!sendResult.sent) throw new Error(sendResult.skipped ? sendResult.reason : sendResult.error);
 
     return NextResponse.json({ ok: true });
   } catch {

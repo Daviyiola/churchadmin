@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { Resend } from "resend";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { sendManagedEmail } from "@/lib/server/email";
 import {
   assertBurstLimit,
   consumeBurst,
@@ -9,8 +9,6 @@ import {
 } from "@/lib/server/communicationsLimits";
 
 export const runtime = "nodejs";
-
-const resend = new Resend(process.env.RESEND_API_KEY!);
 
 type ErrorJson = { error: string };
 
@@ -124,7 +122,7 @@ function isCronAuthorized(req: Request) {
 async function markScheduledFollowup(
   id: string,
   update: {
-    status?: "sent" | "failed" | "blocked_quota";
+    status?: "sent" | "failed" | "blocked_quota" | "blocked_preference";
     sent_at?: string | null;
     error_message?: string | null;
   },
@@ -245,23 +243,36 @@ async function processOne(f: ScheduledFollowupRow) {
     appName: "Church Admin",
   });
 
-  const sendRes = await resend.emails.send({
+  const sendRes = await sendManagedEmail({
+    kind: "optional",
+    topic: "followup",
+    organizationId: orgId,
+    memberId: f.member_id,
     from,
     to,
     subject: f.subject,
     html,
     ...(replyTo ? { replyTo } : {}),
+    tags: [{ name: "message_type", value: "scheduled_followup" }],
   });
 
-  if (sendRes.error) {
+  if (!sendRes.sent && sendRes.skipped) {
+    await markScheduledFollowup(f.id, {
+      status: "blocked_preference",
+      error_message: sendRes.reason,
+    });
+    return { id: f.id, status: "blocked_preference", reason: sendRes.reason };
+  }
+
+  if (!sendRes.sent) {
     await markScheduledFollowup(f.id, {
       status: "failed",
-      error_message: sendRes.error.message,
+      error_message: sendRes.error,
     });
     return { id: f.id, status: "failed", reason: "provider_error" };
   }
 
-  const resendId = sendRes.data?.id ?? null;
+  const resendId = sendRes.providerId;
 
   // Consume only after provider success.
   await consumeBurst(orgId, 1);

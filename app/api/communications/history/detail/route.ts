@@ -27,7 +27,7 @@ export async function GET(req: Request) {
 
     const { data: camp, error: campErr } = await supabaseAdmin
       .from("communication_campaigns")
-      .select("id, subject, total_recipients, total_success, total_failure")
+      .select("id, subject, total_recipients, total_success, total_failure, total_skipped")
       .eq("id", campaign_id)
       .eq("organization_id", organization_id)
       .maybeSingle();
@@ -49,6 +49,7 @@ export async function GET(req: Request) {
       total_recipients: camp.total_recipients ?? 0,
       total_success: camp.total_success ?? 0,
       total_failure: camp.total_failure ?? 0,
+      total_skipped: camp.total_skipped ?? 0,
       recipients: (recips ?? []).map((r) => ({
         email: r.to_email,
         success: !!r.success,

@@ -1,11 +1,9 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
-import { Resend } from "resend";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { requireActorId } from "@/lib/server/authUser";
 import { PERSONAL_INTAKE_EXPIRY_DAYS } from "@/lib/server/intake/constants";
-
-const resend = new Resend(process.env.RESEND_API_KEY!);
+import { sendManagedEmail } from "@/lib/server/email";
 
 function addDaysTS(days: number) {
   const d = new Date();
@@ -191,20 +189,28 @@ export async function POST(req: Request) {
       appName: "Church Admin",
     });
 
-    const { error: emailError } = await resend.emails.send({
+    const emailResult = await sendManagedEmail({
+      kind: "optional",
+      topic: "form_invite",
+      organizationId: orgId,
       from,
       to: email,
       subject: `Complete your guest form – ${orgName}`,
       html,
+      tags: [{ name: "message_type", value: "form_invite" }],
     });
+
+    const emailWarning = !emailResult.sent
+      ? emailResult.skipped
+        ? "The secure link was created, but this address has disabled form invitations or cannot receive email. You can copy and share the link manually."
+        : "The secure link was created, but the email could not be sent. You can copy and share the link manually."
+      : null;
 
     return NextResponse.json({
       ok: true,
       intakeUrl,
-      emailed: !emailError,
-      email_warning: emailError
-        ? "The secure link was created, but the email could not be sent. You can copy and share the link manually."
-        : null,
+      emailed: emailResult.sent,
+      email_warning: emailWarning,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Error";

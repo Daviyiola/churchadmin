@@ -214,6 +214,14 @@ export default function TermsContent() {
           Messages may be delayed, rejected, filtered, suppressed, or blocked
           by recipients, providers, carriers, or security systems.
         </P>
+        <P>
+          Church Admin provides technical preference and suppression controls,
+          including send-time eligibility checks. These controls do not replace
+          the Organization&apos;s responsibility to select lawful recipients,
+          maintain accurate sender and mailing-address information, and honor
+          requests received outside the Service. Attempts to bypass a recipient
+          opt-out or provider suppression are prohibited.
+        </P>
       </Section>
 
       <Divider />

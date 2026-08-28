@@ -54,6 +54,12 @@ type SettingsRow = {
   report_banner_text_rgb: string | null;
   timezone_name: string | null;
   timezone_confirmed: boolean;
+  mailing_address_line1: string | null;
+  mailing_address_line2: string | null;
+  mailing_city: string | null;
+  mailing_state: string | null;
+  mailing_postal_code: string | null;
+  mailing_country: string | null;
 };
 
 const TIMEZONE_OPTIONS = timezoneOptions();
@@ -90,6 +96,12 @@ export default function OrgSettingsPage() {
   const [bannerBgHex, setBannerBgHex] = useState("#0f172a"); // slate-900-ish
   const [bannerTextHex, setBannerTextHex] = useState("#ffffff");
   const [timezone, setTimezone] = useState("");
+  const [mailingLine1, setMailingLine1] = useState("");
+  const [mailingLine2, setMailingLine2] = useState("");
+  const [mailingCity, setMailingCity] = useState("");
+  const [mailingState, setMailingState] = useState("");
+  const [mailingPostalCode, setMailingPostalCode] = useState("");
+  const [mailingCountry, setMailingCountry] = useState("United States");
 
   const [saving, setSaving] = useState(false);
 
@@ -126,7 +138,13 @@ export default function OrgSettingsPage() {
       reportSubheader !== (saved.report_subheader_text ?? "") ||
       bannerBgHex.toLowerCase() !== savedBannerBgHex.toLowerCase() ||
       bannerTextHex.toLowerCase() !== savedBannerTextHex.toLowerCase() ||
-      timezone !== (saved.timezone_name ?? "")
+      timezone !== (saved.timezone_name ?? "") ||
+      mailingLine1 !== (saved.mailing_address_line1 ?? "") ||
+      mailingLine2 !== (saved.mailing_address_line2 ?? "") ||
+      mailingCity !== (saved.mailing_city ?? "") ||
+      mailingState !== (saved.mailing_state ?? "") ||
+      mailingPostalCode !== (saved.mailing_postal_code ?? "") ||
+      mailingCountry !== (saved.mailing_country ?? "United States")
     );
   }, [
     saved,
@@ -139,6 +157,7 @@ export default function OrgSettingsPage() {
     bannerBgHex,
     bannerTextHex,
     timezone,
+    mailingLine1, mailingLine2, mailingCity, mailingState, mailingPostalCode, mailingCountry,
   ]);
 
   useEffect(() => {
@@ -181,7 +200,7 @@ export default function OrgSettingsPage() {
       const { data: setRow, error: setErr } = await supabase
         .from("organization_settings")
         .select(
-          "logo_path, use_default_logo, primary_rgb, report_header_text, report_subheader_text, report_banner_bg_rgb, report_banner_text_rgb, timezone_name, timezone_confirmed",
+          "logo_path, use_default_logo, primary_rgb, report_header_text, report_subheader_text, report_banner_bg_rgb, report_banner_text_rgb, timezone_name, timezone_confirmed, mailing_address_line1, mailing_address_line2, mailing_city, mailing_state, mailing_postal_code, mailing_country",
         )
         .eq("organization_id", orgId)
         .maybeSingle();
@@ -208,6 +227,12 @@ export default function OrgSettingsPage() {
         report_banner_text_rgb: setRow?.report_banner_text_rgb ?? null,
         timezone_name: setRow?.timezone_name ?? null,
         timezone_confirmed: Boolean(setRow?.timezone_confirmed),
+        mailing_address_line1: setRow?.mailing_address_line1 ?? null,
+        mailing_address_line2: setRow?.mailing_address_line2 ?? null,
+        mailing_city: setRow?.mailing_city ?? null,
+        mailing_state: setRow?.mailing_state ?? null,
+        mailing_postal_code: setRow?.mailing_postal_code ?? null,
+        mailing_country: setRow?.mailing_country ?? "United States",
       };
 
       setSaved(normalized);
@@ -219,6 +244,12 @@ export default function OrgSettingsPage() {
       setReportHeader(normalized.report_header_text ?? "");
       setReportSubheader(normalized.report_subheader_text ?? "");
       setTimezone(normalized.timezone_name ?? "");
+      setMailingLine1(normalized.mailing_address_line1 ?? "");
+      setMailingLine2(normalized.mailing_address_line2 ?? "");
+      setMailingCity(normalized.mailing_city ?? "");
+      setMailingState(normalized.mailing_state ?? "");
+      setMailingPostalCode(normalized.mailing_postal_code ?? "");
+      setMailingCountry(normalized.mailing_country ?? "United States");
 
       const hex = rgbTripletToHex(normalized.primary_rgb);
       setPrimaryHex(hex ?? "#2f5e85");
@@ -350,6 +381,12 @@ export default function OrgSettingsPage() {
         report_banner_text_rgb: bannerTextTriplet,
         timezone_name: timezone || null,
         timezone_confirmed: Boolean(timezone),
+        mailing_address_line1: mailingLine1.trim() || null,
+        mailing_address_line2: mailingLine2.trim() || null,
+        mailing_city: mailingCity.trim() || null,
+        mailing_state: mailingState.trim() || null,
+        mailing_postal_code: mailingPostalCode.trim() || null,
+        mailing_country: mailingCountry.trim() || null,
       };
 
       const { error: upErr } = await supabase
@@ -364,6 +401,12 @@ export default function OrgSettingsPage() {
           report_banner_text_rgb: next.report_banner_text_rgb,
           timezone_name: next.timezone_name,
           timezone_confirmed: next.timezone_confirmed,
+          mailing_address_line1: next.mailing_address_line1,
+          mailing_address_line2: next.mailing_address_line2,
+          mailing_city: next.mailing_city,
+          mailing_state: next.mailing_state,
+          mailing_postal_code: next.mailing_postal_code,
+          mailing_country: next.mailing_country,
         })
         .eq("organization_id", orgId);
 
@@ -408,6 +451,12 @@ export default function OrgSettingsPage() {
     setReportHeader(saved.report_header_text ?? "");
     setReportSubheader(saved.report_subheader_text ?? "");
     setTimezone(saved.timezone_name ?? "");
+    setMailingLine1(saved.mailing_address_line1 ?? "");
+    setMailingLine2(saved.mailing_address_line2 ?? "");
+    setMailingCity(saved.mailing_city ?? "");
+    setMailingState(saved.mailing_state ?? "");
+    setMailingPostalCode(saved.mailing_postal_code ?? "");
+    setMailingCountry(saved.mailing_country ?? "United States");
 
     setBannerBgHex(rgbTripletToHex(saved.report_banner_bg_rgb) ?? "#0f172a");
     setBannerTextHex(
@@ -636,6 +685,27 @@ export default function OrgSettingsPage() {
                     </select>
                     <span className="mt-1 block text-xs text-slate-500">Additional currencies will be supported in a future update.</span>
                   </label>
+                </div>
+              </div>
+
+              <div className="border-t px-5 py-4">
+                <div className="text-lg font-semibold">Email mailing address</div>
+                <div className="mt-1 text-sm text-slate-600">
+                  Shown in optional church-email footers. A complete address is required before sending broadcasts.
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm sm:col-span-2">
+                    <span className="text-xs font-semibold text-slate-600">Street address</span>
+                    <input value={mailingLine1} onChange={(e) => setMailingLine1(e.target.value)} disabled={!canEdit} className="mt-1 w-full rounded-2xl border px-3 py-2" />
+                  </label>
+                  <label className="text-sm sm:col-span-2">
+                    <span className="text-xs font-semibold text-slate-600">Address line 2 (optional)</span>
+                    <input value={mailingLine2} onChange={(e) => setMailingLine2(e.target.value)} disabled={!canEdit} className="mt-1 w-full rounded-2xl border px-3 py-2" />
+                  </label>
+                  <label className="text-sm"><span className="text-xs font-semibold text-slate-600">City</span><input value={mailingCity} onChange={(e) => setMailingCity(e.target.value)} disabled={!canEdit} className="mt-1 w-full rounded-2xl border px-3 py-2" /></label>
+                  <label className="text-sm"><span className="text-xs font-semibold text-slate-600">State / region</span><input value={mailingState} onChange={(e) => setMailingState(e.target.value)} disabled={!canEdit} className="mt-1 w-full rounded-2xl border px-3 py-2" /></label>
+                  <label className="text-sm"><span className="text-xs font-semibold text-slate-600">Postal code</span><input value={mailingPostalCode} onChange={(e) => setMailingPostalCode(e.target.value)} disabled={!canEdit} className="mt-1 w-full rounded-2xl border px-3 py-2" /></label>
+                  <label className="text-sm"><span className="text-xs font-semibold text-slate-600">Country</span><input value={mailingCountry} onChange={(e) => setMailingCountry(e.target.value)} disabled={!canEdit} className="mt-1 w-full rounded-2xl border px-3 py-2" /></label>
                 </div>
               </div>
 

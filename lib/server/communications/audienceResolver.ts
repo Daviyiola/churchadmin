@@ -5,6 +5,7 @@ import {
   type AudienceCriteria,
   type AudienceFormSource,
 } from "@/lib/communications/audience";
+import { resolveEmailEligibility } from "@/lib/server/email";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EXTRACT_EMAIL_PATTERN = /[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+/gi;
@@ -25,6 +26,7 @@ type MemberRecord = {
 
 type RecipientDraft = {
   email: string;
+  member_id: string | null;
   display_name: string | null;
   source_types: Set<string>;
   source_labels: Set<string>;
@@ -34,6 +36,7 @@ export type ResolvedAudience = {
   criteria: AudienceCriteria;
   recipients: Array<{
     email: string;
+    member_id: string | null;
     display_name: string | null;
     source_types: string[];
     source_labels: string[];
@@ -41,6 +44,8 @@ export type ResolvedAudience = {
   source_counts: Record<string, number>;
   invalid_count: number;
   duplicate_count: number;
+  unsubscribed_count: number;
+  suppressed_count: number;
 };
 
 function cleanString(value: unknown) {
@@ -153,7 +158,7 @@ export async function resolveAudience(orgId: string, rawCriteria: unknown): Prom
   let invalidCount = 0;
   let duplicateCount = 0;
 
-  const add = (emailRaw: string | null | undefined, displayName: string | null, sourceType: string, sourceLabel: string) => {
+  const add = (emailRaw: string | null | undefined, displayName: string | null, sourceType: string, sourceLabel: string, memberId: string | null = null) => {
     const email = normalizeAudienceEmail(emailRaw ?? "");
     if (!isAudienceEmail(email)) {
       invalidCount += 1;
@@ -167,10 +172,12 @@ export async function resolveAudience(orgId: string, rawCriteria: unknown): Prom
       existing.source_types.add(sourceType);
       existing.source_labels.add(sourceLabel);
       if (!existing.display_name && displayName) existing.display_name = displayName;
+      if (!existing.member_id && memberId) existing.member_id = memberId;
       return;
     }
     recipientMap.set(email, {
       email,
+      member_id: memberId,
       display_name: displayName,
       source_types: new Set([sourceType]),
       source_labels: new Set([sourceLabel]),
@@ -187,12 +194,12 @@ export async function resolveAudience(orgId: string, rawCriteria: unknown): Prom
       if (criteria.genders.length && !criteria.genders.includes(member.gender ?? "")) continue;
       if (criteria.age_groups.length && !criteria.age_groups.includes(member.age_group ?? "")) continue;
       if (criteria.membership_stages.length && !criteria.membership_stages.includes(member.membership_stage ?? "")) continue;
-      add(member.email, memberName(member), "members", "Active members");
+      add(member.email, memberName(member), "members", "Active members", member.id);
     }
   }
   for (const memberId of criteria.member_ids) {
     const member = membersById.get(memberId);
-    if (member) add(member.email, memberName(member), "individuals", "Selected people");
+    if (member) add(member.email, memberName(member), "individuals", "Selected people", member.id);
   }
 
   if (criteria.group_ids.length) {
@@ -205,7 +212,7 @@ export async function resolveAudience(orgId: string, rawCriteria: unknown): Prom
       .select("group_id,member_id").eq("org_id", orgId).eq("status", "active").in("group_id", criteria.group_ids).range(from, to));
     for (const membership of memberships) {
       const member = membersById.get(membership.member_id);
-      if (member) add(member.email, memberName(member), "community_groups", groupNames.get(membership.group_id) ?? "Community group");
+    if (member) add(member.email, memberName(member), "community_groups", groupNames.get(membership.group_id) ?? "Community group", member.id);
     }
   }
 
@@ -220,7 +227,7 @@ export async function resolveAudience(orgId: string, rawCriteria: unknown): Prom
       .in("department_category_id", criteria.department_ids).range(from, to));
     for (const membership of memberships) {
       const member = membersById.get(membership.member_id);
-      if (member) add(member.email, memberName(member), "worker_departments", departmentNames.get(membership.department_category_id) ?? "Worker department");
+    if (member) add(member.email, memberName(member), "worker_departments", departmentNames.get(membership.department_category_id) ?? "Worker department", member.id);
     }
   }
 
@@ -254,16 +261,32 @@ export async function resolveAudience(orgId: string, rawCriteria: unknown): Prom
   for (const excluded of criteria.excluded_emails) recipientMap.delete(excluded);
   if (recipientMap.size > MAX_RECIPIENTS) throw new Error(`A broadcast can contain at most ${MAX_RECIPIENTS.toLocaleString()} unique recipients.`);
 
-  return {
-    criteria,
-    recipients: [...recipientMap.values()].sort((a, b) => a.email.localeCompare(b.email)).map((recipient) => ({
+  const eligibleRecipients: ResolvedAudience["recipients"] = [];
+  let unsubscribedCount = 0;
+  let suppressedCount = 0;
+  for (const recipient of [...recipientMap.values()].sort((a, b) => a.email.localeCompare(b.email))) {
+    const eligibility = await resolveEmailEligibility(orgId, recipient.email, "broadcast", recipient.member_id);
+    if (!eligibility.eligible) {
+      if (eligibility.reason === "unsubscribed") unsubscribedCount += 1;
+      if (eligibility.reason === "suppressed") suppressedCount += 1;
+      continue;
+    }
+    eligibleRecipients.push({
       email: recipient.email,
+      member_id: recipient.member_id,
       display_name: recipient.display_name,
       source_types: [...recipient.source_types].sort(),
       source_labels: [...recipient.source_labels].sort(),
-    })),
+    });
+  }
+
+  return {
+    criteria,
+    recipients: eligibleRecipients,
     source_counts: Object.fromEntries([...sourceSets.entries()].map(([key, emails]) => [key, [...emails].filter((email) => recipientMap.has(email)).length])),
     invalid_count: invalidCount,
     duplicate_count: duplicateCount,
+    unsubscribed_count: unsubscribedCount,
+    suppressed_count: suppressedCount,
   };
 }

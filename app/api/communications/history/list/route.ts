@@ -27,7 +27,7 @@ export async function GET(req: Request) {
 
     const { data, error } = await supabaseAdmin
       .from("communication_campaigns")
-      .select("id, created_at, subject, total_recipients, total_success")
+      .select("id, created_at, subject, total_recipients, total_success, total_failure, total_skipped")
       .eq("organization_id", organization_id)
       .order("created_at", { ascending: false })
       .limit(100);

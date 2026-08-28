@@ -253,6 +253,15 @@ export default function PrivacyContent() {
           so that we and the Organization can continue honoring an opt-out and
           avoid sending unwanted messages.
         </P>
+        <P>
+          Optional church-email preferences are kept separately for each
+          Organization. We also process safe delivery metadata and provider
+          events such as acceptance, hard bounce, complaint, and suppression.
+          A provider-level hard bounce or complaint may prevent delivery across
+          Church Admin, while a church-topic opt-out applies only to that
+          Organization. We do not retain complete email contents in preference
+          or suppression audit records.
+        </P>
       </Section>
 
       <Divider />
@@ -348,8 +357,11 @@ export default function PrivacyContent() {
         </P>
         <P>
           Account users can update certain information through the Service and
-          may unsubscribe from optional marketing communications. Service,
-          billing, security, and legal notices may still be sent when necessary.
+          may unsubscribe from optional product communications. Church-email
+          recipients may use a no-sign-in preference center to control
+          broadcasts, follow-ups, form invitations, and giving statements for
+          each Organization. Service, account invitation, billing, security,
+          and material legal notices may still be sent when necessary.
         </P>
         <P>
           Requests concerning Organization-controlled records should be

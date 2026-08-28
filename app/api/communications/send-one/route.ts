@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { Resend } from "resend";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { sendManagedEmail } from "@/lib/server/email";
 import { requireUser, requireOrgFinanceOrAbove } from "@/lib/serverAuthz";
 import {
   assertBurstLimit,
@@ -11,10 +11,8 @@ import {
 
 export const runtime = "nodejs";
 
-const resend = new Resend(process.env.RESEND_API_KEY!);
-
 type ErrorJson = { error: string };
-type OkJson = { ok: true };
+type OkJson = { ok: true; skipped?: boolean; skip_reason?: string };
 
 type Body = {
   organization_id?: string;
@@ -119,6 +117,7 @@ export async function POST(req: Request) {
     let to_email = String(body?.to_email ?? "")
       .trim()
       .toLowerCase();
+    let recipientMemberId: string | null = null;
 
     if (!organization_id)
       return NextResponse.json<ErrorJson>(
@@ -154,15 +153,16 @@ export async function POST(req: Request) {
 
       const { data: recipient, error: recipientError } = await supabaseAdmin
         .from("communication_audience_snapshot_recipients")
-        .select("id,email,processed_at")
+        .select("id,email,member_id,processed_at")
         .eq("id", audienceRecipientId)
         .eq("snapshot_id", audienceSnapshotId)
         .eq("org_id", organization_id)
-        .maybeSingle<{ id: string; email: string; processed_at: string | null }>();
+        .maybeSingle<{ id: string; email: string; member_id: string | null; processed_at: string | null }>();
       if (recipientError) throw new Error(recipientError.message);
       if (!recipient) return NextResponse.json<ErrorJson>({ error: "Recipient not found" }, { status: 404 });
       if (recipient.processed_at) return NextResponse.json<OkJson>({ ok: true });
       to_email = recipient.email.trim().toLowerCase();
+      recipientMemberId = recipient.member_id;
     }
 
     if (!to_email || !isValidEmail(to_email))
@@ -272,17 +272,42 @@ export async function POST(req: Request) {
     console.log("has cid:", htmlWithCid.includes("cid:"));
 
     // Send
-    const sendRes = await resend.emails.send({
+    const sendRes = await sendManagedEmail({
+      kind: mode === "broadcast" ? "optional" : "internal",
+      ...(mode === "broadcast" ? { topic: "broadcast" as const, organizationId: organization_id, memberId: recipientMemberId, requireMailingAddress: true } : {}),
       from,
       to: to_email,
       subject: subjectFromBody,
       html: htmlWithCid,
       ...(replyTo ? { replyTo } : {}),
       ...(attachments.length ? { attachments } : {}),
+      tags: [{ name: "message_type", value: mode === "broadcast" ? "broadcast" : "test" }],
     });
 
-    const providerId = sendRes.data?.id ?? null;
-    const success = !sendRes.error;
+    const providerId = sendRes.sent ? sendRes.providerId : null;
+    const success = sendRes.sent;
+
+    if (!sendRes.sent && sendRes.skipped && sendRes.reason === "missing_mailing_address") {
+      return NextResponse.json<ErrorJson>(
+        { error: "Add a complete mailing address in Organization Settings before sending broadcasts." },
+        { status: 409 },
+      );
+    }
+
+    if (!sendRes.sent && sendRes.skipped) {
+      if (mode === "broadcast") {
+        const outcome = sendRes.reason === "suppressed" ? "skipped_suppressed" : "skipped_unsubscribed";
+        await supabaseAdmin.from("communication_audience_snapshot_recipients").update({
+          processed_at: new Date().toISOString(),
+          success: false,
+          outcome,
+          skipped_reason: sendRes.reason,
+          error: null,
+        }).eq("id", audienceRecipientId).eq("snapshot_id", audienceSnapshotId).eq("org_id", organization_id).is("processed_at", null);
+        await supabaseAdmin.rpc("increment_campaign_skipped", { p_campaign_id: campaign_id });
+      }
+      return NextResponse.json<OkJson>({ ok: true, skipped: true, skip_reason: sendRes.reason });
+    }
 
     if (mode === "broadcast") {
       await supabaseAdmin
@@ -291,7 +316,9 @@ export async function POST(req: Request) {
           processed_at: new Date().toISOString(),
           success,
           provider_id: providerId,
-          error: sendRes.error?.message ?? null,
+          outcome: success ? "sent" : "failed",
+          skipped_reason: null,
+          error: !sendRes.sent && !sendRes.skipped ? sendRes.error : null,
         })
         .eq("id", audienceRecipientId)
         .eq("snapshot_id", audienceSnapshotId)
@@ -304,7 +331,7 @@ export async function POST(req: Request) {
       campaign_id,
       to_email,
       success,
-      error: sendRes.error?.message ?? null,
+      error: !sendRes.sent && !sendRes.skipped ? sendRes.error : null,
       provider: "resend",
       provider_id: providerId,
     });
@@ -320,9 +347,9 @@ export async function POST(req: Request) {
       });
     }
 
-    if (sendRes.error) {
+    if (!sendRes.sent && !sendRes.skipped) {
       return NextResponse.json(
-        { error: sendRes.error.message },
+        { error: sendRes.error },
         { status: 400 },
       );
     }

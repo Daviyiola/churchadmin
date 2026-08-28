@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import crypto from "crypto";
-import { Resend } from "resend";
+import { sendManagedEmail } from "@/lib/server/email";
 
 type Role = "owner" | "admin" | "finance" | "member";
 type InviteRole = Exclude<Role, "owner">;
@@ -13,8 +13,6 @@ type PendingInvite = {
 };
 
 const INVITE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
-
-const resend = new Resend(process.env.RESEND_API_KEY!);
 
 function escapeHtml(input: string) {
   return String(input)
@@ -260,13 +258,15 @@ export async function POST(req: Request) {
   });
 
   try {
-    const emailResult = await resend.emails.send({
+    const emailResult = await sendManagedEmail({
+      kind: "essential",
       from,
       to: email,
       subject: `You’re invited to join ${orgName}`,
       html,
+      tags: [{ name: "message_type", value: "invitation" }],
     });
-    if (emailResult.error) throw new Error(emailResult.error.message);
+    if (!emailResult.sent) throw new Error(emailResult.skipped ? emailResult.reason : emailResult.error);
   } catch {
     // Invite still exists; UI can show link fallback
     return NextResponse.json({

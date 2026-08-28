@@ -42,13 +42,15 @@ export async function POST(req: Request) {
         total_recipients: resolved.recipients.length,
         invalid_count: resolved.invalid_count,
         duplicate_count: resolved.duplicate_count,
+        unsubscribed_count: resolved.unsubscribed_count,
+        suppressed_count: resolved.suppressed_count,
         expires_at: expiresAt,
       })
       .select("id")
       .single<{ id: string }>();
     if (snapshotError) throw new Error(snapshotError.message);
 
-    const inserted: Array<{ id: string; email: string; display_name: string | null; source_types: string[]; source_labels: string[] }> = [];
+    const inserted: Array<{ id: string; email: string; member_id: string | null; display_name: string | null; source_types: string[]; source_labels: string[] }> = [];
     for (let offset = 0; offset < resolved.recipients.length; offset += 500) {
       const rows = resolved.recipients.slice(offset, offset + 500).map((recipient) => ({
         snapshot_id: snapshot.id,
@@ -56,7 +58,7 @@ export async function POST(req: Request) {
         ...recipient,
       }));
       const { data, error } = await supabaseAdmin.from("communication_audience_snapshot_recipients")
-        .insert(rows).select("id,email,display_name,source_types,source_labels");
+        .insert(rows).select("id,email,member_id,display_name,source_types,source_labels");
       if (error) {
         await supabaseAdmin.from("communication_audience_snapshots").delete().eq("id", snapshot.id);
         throw new Error(error.message);
@@ -70,6 +72,8 @@ export async function POST(req: Request) {
       total_recipients: resolved.recipients.length,
       invalid_count: resolved.invalid_count,
       duplicate_count: resolved.duplicate_count,
+      unsubscribed_count: resolved.unsubscribed_count,
+      suppressed_count: resolved.suppressed_count,
       source_counts: resolved.source_counts,
       recipients: inserted.slice(0, DISPLAY_LIMIT),
       recipients_truncated: inserted.length > DISPLAY_LIMIT,

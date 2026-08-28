@@ -1,0 +1,2 @@
+drop index if exists public.communication_snapshot_recipients_member_idx;
+alter table public.communication_audience_snapshot_recipients drop column if exists member_id;

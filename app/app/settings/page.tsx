@@ -22,6 +22,16 @@ export default function SettingsHomePage() {
       href: "/app/settings/users",
     },
     {
+      title: "My email preferences",
+      desc: "Choose whether Church Admin sends you optional product updates and onboarding tips.",
+      href: "/app/settings/email-preferences",
+    },
+    {
+      title: "Email delivery",
+      desc: "Check a recipient's church-email eligibility, record opt-outs, or document affirmative resubscription.",
+      href: "/app/settings/email-delivery",
+    },
+    {
       title: "Nikky",
       desc: "Configure the assistant allowance and rollout.",
       href: "/app/settings/nikky",

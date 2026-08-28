@@ -3,8 +3,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 import { NextResponse } from "next/server";
-import { Resend } from "resend";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { sendManagedEmail } from "@/lib/server/email";
 import { requireUser, requireOrgOwnerOrAdmin } from "@/lib/serverAuthz";
 import {
   assertBurstLimit,
@@ -19,8 +19,6 @@ import type { RunMemberGivingBody, PaymentMethod } from "@/lib/reports/members/t
 import { renderMemberGivingHtml } from "@/lib/server/reports/memberGivingHtml";
 import { runMemberGivingReportAsAdmin } from "@/lib/server/reports/memberGivingAdmin";
 import { launchBrowser } from "@/lib/server/pdf/launchBrowser";
-
-const resend = new Resend(process.env.RESEND_API_KEY!);
 
 type ErrorJson = { error: string };
 type OkJson = {
@@ -489,23 +487,37 @@ export async function POST(req: Request) {
           }
         }
 
-        const sendRes = await resend.emails.send({
+        const sendRes = await sendManagedEmail({
+          kind: "optional",
+          topic: "giving_statement",
+          organizationId: organization_id,
+          memberId: r.member_id,
           from,
           to,
           subject: campaign.subject,
           html: htmlWithCid,
           ...(job.reply_to ? { replyTo: job.reply_to } : {}),
           ...(attachments.length ? { attachments } : {}),
+          tags: [{ name: "message_type", value: "giving_statement" }],
         });
 
-        const providerId = sendRes.data?.id ?? null;
+        const providerId = sendRes.sent ? sendRes.providerId : null;
 
-        if (sendRes.error) {
-          const msg = sendRes.error.message;
+        if (!sendRes.sent && sendRes.skipped) {
+          await supabaseAdmin
+            .from("report_email_job_recipients")
+            .update({ status: "skipped", sent_at: new Date().toISOString(), error: null, skipped_reason: sendRes.reason })
+            .eq("job_id", job_id)
+            .eq("idx", r.idx);
+          try {
+            await supabaseAdmin.rpc("increment_campaign_skipped", { p_campaign_id: campaign.id });
+          } catch {}
+        } else if (!sendRes.sent) {
+          const msg = sendRes.error;
 
           await supabaseAdmin
             .from("report_email_job_recipients")
-            .update({ status: "failure", sent_at: new Date().toISOString(), error: msg })
+            .update({ status: "failure", sent_at: new Date().toISOString(), error: msg, skipped_reason: null })
             .eq("job_id", job_id)
             .eq("idx", r.idx);
 
@@ -523,7 +535,7 @@ export async function POST(req: Request) {
         } else {
           await supabaseAdmin
             .from("report_email_job_recipients")
-            .update({ status: "success", sent_at: new Date().toISOString(), error: null })
+            .update({ status: "success", sent_at: new Date().toISOString(), error: null, skipped_reason: null })
             .eq("job_id", job_id)
             .eq("idx", r.idx);
 
