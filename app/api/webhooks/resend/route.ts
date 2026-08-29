@@ -82,6 +82,14 @@ export async function POST(request: Request) {
         released_by: null,
       }, { onConflict: "email_norm" });
       if (error) throw new Error(error.message);
+
+      if (providerEmailId && ["email.bounced", "email.complained", "email.suppressed"].includes(eventType)) {
+        const { error: historyError } = await supabaseAdmin.rpc("reclassify_campaign_recipient_failure", {
+          p_provider_id: providerEmailId,
+          p_error: details ?? `Resend reported ${eventType}.`,
+        });
+        if (historyError) throw new Error(historyError.message);
+      }
     }
     await supabaseAdmin.from("email_provider_events").update({
       outcome: reason ? "processed" : "ignored",

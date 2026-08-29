@@ -31,9 +31,9 @@ const items: Array<{
   },
   {
     title: "SMS",
-    description: "Prepare text-message campaigns, consent, and provider readiness.",
+    description: "Prepare text-message campaigns and send SMS messages to your church community.",
     href: "/app/communications/sms",
-    badge: "New",
+    badge: "",
     disabled: false,
   },
 ];

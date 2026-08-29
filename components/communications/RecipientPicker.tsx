@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from "react";
 import { getAccessToken } from "@/lib/auth";
 import type { AudienceCriteria, AudienceFormSource, AudiencePreview } from "@/lib/communications/audience";
 
@@ -39,9 +39,17 @@ function ChoiceList({ items, selected, onToggle, empty }: { items: NamedOption[]
   </div>;
 }
 
-export function RecipientPicker({ orgId, value, onApply, onContinue }: {
-  orgId: string; value: AudiencePreview | null; onApply: (preview: AudiencePreview | null) => void; onContinue?: () => void;
-}) {
+export type RecipientPickerHandle = {
+  reviewAudience: () => Promise<AudiencePreview | null>;
+};
+
+export const RecipientPicker = forwardRef<RecipientPickerHandle, {
+  orgId: string;
+  value: AudiencePreview | null;
+  onApply: (preview: AudiencePreview | null) => void;
+  onContinue?: () => void;
+  onSelectionStateChange?: (hasSelections: boolean) => void;
+}>(function RecipientPicker({ orgId, value, onApply, onContinue, onSelectionStateChange }, ref) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [options, setOptions] = useState<OptionsPayload | null>(null);
@@ -85,6 +93,14 @@ export function RecipientPicker({ orgId, value, onApply, onContinue }: {
   const selectedMemberCount = criteria.member_ids.length;
   const manualEmailCount = useMemo(() => extractEmailCount(criteria.manual_text), [criteria.manual_text]);
   const hasFilters = !!(criteria.genders.length || criteria.age_groups.length || criteria.membership_stages.length);
+  const hasSelections = !!(
+    criteria.include_filtered_members ||
+    criteria.member_ids.length ||
+    criteria.group_ids.length ||
+    criteria.department_ids.length ||
+    criteria.form_sources.length ||
+    manualEmailCount
+  );
 
   useEffect(() => setPage(1), [memberSearch, criteria.genders, criteria.age_groups, criteria.membership_stages]);
   useEffect(() => { if (page > pageCount) setPage(pageCount); }, [page, pageCount]);
@@ -128,6 +144,14 @@ export function RecipientPicker({ orgId, value, onApply, onContinue }: {
       return null;
     } finally { setLoading(false); }
   }
+
+  useImperativeHandle(ref, () => ({
+    reviewAudience: () => previewAudience([]),
+  }));
+
+  useEffect(() => {
+    onSelectionStateChange?.(hasSelections);
+  }, [hasSelections, onSelectionStateChange]);
 
   async function removeRecipient(email: string) {
     const next = [...excluded, email];
@@ -192,7 +216,6 @@ export function RecipientPicker({ orgId, value, onApply, onContinue }: {
       </div>
 
       <div className="flex flex-col-reverse gap-2 border-t px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
-        <button type="button" disabled={loading || !options} onClick={() => previewAudience([])} className="rounded-2xl border px-5 py-2.5 text-sm font-semibold hover:bg-slate-50 disabled:opacity-50">{loading && options ? "Checking..." : value ? "Review again" : "Review audience"}</button>
         {value && onContinue ? <button type="button" onClick={onContinue} className="rounded-2xl bg-primary px-5 py-2.5 text-sm font-semibold text-white hover:bg-primary/85">Continue to preview</button> : null}
       </div>
     </div>
@@ -210,4 +233,4 @@ export function RecipientPicker({ orgId, value, onApply, onContinue }: {
       </div>
     </div> : null}
   </>;
-}
+});

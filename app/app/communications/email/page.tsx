@@ -5,7 +5,10 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 import { getAccessToken, getActiveOrgId } from "@/lib/auth";
 import { TipTap, type TipTapHandle } from "@/components/TipTap";
-import { RecipientPicker } from "@/components/communications/RecipientPicker";
+import {
+  RecipientPicker,
+  type RecipientPickerHandle,
+} from "@/components/communications/RecipientPicker";
 import type { AudiencePreview } from "@/lib/communications/audience";
 
 type TabKey = "compose" | "audience" | "preview" | "history";
@@ -50,7 +53,11 @@ type HistoryRow = {
 type HistoryDetailRecipient = {
   email: string;
   success: boolean;
+  status: string;
+  explanation: string | null;
 };
+
+type HistoryRecipientFilter = "all" | "sent" | "skipped" | "failed";
 
 type UploadApiOk = {
   ok: true;
@@ -103,13 +110,17 @@ function isHistoryDetailPayload(v: unknown): v is HistoryDetailPayload {
     typeof o.total_success === "number" &&
     typeof o.total_failure === "number" &&
     typeof o.total_skipped === "number" &&
+    typeof o.total_unprocessed === "number" &&
     Array.isArray(o.recipients) &&
     o.recipients.every(
       (r) =>
         typeof r === "object" &&
         r !== null &&
         typeof (r as Record<string, unknown>).email === "string" &&
-        typeof (r as Record<string, unknown>).success === "boolean",
+        typeof (r as Record<string, unknown>).success === "boolean" &&
+        typeof (r as Record<string, unknown>).status === "string" &&
+        (typeof (r as Record<string, unknown>).explanation === "string" ||
+          (r as Record<string, unknown>).explanation === null),
     )
   );
 }
@@ -164,9 +175,83 @@ type HistoryDetailPayload = {
   total_success: number;
   total_failure: number;
   total_skipped: number;
+  total_unprocessed: number;
   recipients: HistoryDetailRecipient[];
-  errors?: string[];
 };
+
+function historyRecipientFilter(recipient: HistoryDetailRecipient): Exclude<HistoryRecipientFilter, "all"> {
+  if (recipient.status === "sent") return "sent";
+  if (recipient.status.startsWith("skipped_") || recipient.status === "not_processed") {
+    return "skipped";
+  }
+  return "failed";
+}
+
+function HistoryRecipientRow({
+  recipient,
+  selected,
+  onToggle,
+}: {
+  recipient: HistoryDetailRecipient;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  const status = historyRecipientFilter(recipient);
+  const canExpand = Boolean(recipient.explanation);
+
+  return (
+    <div className={selected ? "bg-slate-50" : ""}>
+      <button
+        type="button"
+        disabled={!canExpand}
+        aria-expanded={canExpand ? selected : undefined}
+        onClick={onToggle}
+        className={`grid w-full items-center px-4 py-3 text-left text-sm ${
+          canExpand ? "cursor-pointer hover:bg-slate-50" : "cursor-default"
+        }`}
+        style={{ gridTemplateColumns: "2fr 120px" }}
+      >
+        <div className="min-w-0 pr-3 text-slate-800">
+          <div className="truncate">{recipient.email || "—"}</div>
+          {canExpand ? (
+            <div className="mt-0.5 text-xs text-slate-500">
+              {selected ? "Hide details" : "View details"}
+            </div>
+          ) : null}
+        </div>
+        <div className="text-right">
+          {status === "sent" ? (
+            <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">
+              Success
+            </span>
+          ) : status === "skipped" ? (
+            <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-700">
+              Skipped
+            </span>
+          ) : (
+            <span className="inline-flex rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs text-red-700">
+              Failed
+            </span>
+          )}
+        </div>
+      </button>
+      {selected && recipient.explanation ? (
+        <div
+          className={`mx-4 mb-3 rounded-2xl border px-4 py-3 text-xs ${
+            status === "failed"
+              ? "border-red-200 bg-red-50 text-red-800"
+              : "border-amber-200 bg-amber-50 text-amber-800"
+          }`}
+        >
+          <div className="font-semibold">
+            {status === "failed" ? "Why delivery failed" : "Why this email was skipped"}
+          </div>
+          <div className="mt-1">{recipient.explanation}</div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function formatBytes(n: number) {
   if (!Number.isFinite(n) || n <= 0) return "0 B";
@@ -178,6 +263,14 @@ function formatBytes(n: number) {
     i++;
   }
   return `${v.toFixed(i === 0 ? 0 : 1)} ${u[i]}`;
+}
+
+function displayedSkippedCount(row: Pick<HistoryRow, "total_recipients" | "total_success" | "total_failure" | "total_skipped">) {
+  const notProcessed = Math.max(
+    0,
+    row.total_recipients - row.total_success - row.total_failure - (row.total_skipped ?? 0),
+  );
+  return (row.total_skipped ?? 0) + notProcessed;
 }
 
 function isInlineableImage(ct: string) {
@@ -268,6 +361,7 @@ export default function CommunicationsPage() {
 
   const [tab, setTab] = useState<TabKey>("compose");
   const [orgName, setOrgName] = useState("Our Church");
+  const [mailingAddressReady, setMailingAddressReady] = useState<boolean | null>(null);
 
   // Compose
   // const [subject, setSubject] = useState("Hello from {churchName}");
@@ -290,6 +384,10 @@ export default function CommunicationsPage() {
   const [sendMap, setSendMap] = useState<Record<string, boolean>>({}); // memberId -> send?
   const [audiencePreview, setAudiencePreview] =
     useState<AudiencePreview | null>(null);
+  const [hasAudienceSelections, setHasAudienceSelections] = useState(false);
+  const [reviewAudienceOpen, setReviewAudienceOpen] = useState(false);
+  const [reviewAfterAudienceOpen, setReviewAfterAudienceOpen] = useState(false);
+  const recipientPickerRef = useRef<RecipientPickerHandle | null>(null);
 
   // Preview sending
   const [sending, setSending] = useState(false);
@@ -311,6 +409,10 @@ export default function CommunicationsPage() {
   const [historyDetail, setHistoryDetail] =
     useState<HistoryDetailPayload | null>(null);
   const [historyDetailOpen, setHistoryDetailOpen] = useState(false);
+  const [historyRecipientStatus, setHistoryRecipientStatus] =
+    useState<HistoryRecipientFilter>("all");
+  const [selectedHistoryRecipient, setSelectedHistoryRecipient] =
+    useState<string | null>(null);
 
   const editorRef = useRef<TipTapHandle | null>(null);
 
@@ -405,12 +507,22 @@ export default function CommunicationsPage() {
     if (!orgId) return;
 
     (async () => {
-      const { data: org } = await supabase
-        .from("organizations")
-        .select("name")
-        .eq("id", orgId)
-        .maybeSingle();
+      const [{ data: org }, { data: mailing }] = await Promise.all([
+        supabase.from("organizations").select("name").eq("id", orgId).maybeSingle(),
+        supabase
+          .from("organization_settings")
+          .select("mailing_address_line1,mailing_city,mailing_state,mailing_postal_code,mailing_country")
+          .eq("organization_id", orgId)
+          .maybeSingle(),
+      ]);
       if (org?.name) setOrgName(org.name);
+      setMailingAddressReady(Boolean(
+        mailing?.mailing_address_line1 &&
+        mailing?.mailing_city &&
+        mailing?.mailing_state &&
+        mailing?.mailing_postal_code &&
+        mailing?.mailing_country
+      ));
     })();
   }, [orgId]);
 
@@ -579,6 +691,23 @@ export default function CommunicationsPage() {
     }
   }
 
+  function openTestEmailModal() {
+    setSendErr("");
+    setTestOpen(true);
+  }
+
+  async function reviewTestSend() {
+    const email = testEmail.trim().toLowerCase();
+    if (!isValidEmail(email)) {
+      setSendErr("Provide a valid test email.");
+      return;
+    }
+    setTestEmail(email);
+    setSendErr("");
+    setTestOpen(false);
+    await requestSend("test", 1);
+  }
+
   async function openLimitsModal() {
     if (!orgId) return;
     setLimitsErr("");
@@ -717,7 +846,7 @@ export default function CommunicationsPage() {
         },
         body: JSON.stringify({
           organization_id: orgId,
-          subject: previewSubject,
+          subject: `[Test] ${previewSubject}`,
           body_html: previewHtml,
           total_recipients: 1,
         }),
@@ -752,6 +881,7 @@ export default function CommunicationsPage() {
       await loadHistory(); // optional
     } catch (e) {
       setSendErr(e instanceof Error ? e.message : "Failed to send test");
+      setTestOpen(true);
     }
   }
 
@@ -896,6 +1026,14 @@ export default function CommunicationsPage() {
     return history.filter((h) => (h.subject ?? "").toLowerCase().includes(q));
   }, [history, histQ]);
 
+  const filteredHistoryRecipients = useMemo(() => {
+    const recipients = historyDetail?.recipients ?? [];
+    if (historyRecipientStatus === "all") return recipients;
+    return recipients.filter(
+      (recipient) => historyRecipientFilter(recipient) === historyRecipientStatus,
+    );
+  }, [historyDetail, historyRecipientStatus]);
+
   async function openHistoryDetail(campaignId: string) {
     if (!orgId) return;
 
@@ -937,24 +1075,52 @@ export default function CommunicationsPage() {
       }
 
       setHistoryDetail(parsed);
+      setHistoryRecipientStatus("all");
+      setSelectedHistoryRecipient(null);
       setHistoryDetailOpen(true);
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Failed to load detail");
     }
   }
 
+  function navigateToTab(nextTab: TabKey) {
+    if (nextTab === "preview" && !audiencePreview) {
+      if (hasAudienceSelections) {
+        setReviewAudienceOpen(true);
+      } else {
+        showToast("Choose and review an audience before opening the preview.");
+        setTab("audience");
+      }
+      return;
+    }
+    setTab(nextTab);
+  }
+
+  useEffect(() => {
+    if (tab !== "audience" || !reviewAfterAudienceOpen) return;
+    setReviewAfterAudienceOpen(false);
+    void recipientPickerRef.current?.reviewAudience();
+  }, [reviewAfterAudienceOpen, tab]);
+
   return (
     <>
       {/* Header + tab stubs */}
       <div className="border-b">
-        <div className="flex flex-col gap-3 px-6 py-4 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <div className="text-xl font-semibold">Email</div>
-            <div className="text-sm text-slate-600">
-              Email broadcasts with images + attachments.
+        <div className="px-6 py-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <div className="text-xl font-semibold">Email</div>
+              <div className="text-sm text-slate-600">
+                Email broadcasts with images + attachments.
+              </div>
             </div>
+            <Link href="/app/communications" className="self-start rounded-2xl border bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50">
+              Back to Communications
+            </Link>
+          </div>
 
-            <div className="mt-4 inline-flex rounded-2xl border bg-slate-50 p-1">
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="inline-flex self-start rounded-2xl border bg-slate-50 p-1">
               {(
                 [
                   ["compose", "Compose"],
@@ -965,7 +1131,7 @@ export default function CommunicationsPage() {
               ).map(([k, label]) => (
                 <button
                   key={k}
-                  onClick={() => setTab(k)}
+                  onClick={() => navigateToTab(k)}
                   className={`rounded-2xl px-4 py-2 text-sm ${
                     tab === k
                       ? "bg-white border shadow-sm"
@@ -976,15 +1142,52 @@ export default function CommunicationsPage() {
                 </button>
               ))}
             </div>
+            {tab === "audience" ? (
+              <button
+                type="button"
+                disabled={!hasAudienceSelections}
+                onClick={() => {
+                  if (audiencePreview) navigateToTab("preview");
+                  else void recipientPickerRef.current?.reviewAudience();
+                }}
+                className="self-start rounded-2xl bg-primary px-5 py-2.5 text-sm font-semibold text-white hover:bg-primary/85 disabled:cursor-not-allowed disabled:opacity-40 sm:self-auto"
+              >
+                {audiencePreview ? "Next" : "Review audience"}
+              </button>
+            ) : null}
           </div>
-          <Link href="/app/communications" className="self-start rounded-2xl border bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50">
-            Back to Communications
-          </Link>
         </div>
       </div>
 
       {/* Body */}
       <div className="p-6">
+        {mailingAddressReady === false ? (
+          <div className="mb-5 rounded-3xl border border-amber-200 bg-amber-50 p-5 text-amber-950">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="font-semibold">Organization mailing address not set up</div>
+                <p className="mt-1 text-sm text-amber-900">
+                  A valid mailing address is shown in broadcast footers and is required before Church Admin can send a broadcast.
+                </p>
+                <a
+                  href="https://www.ftc.gov/business-guidance/resources/can-spam-act-compliance-guide-business"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-2 inline-flex text-sm font-semibold underline underline-offset-2"
+                >
+                  Why is this needed?
+                </a>
+              </div>
+              <Link
+                href="/app/settings/org#email-mailing-address"
+                className="shrink-0 self-start rounded-2xl bg-primary px-4 py-2.5 text-sm font-semibold text-white hover:bg-primary/85 sm:self-auto"
+              >
+                Set up mailing address
+              </Link>
+            </div>
+          </div>
+        ) : null}
+
         {/* COMPOSE */}
         {tab === "compose" ? (
           <div className="rounded-3xl border bg-white">
@@ -1134,13 +1337,17 @@ export default function CommunicationsPage() {
         ) : null}
 
         {/* AUDIENCE */}
-        {tab === "audience" && orgId ? (
-          <RecipientPicker
-            orgId={orgId}
-            value={audiencePreview}
-            onApply={setAudiencePreview}
-            onContinue={() => setTab("preview")}
-          />
+        {orgId ? (
+          <div className={tab === "audience" ? "" : "hidden"} aria-hidden={tab !== "audience"}>
+            <RecipientPicker
+              ref={recipientPickerRef}
+              orgId={orgId}
+              value={audiencePreview}
+              onApply={setAudiencePreview}
+              onContinue={() => navigateToTab("preview")}
+              onSelectionStateChange={setHasAudienceSelections}
+            />
+          </div>
         ) : null}
 
         {/* Legacy audience retained temporarily for reference while the new picker settles. */}
@@ -1452,24 +1659,41 @@ export default function CommunicationsPage() {
                 <div className="flex gap-2">
                   <button
                     className="rounded-2xl border px-5 py-2 text-sm hover:bg-slate-50"
-                    onClick={() => requestSend("test", 1)}
+                    onClick={openTestEmailModal}
                   >
                     Send test
                   </button>
 
-                  <button
-                    className={`rounded-2xl px-5 py-2 text-sm font-semibold text-white ${
-                      sending
-                        ? "bg-slate-300"
-                        : "bg-primary hover:bg-primary/85"
-                    }`}
-                    disabled={sending}
-                    onClick={() =>
-                      requestSend("broadcast", selectedRecipientCount)
-                    }
-                  >
-                    Send broadcast
-                  </button>
+                  {mailingAddressReady === false ? (
+                    <Link
+                      href="/app/settings/org#email-mailing-address"
+                      className="rounded-2xl bg-primary px-5 py-2 text-sm font-semibold text-white hover:bg-primary/85"
+                    >
+                      Set up mailing address
+                    </Link>
+                  ) : mailingAddressReady === true ? (
+                    <button
+                      className={`rounded-2xl px-5 py-2 text-sm font-semibold text-white ${
+                        sending
+                          ? "bg-slate-300"
+                          : "bg-primary hover:bg-primary/85"
+                      }`}
+                      disabled={sending}
+                      onClick={() =>
+                        requestSend("broadcast", selectedRecipientCount)
+                      }
+                    >
+                      Send broadcast
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled
+                      className="rounded-2xl bg-slate-300 px-5 py-2 text-sm font-semibold text-white"
+                    >
+                      Checking mailing address…
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -1499,10 +1723,10 @@ export default function CommunicationsPage() {
               <div className="px-6 py-4 text-sm text-red-700">{historyErr}</div>
             ) : null}
 
-            <div className="border-t">
+            <div className="overflow-x-auto border-t">
               <div
-                className="grid bg-slate-50 px-6 py-3 text-xs font-semibold text-slate-600"
-                style={{ gridTemplateColumns: "160px 2fr 180px 160px" }}
+                className="grid min-w-[900px] bg-slate-50 px-6 py-3 text-xs font-semibold text-slate-600"
+                style={{ gridTemplateColumns: "140px minmax(260px,1fr) 140px 280px" }}
               >
                 <div>Date</div>
                 <div>Subject</div>
@@ -1522,8 +1746,8 @@ export default function CommunicationsPage() {
                     <button
                       key={h.id}
                       type="button"
-                      className="w-full text-left grid items-center px-6 py-4 text-sm hover:bg-slate-50"
-                      style={{ gridTemplateColumns: "160px 2fr 180px 160px" }}
+                      className="grid min-w-[900px] w-full items-center px-6 py-4 text-left text-sm hover:bg-slate-50"
+                      style={{ gridTemplateColumns: "140px minmax(260px,1fr) 140px 280px" }}
                       onClick={() => openHistoryDetail(h.id)}
                     >
                       <div className="text-slate-700">
@@ -1534,7 +1758,10 @@ export default function CommunicationsPage() {
                         {h.total_recipients}
                       </div>
                       <div className="text-right text-slate-700">
-                        {h.total_success} sent · {h.total_skipped ?? 0} skipped · {h.total_failure ?? 0} failed
+                        <div className="font-semibold text-slate-900">{h.total_success} successful</div>
+                        <div className="mt-0.5 text-xs text-slate-500">
+                          {displayedSkippedCount(h)} skipped · {h.total_failure ?? 0} failed
+                        </div>
                       </div>
                     </button>
                   ))}
@@ -1544,6 +1771,45 @@ export default function CommunicationsPage() {
           </div>
         ) : null}
       </div>
+
+      {reviewAudienceOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+          onClick={() => setReviewAudienceOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg rounded-3xl bg-white shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="border-b px-6 py-4">
+              <div className="text-lg font-semibold">Review selected audience?</div>
+              <div className="mt-1 text-sm text-slate-600">
+                You have selected recipients, but the audience has not been reviewed yet. Review it before opening the email preview.
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-3 px-6 py-4">
+              <button
+                type="button"
+                className="rounded-2xl border px-4 py-2 text-sm font-semibold hover:bg-slate-50"
+                onClick={() => setReviewAudienceOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/85"
+                onClick={() => {
+                  setReviewAudienceOpen(false);
+                  setReviewAfterAudienceOpen(true);
+                  setTab("audience");
+                }}
+              >
+                Review audience
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Test modal */}
       {testOpen ? (
@@ -1558,7 +1824,7 @@ export default function CommunicationsPage() {
             <div className="border-b px-6 py-4">
               <div className="text-sm font-semibold">Send test email</div>
               <div className="text-xs text-slate-600">
-                Does not affect History totals.
+                Test sends appear in History. A successful test uses one email from this month&apos;s allowance.
               </div>
             </div>
 
@@ -1591,7 +1857,7 @@ export default function CommunicationsPage() {
 
               <button
                 className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-                onClick={proceedSend}
+                onClick={() => void reviewTestSend()}
               >
                 Send test
               </button>
@@ -1787,10 +2053,10 @@ export default function CommunicationsPage() {
           onClick={() => setHistoryDetailOpen(false)}
         >
           <div
-            className="w-full max-w-2xl rounded-3xl bg-white shadow-xl"
+            className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="border-b px-6 py-4 flex items-start justify-between gap-4">
+            <div className="flex shrink-0 items-start justify-between gap-4 border-b px-6 py-4">
               <div>
                 <div className="text-sm font-semibold">Broadcast details</div>
                 <div className="text-xs text-slate-600">
@@ -1805,39 +2071,90 @@ export default function CommunicationsPage() {
               </button>
             </div>
 
-            <div className="px-6 py-6 space-y-4">
+            <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-6">
               <div className="grid gap-3 sm:grid-cols-4">
-                <div className="rounded-2xl border bg-slate-50 px-4 py-3">
+                <button
+                  type="button"
+                  aria-pressed={historyRecipientStatus === "all"}
+                  onClick={() => {
+                    setHistoryRecipientStatus("all");
+                    setSelectedHistoryRecipient(null);
+                  }}
+                  className={`rounded-2xl border px-4 py-3 text-left transition ${
+                    historyRecipientStatus === "all"
+                      ? "border-primary bg-primary/10 ring-1 ring-primary"
+                      : "bg-slate-50 hover:border-primary/50 hover:bg-white"
+                  }`}
+                >
                   <div className="text-xs font-semibold text-slate-600">
                     Total recipients
                   </div>
                   <div className="mt-1 text-lg font-semibold">
                     {historyDetail?.total_recipients ?? 0}
                   </div>
-                </div>
+                </button>
 
-                <div className="rounded-2xl border bg-slate-50 px-4 py-3">
+                <button
+                  type="button"
+                  aria-pressed={historyRecipientStatus === "skipped"}
+                  onClick={() => {
+                    setHistoryRecipientStatus("skipped");
+                    setSelectedHistoryRecipient(null);
+                  }}
+                  className={`rounded-2xl border px-4 py-3 text-left transition ${
+                    historyRecipientStatus === "skipped"
+                      ? "border-amber-400 bg-amber-50 ring-1 ring-amber-400"
+                      : "bg-slate-50 hover:border-amber-300 hover:bg-amber-50/50"
+                  }`}
+                >
                   <div className="text-xs font-semibold text-slate-600">Skipped</div>
-                  <div className="mt-1 text-lg font-semibold">{historyDetail?.total_skipped ?? 0}</div>
-                </div>
+                  <div className="mt-1 text-lg font-semibold">
+                    {(historyDetail?.total_skipped ?? 0) + (historyDetail?.total_unprocessed ?? 0)}
+                  </div>
+                </button>
 
-                <div className="rounded-2xl border bg-slate-50 px-4 py-3">
+                <button
+                  type="button"
+                  aria-pressed={historyRecipientStatus === "sent"}
+                  onClick={() => {
+                    setHistoryRecipientStatus("sent");
+                    setSelectedHistoryRecipient(null);
+                  }}
+                  className={`rounded-2xl border px-4 py-3 text-left transition ${
+                    historyRecipientStatus === "sent"
+                      ? "border-emerald-400 bg-emerald-50 ring-1 ring-emerald-400"
+                      : "bg-slate-50 hover:border-emerald-300 hover:bg-emerald-50/50"
+                  }`}
+                >
                   <div className="text-xs font-semibold text-slate-600">
                     Success
                   </div>
                   <div className="mt-1 text-lg font-semibold">
                     {historyDetail?.total_success ?? 0}
                   </div>
-                </div>
+                </button>
 
-                <div className="rounded-2xl border bg-slate-50 px-4 py-3">
+                <button
+                  type="button"
+                  aria-pressed={historyRecipientStatus === "failed"}
+                  onClick={() => {
+                    setHistoryRecipientStatus("failed");
+                    setSelectedHistoryRecipient(null);
+                  }}
+                  className={`rounded-2xl border px-4 py-3 text-left transition ${
+                    historyRecipientStatus === "failed"
+                      ? "border-red-400 bg-red-50 ring-1 ring-red-400"
+                      : "bg-slate-50 hover:border-red-300 hover:bg-red-50/50"
+                  }`}
+                >
                   <div className="text-xs font-semibold text-slate-600">
                     Failed
                   </div>
                   <div className="mt-1 text-lg font-semibold">
                     {historyDetail?.total_failure ?? 0}
                   </div>
-                </div>
+                </button>
+
               </div>
 
               <div className="rounded-2xl border overflow-hidden">
@@ -1850,48 +2167,31 @@ export default function CommunicationsPage() {
                 </div>
 
                 <div className="max-h-[360px] overflow-auto divide-y">
-                  {(historyDetail?.recipients ?? []).length === 0 ? (
+                  {filteredHistoryRecipients.length === 0 ? (
                     <div className="px-4 py-4 text-sm text-slate-600">
-                      No recipient rows found.
+                      No {historyRecipientStatus === "all" ? "recipient" : historyRecipientStatus} rows found.
                     </div>
                   ) : (
-                    (historyDetail?.recipients ?? []).map((r, idx) => (
-                      <div
-                        key={`${r.email ?? "row"}-${idx}`}
-                        className="grid items-center px-4 py-3 text-sm"
-                        style={{ gridTemplateColumns: "2fr 120px" }}
-                      >
-                        <div className="text-slate-800">
-                          {String(r.email ?? "—")}
-                        </div>
-                        <div className="text-right">
-                          {r.success ? (
-                            <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">
-                              Success
-                            </span>
-                          ) : (
-                            <span className="inline-flex rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs text-red-700">
-                              Failed
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    ))
+                    filteredHistoryRecipients.map((recipient, idx) => {
+                      const recipientKey = `${recipient.email}-${recipient.status}-${idx}`;
+                      return (
+                        <HistoryRecipientRow
+                          key={recipientKey}
+                          recipient={recipient}
+                          selected={selectedHistoryRecipient === recipientKey}
+                          onToggle={() =>
+                            recipient.explanation &&
+                            setSelectedHistoryRecipient((current) =>
+                              current === recipientKey ? null : recipientKey,
+                            )
+                          }
+                        />
+                      );
+                    })
                   )}
                 </div>
               </div>
 
-              {/* Optional: show last error messages if your API returns them */}
-              {historyDetail?.errors?.length ? (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-                  <div className="font-semibold mb-1">Some errors</div>
-                  <ul className="list-disc pl-5 space-y-1">
-                    {historyDetail.errors.slice(0, 8).map((e, i) => (
-                      <li key={`${i}-${e}`}>{e}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
             </div>
           </div>
         </div>

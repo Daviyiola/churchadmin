@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { getAccessToken, getActiveOrgId } from "@/lib/auth";
+import { getAccessToken, getActiveOrgId, getActiveOrgRole } from "@/lib/auth";
 
 const TOPICS = [
   ["broadcast", "Broadcasts"],
@@ -16,6 +16,7 @@ type State = {
 };
 
 export default function EmailDeliverySettingsPage() {
+  const canResubscribe = ["owner", "admin"].includes(getActiveOrgRole() ?? "");
   const [email, setEmail] = useState("");
   const [state, setState] = useState<State | null>(null);
   const [reason, setReason] = useState("");
@@ -62,8 +63,8 @@ export default function EmailDeliverySettingsPage() {
     <div className="mt-6 flex flex-col gap-3 sm:flex-row"><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="recipient@example.com" className="min-w-0 flex-1 rounded-2xl border px-4 py-2.5" /><button onClick={lookup} disabled={busy || !email.trim()} className="rounded-2xl bg-primary px-5 py-2.5 font-semibold text-white disabled:opacity-50">Check delivery</button></div>
     {state ? <div className="mt-6 space-y-3">
       {TOPICS.map(([topic, label]) => { const item = state.eligibility[topic]; return <div key={topic} className="flex items-center justify-between rounded-2xl border px-4 py-3"><span className="font-medium">{label}</span><span className={`rounded-full px-3 py-1 text-xs font-semibold ${item?.eligible ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}>{item?.eligible ? "Eligible" : item?.reason === "suppressed" ? "Delivery suppressed" : "Unsubscribed"}</span></div>; })}
-      <label className="block text-sm"><span className="font-semibold">Affirmative-consent reason (required to resubscribe)</span><textarea value={reason} onChange={(e) => setReason(e.target.value)} className="mt-2 min-h-24 w-full rounded-2xl border p-3" placeholder="For example: Recipient requested resubscription by email on Aug 27, 2026." /></label>
-      <div className="flex flex-wrap gap-3"><button disabled={busy} onClick={() => void change(false)} className="rounded-2xl border border-red-200 px-4 py-2.5 font-semibold text-red-700">Disable all optional church email</button><button disabled={busy} onClick={() => void change(true)} className="rounded-2xl border px-4 py-2.5 font-semibold">Record resubscription</button></div>
+      {canResubscribe ? <label className="block text-sm"><span className="font-semibold">Affirmative-consent reason (required to resubscribe)</span><textarea value={reason} onChange={(e) => setReason(e.target.value)} className="mt-2 min-h-24 w-full rounded-2xl border p-3" placeholder="For example: Recipient requested resubscription by email on Aug 27, 2026." /></label> : null}
+      <div className="flex flex-wrap gap-3"><button disabled={busy} onClick={() => void change(false)} className="rounded-2xl border border-red-200 px-4 py-2.5 font-semibold text-red-700">Disable all optional church email</button>{canResubscribe ? <button disabled={busy} onClick={() => void change(true)} className="rounded-2xl border px-4 py-2.5 font-semibold">Record resubscription</button> : null}</div>
     </div> : null}
     {message ? <p className="mt-4 text-sm text-slate-600">{message}</p> : null}
   </div></div>;

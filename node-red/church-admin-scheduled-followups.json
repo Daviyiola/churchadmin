@@ -1,0 +1,217 @@
+[
+  {
+    "id": "ca-followups-tab",
+    "type": "tab",
+    "label": "Church Admin Scheduled Follow-ups",
+    "disabled": false,
+    "info": "Calls Church Admin's protected scheduled-follow-up endpoint every five minutes. Configure CHURCHADMIN_CRON_SECRET in the Node-RED environment before enabling this flow."
+  },
+  {
+    "id": "ca-followups-notes",
+    "type": "comment",
+    "z": "ca-followups-tab",
+    "name": "Setup required",
+    "info": "1. Add CHURCHADMIN_CRON_SECRET to the Node-RED environment. Its value must match CRON_SECRET in the Church Admin production environment.\n2. Do not put the secret in the URL or directly in this flow.\n3. Disable the Vercel scheduled-follow-up cron before enabling this scheduler, so two schedulers cannot overlap.\n4. The manual trigger processes real due follow-ups; it is not a dry run.\n5. The endpoint processes at most 10 due messages per invocation. A later run picks up the remainder.",
+    "x": 190,
+    "y": 80,
+    "wires": []
+  },
+  {
+    "id": "ca-followups-every-five",
+    "type": "inject",
+    "z": "ca-followups-tab",
+    "name": "Run every 5 minutes",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "300",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "scheduled",
+    "payload": "",
+    "payloadType": "date",
+    "x": 180,
+    "y": 160,
+    "wires": [
+      [
+        "ca-followups-prepare"
+      ]
+    ]
+  },
+  {
+    "id": "ca-followups-manual",
+    "type": "inject",
+    "z": "ca-followups-tab",
+    "name": "Run manually (sends real due emails)",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "manual",
+    "payload": "",
+    "payloadType": "date",
+    "x": 220,
+    "y": 220,
+    "wires": [
+      [
+        "ca-followups-prepare"
+      ]
+    ]
+  },
+  {
+    "id": "ca-followups-prepare",
+    "type": "function",
+    "z": "ca-followups-tab",
+    "name": "Prepare secure request",
+    "func": "const secret = env.get(\"CHURCHADMIN_CRON_SECRET\");\n\nif (!secret || !String(secret).trim()) {\n    node.status({ fill: \"red\", shape: \"ring\", text: \"cron secret missing\" });\n    node.error(\"CHURCHADMIN_CRON_SECRET is missing from the Node-RED environment.\", msg);\n    return null;\n}\n\nmsg.method = \"GET\";\nmsg.url = \"https://churchadmins.com/api/followups/process-scheduled?limit=10\";\nmsg.headers = {\n    authorization: `Bearer ${String(secret).trim()}`,\n    accept: \"application/json\"\n};\nmsg.payload = undefined;\n\nnode.status({ fill: \"blue\", shape: \"dot\", text: \"checking due follow-ups\" });\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 480,
+    "y": 190,
+    "wires": [
+      [
+        "ca-followups-request"
+      ]
+    ]
+  },
+  {
+    "id": "ca-followups-request",
+    "type": "http request",
+    "z": "ca-followups-tab",
+    "name": "Call Church Admin scheduler",
+    "method": "use",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 750,
+    "y": 190,
+    "wires": [
+      [
+        "ca-followups-check"
+      ]
+    ]
+  },
+  {
+    "id": "ca-followups-check",
+    "type": "function",
+    "z": "ca-followups-tab",
+    "name": "Sanitize + check result",
+    "func": "const result = msg.payload && typeof msg.payload === \"object\" ? msg.payload : {};\nconst statusCode = Number(msg.statusCode || 0);\n\n// Never pass request or response headers to debug nodes.\ndelete msg.headers;\ndelete msg.requestHeaders;\ndelete msg.responseUrl;\n\nif (statusCode !== 200 || result.ok !== true) {\n    const reason = typeof result.error === \"string\" ? result.error : \"Unexpected scheduler response\";\n    msg.payload = { ok: false, statusCode, error: reason };\n    node.status({ fill: \"red\", shape: \"dot\", text: `${statusCode || \"request\"} failed` });\n    return [null, msg];\n}\n\nconst results = Array.isArray(result.results) ? result.results : [];\nconst blockedPreference = results.filter((item) => item && item.status === \"blocked_preference\").length;\n\nmsg.payload = {\n    ok: true,\n    checked_at: result.checked_at || null,\n    due_count: Number(result.due_count || 0),\n    sent: Number(result.sent || 0),\n    failed: Number(result.failed || 0),\n    blocked_quota: Number(result.blocked_quota || 0),\n    blocked_preference: blockedPreference,\n    pending: Number(result.pending || 0)\n};\n\nnode.status({\n    fill: Number(result.failed || 0) > 0 ? \"yellow\" : \"green\",\n    shape: \"dot\",\n    text: `${msg.payload.sent} sent, ${msg.payload.failed} failed`\n});\nreturn [msg, null];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1010,
+    "y": 190,
+    "wires": [
+      [
+        "ca-followups-success"
+      ],
+      [
+        "ca-followups-error"
+      ]
+    ]
+  },
+  {
+    "id": "ca-followups-success",
+    "type": "debug",
+    "z": "ca-followups-tab",
+    "name": "Scheduled follow-up summary",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1300,
+    "y": 160,
+    "wires": []
+  },
+  {
+    "id": "ca-followups-error",
+    "type": "debug",
+    "z": "ca-followups-tab",
+    "name": "Scheduled follow-up error",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "payload.error",
+    "statusType": "msg",
+    "x": 1290,
+    "y": 220,
+    "wires": []
+  },
+  {
+    "id": "ca-followups-catch",
+    "type": "catch",
+    "z": "ca-followups-tab",
+    "name": "Catch scheduler errors",
+    "scope": [
+      "ca-followups-prepare",
+      "ca-followups-request",
+      "ca-followups-check"
+    ],
+    "uncaught": false,
+    "x": 760,
+    "y": 280,
+    "wires": [
+      [
+        "ca-followups-clean-error"
+      ]
+    ]
+  },
+  {
+    "id": "ca-followups-clean-error",
+    "type": "function",
+    "z": "ca-followups-tab",
+    "name": "Sanitize caught error",
+    "func": "delete msg.headers;\ndelete msg.requestHeaders;\ndelete msg.responseUrl;\nmsg.payload = {\n    ok: false,\n    error: msg.error && msg.error.message ? msg.error.message : \"Scheduled follow-up request failed\"\n};\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1020,
+    "y": 280,
+    "wires": [
+      [
+        "ca-followups-error"
+      ]
+    ]
+  }
+]

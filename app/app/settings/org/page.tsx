@@ -427,9 +427,21 @@ export default function OrgSettingsPage() {
     }
   }
 
+  useEffect(() => {
+    if (loading || window.location.hash !== "#email-mailing-address") return;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById("email-mailing-address")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [loading]);
+
   if (loading) {
     return <div className="p-10 text-slate-700">Loading…</div>;
   }
+
 
   if (!orgId) {
     return (
@@ -688,10 +700,10 @@ export default function OrgSettingsPage() {
                 </div>
               </div>
 
-              <div className="border-t px-5 py-4">
+              <div id="email-mailing-address" className="scroll-mt-6 border-t px-5 py-4">
                 <div className="text-lg font-semibold">Email mailing address</div>
                 <div className="mt-1 text-sm text-slate-600">
-                  Shown in optional church-email footers. A complete address is required before sending broadcasts.
+                  Shown in church email footers. A complete address is required before sending broadcasts.
                 </div>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <label className="text-sm sm:col-span-2">

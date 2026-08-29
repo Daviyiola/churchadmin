@@ -72,6 +72,19 @@ export async function POST(req: Request) {
         { status: authz.status },
       );
 
+    const { data: mailing, error: mailingError } = await supabaseAdmin
+      .from("organization_settings")
+      .select("mailing_address_line1,mailing_city,mailing_state,mailing_postal_code,mailing_country")
+      .eq("organization_id", organization_id)
+      .maybeSingle();
+    if (mailingError) throw new Error(mailingError.message);
+    if (!mailing?.mailing_address_line1 || !mailing.mailing_city || !mailing.mailing_state || !mailing.mailing_postal_code || !mailing.mailing_country) {
+      return NextResponse.json<ErrorJson>(
+        { error: "Add the organization mailing address in Settings before sending a broadcast." },
+        { status: 409 },
+      );
+    }
+
     if (audienceSnapshotId) {
       const { data: snapshot, error: snapshotError } = await supabaseAdmin
         .from("communication_audience_snapshots")
