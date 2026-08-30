@@ -113,30 +113,37 @@ export async function GET(req: Request) {
     if (!authz.ok)
       return NextResponse.json<ErrorJson>({ error: authz.error }, { status: authz.status });
 
-    const { data: camp, error: campErr } = await supabaseAdmin
-      .from("communication_campaigns")
-      .select("id, subject, total_recipients, total_success, total_failure, total_skipped")
-      .eq("id", campaign_id)
-      .eq("organization_id", organization_id)
-      .maybeSingle();
+    const [campaignResult, recipientResult, snapshotResult] = await Promise.all([
+      supabaseAdmin
+        .from("communication_campaigns")
+        .select(
+          "id, subject, total_recipients, total_success, total_failure, total_skipped",
+        )
+        .eq("id", campaign_id)
+        .eq("organization_id", organization_id)
+        .maybeSingle(),
+      supabaseAdmin
+        .from("communication_campaign_recipients")
+        .select("to_email, success, error, created_at")
+        .eq("campaign_id", campaign_id)
+        .order("created_at", { ascending: false }),
+      supabaseAdmin
+        .from("communication_audience_snapshots")
+        .select("id")
+        .eq("campaign_id", campaign_id)
+        .maybeSingle(),
+    ]);
+
+    const { data: camp, error: campErr } = campaignResult;
 
     if (campErr) throw new Error(campErr.message);
     if (!camp)
       return NextResponse.json<ErrorJson>({ error: "Campaign not found" }, { status: 404 });
 
-    const { data: recips, error: rErr } = await supabaseAdmin
-      .from("communication_campaign_recipients")
-      .select("to_email, success, error, created_at")
-      .eq("campaign_id", campaign_id)
-      .order("created_at", { ascending: false });
-
+    const { data: recips, error: rErr } = recipientResult;
     if (rErr) throw new Error(rErr.message);
 
-    const { data: snapshot, error: snapshotError } = await supabaseAdmin
-      .from("communication_audience_snapshots")
-      .select("id")
-      .eq("campaign_id", campaign_id)
-      .maybeSingle();
+    const { data: snapshot, error: snapshotError } = snapshotResult;
     if (snapshotError) throw new Error(snapshotError.message);
 
     let snapshotRecipients: Array<{

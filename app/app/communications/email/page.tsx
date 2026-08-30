@@ -387,6 +387,7 @@ export default function CommunicationsPage() {
   const [hasAudienceSelections, setHasAudienceSelections] = useState(false);
   const [reviewAudienceOpen, setReviewAudienceOpen] = useState(false);
   const [reviewAfterAudienceOpen, setReviewAfterAudienceOpen] = useState(false);
+  const [audiencePickerMounted, setAudiencePickerMounted] = useState(false);
   const recipientPickerRef = useRef<RecipientPickerHandle | null>(null);
 
   // Preview sending
@@ -1084,11 +1085,13 @@ export default function CommunicationsPage() {
   }
 
   function navigateToTab(nextTab: TabKey) {
+    if (nextTab === "audience") setAudiencePickerMounted(true);
     if (nextTab === "preview" && !audiencePreview) {
       if (hasAudienceSelections) {
         setReviewAudienceOpen(true);
       } else {
         showToast("Choose and review an audience before opening the preview.");
+        setAudiencePickerMounted(true);
         setTab("audience");
       }
       return;
@@ -1327,7 +1330,7 @@ export default function CommunicationsPage() {
               <div className="flex justify-end">
                 <button
                   className="rounded-2xl bg-primary px-5 py-2 text-sm font-semibold text-white hover:bg-primary/85"
-                  onClick={() => setTab("audience")}
+                  onClick={() => navigateToTab("audience")}
                 >
                   Audience
                 </button>
@@ -1337,7 +1340,7 @@ export default function CommunicationsPage() {
         ) : null}
 
         {/* AUDIENCE */}
-        {orgId ? (
+        {orgId && audiencePickerMounted ? (
           <div className={tab === "audience" ? "" : "hidden"} aria-hidden={tab !== "audience"}>
             <RecipientPicker
               ref={recipientPickerRef}
@@ -1644,7 +1647,7 @@ export default function CommunicationsPage() {
               <div className="flex items-center justify-between gap-2">
                 <button
                   className="rounded-2xl border px-5 py-2 text-sm hover:bg-slate-50"
-                  onClick={() => setTab("audience")}
+                  onClick={() => navigateToTab("audience")}
                 >
                   Audience
                 </button>
@@ -1801,6 +1804,7 @@ export default function CommunicationsPage() {
                 onClick={() => {
                   setReviewAudienceOpen(false);
                   setReviewAfterAudienceOpen(true);
+                  setAudiencePickerMounted(true);
                   setTab("audience");
                 }}
               >

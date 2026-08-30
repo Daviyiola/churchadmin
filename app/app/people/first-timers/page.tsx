@@ -303,6 +303,24 @@ function copyDefaultFollowupSteps(): FollowupAutomationTemplate[] {
   return DEFAULT_FOLLOWUP_STEPS.map((step) => ({ ...step }));
 }
 
+function nextAvailableFollowupDay(steps: FollowupAutomationTemplate[]) {
+  const usedDays = new Set(
+    steps
+      .map((step) => Math.trunc(Number(step.day_offset)))
+      .filter((day) => Number.isFinite(day) && day >= 0 && day <= 365),
+  );
+  const greatestDay = usedDays.size ? Math.max(...usedDays) : -7;
+  const preferredDay = Math.min(365, greatestDay + 7);
+
+  if (!usedDays.has(preferredDay)) return preferredDay;
+
+  for (let day = 0; day <= 365; day += 1) {
+    if (!usedDays.has(day)) return day;
+  }
+
+  return null;
+}
+
 function makeDateTimeISO(dateISO: string, timeHHMM: string) {
   const [hhRaw, mmRaw] = timeHHMM.split(":");
   const hh = Number(hhRaw);
@@ -348,6 +366,8 @@ export default function FirstTimersPage() {
 
   const [rows, setRows] = useState<VisitorRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const loadedPageOrgRef = useRef<string | null>(null);
+  const visitorLoadSequenceRef = useRef(0);
   const [err, setErr] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
   const [orgRole, setOrgRole] = useState<OrgRole | null>(null);
@@ -632,13 +652,20 @@ export default function FirstTimersPage() {
 
     setFollowupTemplateErr("");
 
-    const normalized = followupTemplates.map((step, index) => ({
-      step_order: index + 1,
-      day_offset: Math.trunc(Number(step.day_offset)),
-      label: step.label.trim(),
-      subject: step.subject.trim(),
-      body: step.body.trim(),
-    }));
+    if (followupTemplates.length < 1 || followupTemplates.length > 20) {
+      setFollowupTemplateErr("Choose between 1 and 20 follow-up emails.");
+      return;
+    }
+
+    const normalized = [...followupTemplates]
+      .sort((a, b) => Number(a.day_offset) - Number(b.day_offset))
+      .map((step, index) => ({
+        step_order: index + 1,
+        day_offset: Math.trunc(Number(step.day_offset)),
+        label: step.label.trim(),
+        subject: step.subject.trim(),
+        body: step.body.trim(),
+      }));
 
     if (
       normalized.some(
@@ -680,6 +707,46 @@ export default function FirstTimersPage() {
     setFollowupTemplates(normalized);
     setTemplateSettingsOpen(false);
     showToast("Follow-up sequence saved");
+  }
+
+  function addFollowupTemplate() {
+    setFollowupTemplateErr("");
+    setFollowupTemplates((current) => {
+      if (current.length >= 20) {
+        setFollowupTemplateErr("A sequence can contain up to 20 follow-up emails.");
+        return current;
+      }
+
+      const dayOffset = nextAvailableFollowupDay(current);
+      if (dayOffset === null) {
+        setFollowupTemplateErr("There are no unused send days available.");
+        return current;
+      }
+
+      return [
+        ...current,
+        {
+          step_order: current.length + 1,
+          day_offset: dayOffset,
+          label: `Day ${dayOffset}: Follow-up`,
+          subject: "Checking in from {churchName}",
+          body: "Hi {firstName},\n\nWe wanted to check in and let you know we are grateful you visited {churchName}.\n\nPlease feel free to reply if you have any questions or prayer requests.\n\nBlessings,\n{churchName}",
+        },
+      ];
+    });
+  }
+
+  function removeFollowupTemplate(index: number) {
+    setFollowupTemplateErr("");
+    setFollowupTemplates((current) => {
+      if (current.length <= 1) {
+        setFollowupTemplateErr(
+          "Keep at least one email, or turn off automated follow-ups instead.",
+        );
+        return current;
+      }
+      return current.filter((_, itemIndex) => itemIndex !== index);
+    });
   }
 
   function downloadQrPng(filenameBase: string) {
@@ -1558,11 +1625,48 @@ export default function FirstTimersPage() {
     }
   }
 
-  const load = async () => {
+  const loadVisitorRows = async () => {
     if (!orgId) return;
+    const loadSequence = ++visitorLoadSequenceRef.current;
 
     setLoading(true);
     setErr("");
+
+    const { data, error } = await supabase
+      .from("members")
+      .select(
+        [
+          "id,org_id,first_name,last_name,email,phone,status,created_at",
+          "gender,age_group,segment,address,marital_status,children_count",
+          "membership_stage,profile_complete,joined_at",
+          "visitor_details!inner(first_visit_at,follow_up_status,next_follow_up_at,follow_up_notes,how_heard,prayer_request_tags)",
+        ].join(","),
+      )
+      .eq("org_id", orgId)
+      .eq("status", tab)
+      .order("created_at", { ascending: false });
+
+    if (loadSequence !== visitorLoadSequenceRef.current) return;
+
+    if (error) {
+      setErr(error.message);
+      setRows([]);
+    } else if (isVisitorRowArray(data)) {
+      setRows(data);
+    } else {
+      setErr("Unexpected response from server.");
+      setRows([]);
+    }
+
+    setLoading(false);
+  };
+
+  const load = async () => {
+    if (!orgId) return;
+
+    // Start the visible list immediately. Auxiliary settings continue loading
+    // in the background and no longer hold the table behind one long spinner.
+    const visitorRowsPromise = loadVisitorRows();
 
     // org name
     const { data: org, error: orgErr } = await supabase
@@ -1704,40 +1808,25 @@ export default function FirstTimersPage() {
         }));
 
       setCampaigns(normalized);
-    } catch (e) {
+    } catch {
       setCampaigns([]);
     }
 
-    // visitors
-    const { data, error } = await supabase
-      .from("members")
-      .select(
-        [
-          "id,org_id,first_name,last_name,email,phone,status,created_at",
-          "gender,age_group,segment,address,marital_status,children_count",
-          "membership_stage,profile_complete,joined_at",
-          "visitor_details!inner(first_visit_at,follow_up_status,next_follow_up_at,follow_up_notes,how_heard,prayer_request_tags)",
-        ].join(","),
-      )
-      .eq("org_id", orgId)
-      .eq("status", tab)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      setErr(error.message);
-      setRows([]);
-    } else if (isVisitorRowArray(data)) {
-      setRows(data);
-    } else {
-      setErr("Unexpected response from server.");
-      setRows([]);
-    }
-
-    setLoading(false);
+    await visitorRowsPromise;
   };
 
   useEffect(() => {
-    load();
+    if (!orgId) {
+      loadedPageOrgRef.current = null;
+      return;
+    }
+
+    if (loadedPageOrgRef.current !== orgId) {
+      loadedPageOrgRef.current = orgId;
+      void load();
+    } else {
+      void loadVisitorRows();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId, tab]);
 
@@ -4159,12 +4248,44 @@ export default function FirstTimersPage() {
                 can use {"{firstName}"}, {"{lastName}"}, and {"{churchName}"}.
               </div>
 
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">
+                    {followupTemplates.length} {followupTemplates.length === 1 ? "email" : "emails"} in this sequence
+                  </div>
+                  <div className="mt-0.5 text-xs text-slate-500">
+                    Add up to 20 emails. Saving sorts them by their send day.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="self-start rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/85 disabled:cursor-not-allowed disabled:opacity-50 sm:self-auto"
+                  disabled={!isAdmin || savingFollowupTemplates || followupTemplates.length >= 20}
+                  onClick={addFollowupTemplate}
+                >
+                  Add email
+                </button>
+              </div>
+
               <div className="mt-4 space-y-4">
                 {followupTemplates.map((step, index) => (
                   <div
                     key={step.id ?? `template-${index}`}
                     className="rounded-2xl border bg-slate-50 p-4"
                   >
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold text-slate-900">
+                        Email {index + 1}
+                      </div>
+                      <button
+                        type="button"
+                        className="rounded-xl border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled={!isAdmin || savingFollowupTemplates || followupTemplates.length <= 1}
+                        onClick={() => removeFollowupTemplate(index)}
+                      >
+                        Remove
+                      </button>
+                    </div>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
                       <label className="block sm:w-36">
                         <span className="text-xs font-semibold text-slate-600">

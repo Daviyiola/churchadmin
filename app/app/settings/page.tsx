@@ -6,11 +6,11 @@ export default function SettingsHomePage() {
   const router = useRouter();
 
   const items = [
-    {
-      title: "Billing & Plan",
-      desc: "Review plan limits, usage, renewal, invoices, and upgrades.",
-      href: "/app/settings/billing",
-    },
+    // {
+    //   title: "Billing & Plan",
+    //   desc: "Review plan limits, usage, renewal, invoices, and upgrades.",
+    //   href: "/app/settings/billing",
+    // },
     {
       title: "Organization",
       desc: "Profile, branding, regional settings, and report preferences.",
@@ -21,16 +21,16 @@ export default function SettingsHomePage() {
       desc: "Invite people, manage roles, and remove access.",
       href: "/app/settings/users",
     },
-    {
-      title: "My email preferences",
-      desc: "Choose whether Church Admin sends you optional product updates and onboarding tips.",
-      href: "/app/settings/email-preferences",
-    },
-    {
-      title: "Email delivery",
-      desc: "Check a recipient's church-email eligibility, record opt-outs, or document affirmative resubscription.",
-      href: "/app/settings/email-delivery",
-    },
+    // {
+    //   title: "My email preferences",
+    //   desc: "Choose whether Church Admin sends you optional product updates and onboarding tips.",
+    //   href: "/app/settings/email-preferences",
+    // },
+    // {
+    //   title: "Email delivery",
+    //   desc: "Check a recipient's church-email eligibility, record opt-outs, or document affirmative resubscription.",
+    //   href: "/app/settings/email-delivery",
+    // },
     {
       title: "Nikky",
       desc: "Configure the assistant allowance and rollout.",
