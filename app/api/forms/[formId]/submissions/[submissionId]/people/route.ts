@@ -10,6 +10,8 @@ type RouteContext = {
   params: Promise<{ formId: string; submissionId: string }>;
 };
 
+const PERSON_CANDIDATE_SELECT = "id,first_name,last_name,gender,age_group,email,phone,address,marital_status,children_count,joined_at,dob,notes,baptized,baptism_date,born_again,born_again_date,department_category_id,membership_stage,status,visitor_details(first_visit_at,how_heard,prayer_request_tags),person_custom_field_values(custom_field_id,value)";
+
 async function requireSubmission(formId: string, submissionId: string, orgId: string) {
   const { data, error } = await supabaseAdmin
     .from("form_submissions")
@@ -51,7 +53,7 @@ export async function GET(req: Request, context: RouteContext) {
       const probe = tokens.at(-1) ?? "";
       const { data, error } = await supabaseAdmin
         .from("members")
-        .select("id,first_name,last_name,gender,age_group,email,phone,address,marital_status,children_count,joined_at,dob,notes,baptized,baptism_date,born_again,born_again_date,department_category_id,membership_stage,status,visitor_details(first_visit_at,how_heard,prayer_request_tags),person_custom_field_values(custom_field_id,value)")
+        .select(PERSON_CANDIDATE_SELECT)
         .eq("org_id", form.org_id)
         .neq("status", "merged")
         .or(`first_name.ilike.%${probe}%,last_name.ilike.%${probe}%,email.ilike.%${probe}%,phone.ilike.%${probe}%`)
@@ -65,12 +67,26 @@ export async function GET(req: Request, context: RouteContext) {
       }).slice(0, 12);
     }
 
+    let processedCandidate: unknown = null;
+    if (submission.result_member_id) {
+      const { data, error } = await supabaseAdmin
+        .from("members")
+        .select(PERSON_CANDIDATE_SELECT)
+        .eq("id", submission.result_member_id)
+        .eq("org_id", form.org_id)
+        .neq("status", "merged")
+        .maybeSingle();
+      if (error) throw new Error(error.message);
+      processedCandidate = data;
+    }
+
     return NextResponse.json({
       role,
       submission,
       mappings: mappingsResult.data ?? [],
       custom_fields: customFieldsResult.data ?? [],
       candidates,
+      processed_candidate: processedCandidate,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load people options.";
@@ -82,7 +98,7 @@ export async function POST(req: Request, context: RouteContext) {
   try {
     const { formId, submissionId } = await context.params;
     const { actorId, form } = await requireManagedFormContext(req, formId);
-    await requireSubmission(formId, submissionId, form.org_id);
+    const submission = await requireSubmission(formId, submissionId, form.org_id);
     const body = await req.json().catch(() => null) as Record<string, unknown> | null;
     const allowed = ["action", "target_member_id", "standard_values", "standard_mappings", "custom_values"];
     if (!body || Object.keys(body).some((key) => !allowed.includes(key))) throw new Error("Invalid request");
@@ -102,15 +118,31 @@ export async function POST(req: Request, context: RouteContext) {
       if (!validation.valid) throw new Error(validation.message ?? "PERSON_PROCESSING_INVALID");
     }
 
-    const { data, error } = await supabaseAdmin.rpc("process_form_submission_to_person", {
-      p_submission_id: submissionId,
-      p_actor_id: actorId,
-      p_action: action,
-      p_target_member_id: body.target_member_id ? String(body.target_member_id) : null,
-      p_standard_values: body.standard_values,
-      p_standard_mappings: body.standard_mappings,
-      p_custom_values: body.custom_values,
-    });
+    const alreadyProcessed = Boolean(submission.person_action && submission.result_member_id);
+    if (alreadyProcessed && action !== "update_person") {
+      throw new Error("A processed response can only be applied again to its existing person record.");
+    }
+    const rpcName = alreadyProcessed
+      ? "reapply_form_submission_to_person"
+      : "process_form_submission_to_person";
+    const rpcArgs = alreadyProcessed
+      ? {
+          p_submission_id: submissionId,
+          p_actor_id: actorId,
+          p_standard_values: body.standard_values,
+          p_standard_mappings: body.standard_mappings,
+          p_custom_values: body.custom_values,
+        }
+      : {
+          p_submission_id: submissionId,
+          p_actor_id: actorId,
+          p_action: action,
+          p_target_member_id: body.target_member_id ? String(body.target_member_id) : null,
+          p_standard_values: body.standard_values,
+          p_standard_mappings: body.standard_mappings,
+          p_custom_values: body.custom_values,
+        };
+    const { data, error } = await supabaseAdmin.rpc(rpcName, rpcArgs);
     if (error) throw new Error(error.message);
     return NextResponse.json(data);
   } catch (error) {

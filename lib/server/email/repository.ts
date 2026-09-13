@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { hasMailingAddress } from "@/lib/onboarding";
 import { CHURCH_EMAIL_TOPICS, type ChurchEmailTopic, type EmailEligibility } from "./types";
 
 export function normalizeEmail(value: string) {
@@ -6,7 +7,7 @@ export function normalizeEmail(value: string) {
 }
 
 function formatMailingAddress(settings: Record<string, unknown> | null) {
-  if (!settings) return null;
+  if (!settings || !hasMailingAddress(settings)) return null;
   const parts = [
     settings.mailing_address_line1,
     settings.mailing_address_line2,

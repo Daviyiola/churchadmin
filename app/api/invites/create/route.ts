@@ -169,6 +169,7 @@ export async function POST(req: Request) {
   const orgName = String(org?.name ?? "Church Admin").trim() || "Church Admin";
 
   const email = String(invited_email).toLowerCase().trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return NextResponse.json({ error: "Enter a valid email address." }, { status: 400 });
   const inviteRole = String(role ?? "member") as InviteRole;
   if (!["member", "finance", "admin"].includes(inviteRole)) {
     return NextResponse.json({ error: "Invalid invite role." }, { status: 400 });
@@ -243,7 +244,7 @@ export async function POST(req: Request) {
     }
   }
 
-  const base = String(process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "");
+  const base = String(process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin).replace(/\/$/, "");
   const inviteUrl = `${base}/invite/${token}`;
 
   // Dynamic sender display name, static verified sender email

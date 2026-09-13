@@ -1,3 +1,4 @@
+import { renderEmailDocument } from "@/lib/email/render";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -66,41 +67,7 @@ async function downloadFileBase64(bucket: string, path: string) {
   return buf.toString("base64");
 }
 
-function escapeRegExp(s: string) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
-function rewriteInlineImages(html: string, uploads: UploadRow[]) {
-  let out = html;
-
-  for (const u of uploads) {
-    if (u.upload_mode !== "inline" || !u.inline_cid) continue;
-
-    const reById = new RegExp(
-      `(<img\\b[^>]*\\bdata-upload-id=["']${escapeRegExp(u.id)}["'][^>]*\\bsrc=["'])([^"']*)(["'])`,
-      "gi",
-    );
-    out = out.replace(reById, `$1cid:${u.inline_cid}$3`);
-
-    if (u.preview_url) {
-      const reByUrl = new RegExp(
-        `(<img\\b[^>]*\\bsrc=["'])${escapeRegExp(u.preview_url)}(["'])`,
-        "gi",
-      );
-      out = out.replace(reByUrl, `$1cid:${u.inline_cid}$2`);
-    }
-
-    if (u.path) {
-      const reByPathInSrc = new RegExp(
-        `(<img\\b[^>]*\\bsrc=["'])([^"']*${escapeRegExp(u.path)}[^"']*)(["'])`,
-        "gi",
-      );
-      out = out.replace(reByPathInSrc, `$1cid:${u.inline_cid}$3`);
-    }
-  }
-
-  return out;
-}
 
 function safeFilePart(s: string) {
   return s.replace(/[^\w\-]+/g, "_").slice(0, 80);
@@ -296,7 +263,7 @@ export async function POST(req: Request) {
       contentId?: string;
     }>;
 
-    const htmlWithCid = rewriteInlineImages(campaign.body_html, uploadRows);
+    const htmlWithCid = renderEmailDocument(campaign.body_html, uploadRows);
 
     // targets
     const { data: pending, error: pErr } = await supabaseAdmin

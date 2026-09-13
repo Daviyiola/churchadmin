@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 import FloatingXScroll from "@/components/FloatingXScroll";
+import ServiceCombobox from "@/components/ServiceCombobox";
 
 type Role = "owner" | "admin" | "finance" | "viewer" | "member";
 type CategoryType = "income" | "expense" | "services";
@@ -1210,21 +1211,13 @@ export default function IncomePublishedPage() {
                   <div className="mb-1 text-xs font-semibold text-slate-600">
                     Service *
                   </div>
-                  <select
-                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  <ServiceCombobox
+                    orgId={orgId ?? ""}
                     value={batchEditServiceId}
-                    onChange={(e) => {
-                      setBatchEditServiceId(e.target.value);
-                      setBatchEditErr("");
-                    }}
-                  >
-                    <option value="">Select…</option>
-                    {serviceCats.map((service) => (
-                      <option key={service.id} value={service.id}>
-                        {service.name}
-                      </option>
-                    ))}
-                  </select>
+                    services={serviceCats}
+                    onChange={(id) => { setBatchEditServiceId(id); setBatchEditErr(""); }}
+                    onCreated={(service) => setServiceCats((current) => [...current, { ...service, type: "services", status: "active" } as CategoryRow].sort((a,b)=>a.name.localeCompare(b.name)))}
+                  />
                 </div>
 
                 <div>

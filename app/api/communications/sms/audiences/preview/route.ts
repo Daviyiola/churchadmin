@@ -13,11 +13,15 @@ export async function POST(req: Request) {
     const message = String(body?.message ?? "");
     if (!orgId || !campaignId || !message.trim()) throw new Error("Organization, campaign, and message are required.");
     const actor = await requireSmsOperator(req, orgId);
-    const { data: campaign, error: campaignError } = await supabaseAdmin.from("sms_campaigns").select("id").eq("id", campaignId).eq("org_id", orgId).neq("status", "archived").maybeSingle();
+    const { data: campaign, error: campaignError } = await supabaseAdmin.from("sms_campaigns").select("id,purpose").eq("id", campaignId).eq("org_id", orgId).neq("status", "archived").maybeSingle();
     if (campaignError) throw new Error(campaignError.message);
     if (!campaign) throw Object.assign(new Error("SMS campaign not found."), { status: 404 });
-    const resolved = await resolveSmsAudience(orgId, body?.criteria, message);
-    if (!resolved.recipients.length) throw new Error("No eligible SMS recipients were found.");
+    const rawCriteria = body?.criteria && typeof body.criteria === "object" ? body.criteria : {};
+    const resolved = await resolveSmsAudience(orgId, {
+      ...rawCriteria,
+      ...(campaign.purpose === "fundraising" || body?.purpose === "fundraising" ? { message_category: "promotional" } : {}),
+    }, message);
+    if (!resolved.recipients.length) return NextResponse.json({ snapshot_id: null, expires_at: null, ...resolved, recipients: [] });
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     const { data: snapshot, error: snapshotError } = await supabaseAdmin.from("sms_audience_snapshots").insert({
       org_id: orgId, campaign_id: campaignId, created_by: actor.userId, criteria: resolved.criteria,

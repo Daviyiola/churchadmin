@@ -103,6 +103,21 @@ export async function POST(req: Request) {
       if (total_recipients < 1) return NextResponse.json<ErrorJson>({ error: "No recipients selected" }, { status: 400 });
     }
 
+    // Validate all selected files before creating anything; never silently omit one.
+    const uploads = Array.isArray(body?.uploads) ? body.uploads : [];
+    if (uploads.some(file => !file || !file.upload_id || !isValidEmailMode(file.upload_mode) ||
+      (file.upload_mode === "inline" && !/^[a-zA-Z0-9._@-]+$/.test(file.inline_cid ?? "")))) {
+      throw new Error("Invalid attachment selection. Remove the affected file and upload it again.");
+    }
+    const uploadIds = uploads.map(file => file.upload_id);
+    if (new Set(uploadIds).size !== uploadIds.length) throw new Error("Duplicate attachment selection.");
+    if (uploadIds.length) {
+      const { data: selectedFiles, error: filesError } = await supabaseAdmin.from("message_uploads")
+        .select("id").in("id", uploadIds).eq("org_id", organization_id);
+      if (filesError) throw new Error(filesError.message);
+      if (selectedFiles?.length !== uploadIds.length) throw new Error("An attachment is unavailable. Remove it and upload it again before sending.");
+    }
+
     // 1) Create campaign
     const { data, error } = await supabaseAdmin
       .from("communication_campaigns")
@@ -158,7 +173,6 @@ export async function POST(req: Request) {
     }
 
     // 2) Link uploads to this campaign (so send-one can fetch attachments/inline)
-    const uploads = Array.isArray(body?.uploads) ? body!.uploads! : [];
     const normalized = uploads
       .map((x) => ({
         upload_id: String(x.upload_id ?? "").trim(),

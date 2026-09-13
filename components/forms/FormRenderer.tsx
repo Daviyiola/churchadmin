@@ -195,10 +195,11 @@ export default function FormRenderer({
 
     <form onSubmit={(event) => {
       event.preventDefault();
-      if (previewMode || !onSubmitAnswers) return;
+      if (previewMode || submitting || submitDisabled || !onSubmitAnswers) return;
       const formData = new FormData(event.currentTarget);
       const answers: Record<string, string | string[]> = { ...initialAnswers };
       for (const field of fields) {
+        if (readOnlyFieldKeys.includes(field.key)) continue;
         if (field.type === "multiple_choice") {
           answers[field.key] = formData.getAll(field.key).map(String);
         } else {

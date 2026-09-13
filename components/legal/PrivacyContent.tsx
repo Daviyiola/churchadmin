@@ -154,6 +154,13 @@ export default function PrivacyContent() {
           correct, or delete the response, contact that Organization first.
           Davola may assist the Organization where appropriate.
         </P>
+        <P>
+          Organizations may also publish attendance QR codes. A check-in may
+          collect a submitted name and optional contact information so Church
+          Admin can confirm or route the response to authorized staff for
+          review. Public check-ins enter an attendance draft and never write
+          directly to published attendance.
+        </P>
       </Section>
 
       <Divider />
@@ -316,6 +323,7 @@ export default function PrivacyContent() {
           <Li>Subscription cancellation or downgrade does not automatically delete Organization records.</Li>
           <Li>Forms and submissions remain until deleted under available Organization controls.</Li>
           <Li>Nikky conversations remain until their owner deletes them; Nikky audit metadata is generally retained for one year.</Li>
+          <Li>Raw names and contact details submitted through attendance QR check-in are generally redacted one year after the check-in is resolved or excluded; safe outcomes and attendance records may remain.</Li>
           <Li>Billing, transaction, consent, suppression, security, merge, and other audit records may be retained longer where needed for legal, accounting, safety, or fraud-prevention purposes.</Li>
           <Li>Temporary files, expired links, previews, and report artifacts may use shorter operational retention periods.</Li>
         </Ul>
@@ -405,6 +413,13 @@ export default function PrivacyContent() {
           technology. That provider may process IP address, browser, device,
           challenge, and security information to distinguish legitimate use
           from automated abuse under its own privacy terms.
+        </P>
+        <P>
+          If an attendee chooses “Remember me on this device,” Church Admin
+          stores a secure random browser cookie. The cookie contains no name or
+          member details; it references approved profiles stored securely on
+          Church Admin. The attendee can forget one or all profiles, and
+          clearing browser cookies also removes access from that browser.
         </P>
       </Section>
 

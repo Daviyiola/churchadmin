@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import EmailPreview from "@/components/EmailPreview";
+import { emailCampaignContent } from "@/lib/email/campaign";
 import { supabase } from "@/lib/supabaseClient";
 import { getAccessToken, getActiveOrgId } from "@/lib/auth";
 import { TipTap, type TipTapHandle } from "@/components/TipTap";
@@ -156,13 +158,7 @@ function escapeHtml(s: string) {
     .replaceAll("'", "&#039;");
 }
 
-function normalizePreviewHtml(html: string) {
-  // Turn truly empty paragraphs OR <p><br></p> into <p>&nbsp;</p>
-  // so they occupy vertical space in preview like the editor.
-  return html
-    .replace(/<p>\s*<\/p>/g, "<p>&nbsp;</p>")
-    .replace(/<p>\s*<br\s*\/?>\s*<\/p>/g, "<p>&nbsp;</p>");
-}
+
 
 function stripOuterHtmlDoc(html: string) {
   // TipTap returns fragments, but just in case:
@@ -418,7 +414,6 @@ export default function CommunicationsPage() {
   const editorRef = useRef<TipTapHandle | null>(null);
 
   const [replyToEmail, setReplyToEmail] = useState<string>(""); // single source of truth
-  const [logoUrl, setLogoUrl] = useState<string | null>(null); // optional
 
   const [bodyHtml, setBodyHtml] = useState<string>("");
 
@@ -467,7 +462,7 @@ export default function CommunicationsPage() {
 
   const previewHtml = useMemo(() => {
     const raw = stripOuterHtmlDoc(fillVars(bodyHtml, vars));
-    return normalizePreviewHtml(raw);
+    return raw;
   }, [bodyHtml, vars]);
 
   useEffect(() => {
@@ -846,9 +841,7 @@ export default function CommunicationsPage() {
           Authorization: `Bearer ${jwt}`,
         },
         body: JSON.stringify({
-          organization_id: orgId,
-          subject: `[Test] ${previewSubject}`,
-          body_html: previewHtml,
+          ...emailCampaignContent({ organizationId: orgId, subject: `[Test] ${previewSubject}`, html: previewHtml, uploads }),
           total_recipients: 1,
         }),
       });
@@ -920,14 +913,7 @@ export default function CommunicationsPage() {
           Authorization: `Bearer ${jwt}`,
         },
         body: JSON.stringify({
-          organization_id: orgId,
-          subject: previewSubject,
-          body_html: previewHtml,
-          uploads: uploads.map((u) => ({
-            upload_id: u.upload_id,
-            upload_mode: u.mode,
-            inline_cid: u.mode === "inline" ? u.inline_cid : undefined,
-          })),
+          ...emailCampaignContent({ organizationId: orgId, subject: previewSubject, html: previewHtml, uploads }),
           audience_snapshot_id: audiencePreview?.snapshot_id,
         }),
       });
@@ -1613,34 +1599,9 @@ export default function CommunicationsPage() {
 
                 <div className="px-6 py-6">
                   {/* optional logo area */}
-                  {logoUrl ? (
-                    <div className="mb-4">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={logoUrl} alt="logo" className="h-10 w-auto" />
-                    </div>
-                  ) : null}
-                  <style jsx global>{`
-                    .emailPreview ul {
-                      list-style: disc !important;
-                      padding-left: 24px !important;
-                      margin: 12px 0 !important;
-                    }
-                    .emailPreview ol {
-                      list-style: decimal !important;
-                      padding-left: 24px !important;
-                      margin: 12px 0 !important;
-                    }
-                    .emailPreview a {
-                      color: #2563eb !important;
-                      text-decoration: underline !important;
-                      text-underline-offset: 2px !important;
-                    }
-                  `}</style>
 
-                  <div
-                    className="emailPreview rounded-2xl border bg-white p-4 text-sm"
-                    dangerouslySetInnerHTML={{ __html: previewHtml }}
-                  />
+                  <EmailPreview html={previewHtml} />
+                  <p className="mt-2 text-xs text-slate-500">This previews the message body. Broadcasts also include your mailing address and email preference links. Your email app may adjust colors in dark mode.</p>
                 </div>
               </div>
 

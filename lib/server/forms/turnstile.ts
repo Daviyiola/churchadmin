@@ -1,7 +1,7 @@
 import { getRequestIp } from "@/lib/server/intake/security";
 
 const TEST_SECRET_KEY = "1x0000000000000000000000000000000AA";
-const EXPECTED_ACTION = "public_form_submit";
+export type TurnstileAction = "public_form_submit" | "attendance_checkin";
 
 type TurnstileResponse = {
   success?: boolean;
@@ -32,7 +32,12 @@ function allowedHostnames(req: Request) {
   return hosts;
 }
 
-export async function verifyPublicFormTurnstile(req: Request, token: unknown, requestId: string) {
+export async function verifyPublicFormTurnstile(
+  req: Request,
+  token: unknown,
+  requestId: string,
+  expectedAction: TurnstileAction = "public_form_submit",
+) {
   const responseToken = typeof token === "string" ? token.trim() : "";
   if (!responseToken || responseToken.length > 2048) {
     throw new TurnstileVerificationError("Please complete the security check and try again.", 400);
@@ -75,7 +80,7 @@ export async function verifyPublicFormTurnstile(req: Request, token: unknown, re
 
   if (process.env.NODE_ENV === "production") {
     const hostname = String(verification.hostname ?? "").toLowerCase();
-    if (!hostname || !allowedHostnames(req).has(hostname) || verification.action !== EXPECTED_ACTION) {
+    if (!hostname || !allowedHostnames(req).has(hostname) || verification.action !== expectedAction) {
       throw new TurnstileVerificationError("The security check could not be verified. Please try again.", 400);
     }
   }

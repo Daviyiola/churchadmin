@@ -29,7 +29,7 @@ export async function sendManagedEmail(input: ManagedEmailInput): Promise<Manage
     const eligibility = await resolveEmailEligibility(input.organizationId, email, input.topic, input.memberId);
     contactId = eligibility.contactId;
     if (!eligibility.eligible) return { sent: false, skipped: true, reason: eligibility.reason as "unsubscribed" | "suppressed", contactId };
-    if (input.requireMailingAddress && !eligibility.mailingAddress) return { sent: false, skipped: true, reason: "missing_mailing_address", contactId };
+    if (!eligibility.mailingAddress) return { sent: false, skipped: true, reason: "missing_mailing_address", contactId };
     const manageToken = createEmailPreferenceToken(contactId!, "manage");
     const oneClickToken = createEmailPreferenceToken(contactId!, "one_click", input.topic);
     const manageUrl = `${appBaseUrl()}/email/preferences?token=${encodeURIComponent(manageToken)}`;

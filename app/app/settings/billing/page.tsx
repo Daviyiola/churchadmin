@@ -10,14 +10,36 @@ const labels:Record<string,string>={members:"Active members",first_timers:"Activ
 
 export default function BillingPage(){
  const router=useRouter();const [data,setData]=useState<BillingData|null>(null);const [plans,setPlans]=useState<PublicPlan[]>([]);const [error,setError]=useState("");const [busy,setBusy]=useState(false);
- const load=useCallback(async()=>{const org=getActiveOrgId(),token=await getAccessToken();if(!org||!token)return;const [billingRes,plansRes]=await Promise.all([fetch(`/api/billing/organization?organization_id=${org}`,{headers:{Authorization:`Bearer ${token}`}}),fetch("/api/billing/plans")]);const billing=await billingRes.json();const catalog=await plansRes.json();if(!billingRes.ok)setError(billing.error??"Unable to load billing.");else setData(billing);setPlans(catalog.plans??[]);},[]);
- useEffect(()=>{const timer=window.setTimeout(()=>{void load();},0);return()=>window.clearTimeout(timer);},[load]);
- async function action(path:string,body:Record<string,unknown>={}){const org=getActiveOrgId(),token=await getAccessToken();if(!org||!token)return;setBusy(true);setError("");const res=await fetch(path,{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},body:JSON.stringify({organization_id:org,...body})});const json=await res.json();setBusy(false);if(!res.ok){setError(json.error??"Unable to update billing.");return;}if(json.url)location.href=json.url;else await load();}
+ const load=useCallback(async()=>{
+  setError("");
+  try {
+   const org=getActiveOrgId(),token=await getAccessToken();
+   if(!org||!token)throw new Error("Sign in and select an organization to view billing.");
+   const [billingRes,plansRes]=await Promise.all([fetch(`/api/billing/organization?organization_id=${org}`,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(15000)}),fetch("/api/billing/plans",{signal:AbortSignal.timeout(15000)})]);
+   const billing=await billingRes.json();const catalog=await plansRes.json();
+   if(!billingRes.ok)throw new Error(billing.error??"Unable to load billing.");
+   if(!plansRes.ok)throw new Error(catalog.error??"Unable to load plans.");
+   setData(billing);setPlans(catalog.plans??[]);
+  } catch(error){setError(error instanceof Error?error.message:"Unable to load billing. Please try again.");}
+ },[]);
+ useEffect(()=>{void load();},[load]);
+ async function action(path:string,body:Record<string,unknown>={}){
+  setBusy(true);setError("");
+  try {
+   const org=getActiveOrgId(),token=await getAccessToken();
+   if(!org||!token)throw new Error("Sign in again to update billing.");
+   const res=await fetch(path,{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},body:JSON.stringify({organization_id:org,...body}),signal:AbortSignal.timeout(30000)});
+   const json=await res.json();
+   if(!res.ok)throw new Error(json.error??"Unable to update billing.");
+   if(json.url)location.assign(json.url);else await load();
+  } catch(error){setError(error instanceof Error?error.message:"Unable to update billing. Please try again.");}
+  finally{setBusy(false);}
+ }
  const sub=data?.subscription??{};const founder=sub.status==="founder_complimentary";const connected=Boolean(sub.stripe_subscription_id);
  return <div className="p-6"><div className="mx-auto max-w-6xl">
   <button onClick={()=>router.push("/app/settings")} className="mb-5 rounded-2xl border px-4 py-2 text-sm">Back to Settings</button>
-  <div className="flex flex-wrap items-end justify-between gap-4"><div><div className="text-xs font-semibold uppercase text-slate-500">Billing & Plan</div><h1 className="mt-1 text-3xl font-bold capitalize">{data?.plan??"Loading"} plan</h1><p className="mt-2 text-slate-600">{founder?`Founder Pro is complimentary through ${new Date(String(sub.founder_ends_at)).toLocaleDateString()}.`:"Review usage, renewal, and plan options."}</p></div>{data?.role==="owner"?<div className="flex gap-2"><button disabled={busy||!sub.stripe_customer_id} onClick={()=>action("/api/billing/portal")} className="rounded-2xl border px-4 py-2 font-semibold disabled:opacity-50">Invoices & payment</button></div>:<div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm">Only an owner can change billing.</div>}</div>
-  {error?<div className="mt-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>:null}
+  <div className="flex flex-wrap items-end justify-between gap-4"><div><div className="text-xs font-semibold uppercase text-slate-500">Billing & Plan</div><h1 className="mt-1 text-3xl font-bold capitalize">{data?.plan??(error?"Unavailable":"Loading")} plan</h1><p className="mt-2 text-slate-600">{founder?`Founder Pro is complimentary through ${new Date(String(sub.founder_ends_at)).toLocaleDateString()}.`:"Review usage, renewal, and plan options."}</p></div>{data?.role==="owner"?<div className="flex gap-2"><button disabled={busy||!sub.stripe_customer_id} onClick={()=>action("/api/billing/portal")} className="rounded-2xl border px-4 py-2 font-semibold disabled:opacity-50">Invoices & payment</button></div>:<div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm">Only an owner can change billing.</div>}</div>
+  {error?<div className="mt-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}<button onClick={load} disabled={busy} className="ml-3 underline">Try again</button></div>:null}
   <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">{data?Object.entries(data.usage).map(([key,value])=>{const nikky=key==="nikky";const used=nikky?(value as {used_cents:number}).used_cents:(value as Usage).used;const limit=nikky?(value as {limit_cents:number|null}).limit_cents:(value as Usage).limit;const pct=limit?Math.min(100,Math.round(used/limit*100)):0;return <div key={key} className="rounded-3xl border bg-white p-5"><div className="text-sm font-semibold">{labels[key]}</div><div className="mt-3 text-2xl font-bold">{nikky?`${pct}% used`:`${used.toLocaleString()} / ${limit?.toLocaleString()??"Unlimited"}`}</div><div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100"><div className={`h-full ${pct>=90?"bg-red-500":pct>=70?"bg-amber-500":"bg-primary"}`} style={{width:`${pct}%`}}/></div></div>}):null}</div>
   {data?.role==="owner"?<section className="mt-9"><h2 className="text-xl font-bold">{connected?"Change plan":"Choose a paid plan"}</h2><p className="mt-1 text-sm text-slate-600">Upgrades apply after successful payment. Downgrades and billing-interval changes begin at renewal.</p><div className="mt-4 grid gap-3 md:grid-cols-3">{plans.filter(p=>p.key!=="free").map(plan=><div key={plan.key} className="rounded-3xl border bg-white p-5"><div className="text-lg font-bold">{plan.name}</div><div className="mt-1 text-sm text-slate-500">${((plan.monthlyPriceCents??0)/100).toFixed(0)}/month · ${((plan.annualPriceCents??0)/100).toFixed(0)}/year</div><div className="mt-4 flex gap-2"><button disabled={busy||plan.key===data.plan&&sub.billing_interval==="monthly"} onClick={()=>action(connected?"/api/billing/change-plan":"/api/billing/start-subscription",{plan:plan.key,interval:"monthly"})} className="rounded-xl bg-primary px-3 py-2 text-sm font-semibold text-white disabled:opacity-40">Monthly</button><button disabled={busy||plan.key===data.plan&&sub.billing_interval==="annual"} onClick={()=>action(connected?"/api/billing/change-plan":"/api/billing/start-subscription",{plan:plan.key,interval:"annual"})} className="rounded-xl border px-3 py-2 text-sm font-semibold disabled:opacity-40">Annual</button></div></div>)}</div></section>:null}
   {sub.scheduled_plan_key?<div className="mt-6 rounded-3xl border bg-blue-50 p-5">Your {String(sub.scheduled_plan_key)} plan ({String(sub.scheduled_interval)}) is scheduled for the next renewal.</div>:null}

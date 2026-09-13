@@ -17,6 +17,10 @@ export async function POST(req: Request) {
     );
   }
 
+  if (!["owner", "admin", "finance", "viewer", "member"].includes(newRole)) {
+    return NextResponse.json({ error: "Invalid role." }, { status: 400 });
+  }
+
   const authHeader = req.headers.get("authorization") || "";
   const accessToken = authHeader.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length)
@@ -78,6 +82,12 @@ export async function POST(req: Request) {
 
   const targetRole = (targetMembership.role ?? null) as Role | null;
 
+  if (targetRole === "owner" && !callerIsOwner) {
+    return NextResponse.json(
+      { error: "Only an owner can change another owner's role." },
+      { status: 403 }
+    );
+  }
 
   if (newRole === "owner" && !callerIsOwner) {
     return NextResponse.json(

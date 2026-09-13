@@ -906,7 +906,7 @@ export async function memberPopulationSummary(context: NikkyContext) {
 async function attendanceRows(context: NikkyContext, startDate: string, endDate: string) {
   const { data: sessions, error: sessionError } = await context.supabase
     .from("attendance_sessions")
-    .select("id,session_date,service_category_id")
+    .select("id,session_date,service_category_id,attendance_completeness,unresolved_checkins_at_publish")
     .eq("org_id", context.organizationId)
     .eq("status", "published")
     .is("deleted_at", null)
@@ -936,6 +936,8 @@ type PublishedAttendanceSession = {
   id: unknown;
   session_date: unknown;
   service_category_id: unknown;
+  attendance_completeness?: unknown;
+  unresolved_checkins_at_publish?: unknown;
 };
 
 type PublishedAttendanceEntry = {
@@ -1000,6 +1002,7 @@ function isMemberCompleteSession(
   session: PublishedAttendanceSession,
   groupedEntries: Map<string, PublishedAttendanceEntry[]>,
 ) {
+  if (session.attendance_completeness === "unresolved_omitted" || Number(session.unresolved_checkins_at_publish ?? 0) > 0) return false;
   const rows = groupedEntries.get(String(session.id)) ?? [];
   return rows.length > 0 && rows.every((entry) =>
     entry.entry_source === "member" && Boolean(entry.member_id));
@@ -1656,7 +1659,7 @@ async function absentMembers(context: NikkyContext, args: Record<string, unknown
   const sessionId = text(args.session_id);
   const { data: session, error: sessionError } = await context.supabase
     .from("attendance_sessions")
-    .select("id,session_date,service_category_id,status,deleted_at")
+    .select("id,session_date,service_category_id,status,deleted_at,attendance_completeness,unresolved_checkins_at_publish")
     .eq("org_id", context.organizationId)
     .eq("id", sessionId)
     .eq("status", "published")
@@ -1670,9 +1673,9 @@ async function absentMembers(context: NikkyContext, args: Record<string, unknown
     .eq("org_id", context.organizationId)
     .eq("session_id", sessionId);
   if (entriesError) throw new Error(entriesError.message);
-  if (!entries?.length || entries.some((row) => row.entry_source !== "member" || !row.member_id)) {
+  if (session.attendance_completeness === "unresolved_omitted" || Number(session.unresolved_checkins_at_publish ?? 0) > 0 || !entries?.length || entries.some((row) => row.entry_source !== "member" || !row.member_id)) {
     return result("unavailable", { session_id: sessionId, session_date: session.session_date }, null, entries?.length ?? 0,
-      "Absence is available only for sessions recorded entirely by member.");
+      "Absence is available only for sessions recorded entirely by member with no unresolved QR check-ins omitted.");
   }
   const attended = new Set(entries.map((row) => String(row.member_id)));
   const { data: members, error: memberError } = await context.supabase

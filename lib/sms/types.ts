@@ -10,6 +10,7 @@ export type SmsFormSource = {
 };
 
 export type SmsAudienceCriteria = {
+  message_category?: "informational" | "promotional";
   include_filtered_people: boolean;
   member_ids: string[];
   genders: string[];
@@ -20,6 +21,7 @@ export type SmsAudienceCriteria = {
 };
 
 export const EMPTY_SMS_AUDIENCE: SmsAudienceCriteria = {
+  message_category: "informational",
   include_filtered_people: false,
   member_ids: [],
   genders: [],

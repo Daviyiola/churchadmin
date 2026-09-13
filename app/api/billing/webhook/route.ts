@@ -25,7 +25,8 @@ export async function POST(req:Request){
           p_stripe_customer_id:String(session.customer),p_stripe_subscription_id:subscription.id,p_stripe_price_id:item?.price.id ?? null,
           p_period_start:item?new Date(item.current_period_start*1000).toISOString():null,p_period_end:item?new Date(item.current_period_end*1000).toISOString():null});
         if(error)throw new Error(error.message); await reconcileSubscription(subscription);
-        await supabaseAdmin.from("billing_plan_events").insert({organization_id:organizationId,event_type:"checkout_completed",to_plan_key:null,source:"stripe",stripe_event_id:event.id});
+        const {error:auditError}=await supabaseAdmin.from("billing_plan_events").insert({organization_id:organizationId,event_type:"checkout_completed",to_plan_key:null,source:"stripe",stripe_event_id:event.id});
+        if(auditError)throw new Error(auditError.message);
       } else if(session.metadata?.organization_id&&session.subscription){
         const organizationId=session.metadata.organization_id;const subscription=await getStripe().subscriptions.retrieve(String(session.subscription));const item=subscription.items.data[0];
         const {data:current,error:currentError}=await supabaseAdmin.from("organization_subscriptions").select("status,founder_ends_at").eq("organization_id",organizationId).maybeSingle();if(currentError||!current)throw new Error("Organization subscription not found.");
@@ -39,7 +40,8 @@ export async function POST(req:Request){
       const invoice=event.data.object as Stripe.Invoice; const details=invoice.parent?.subscription_details; const subscriptionId=details?.subscription;
       if(subscriptionId)await reconcileSubscription(await getStripe().subscriptions.retrieve(String(subscriptionId)));
     }
-    await supabaseAdmin.from("stripe_webhook_events").update({status:"processed",processed_at:new Date().toISOString()}).eq("stripe_event_id",event.id);
+    const {error:completionError}=await supabaseAdmin.from("stripe_webhook_events").update({status:"processed",processed_at:new Date().toISOString()}).eq("stripe_event_id",event.id);
+    if(completionError)throw new Error(completionError.message);
     return Response.json({received:true});
   }catch(error){await supabaseAdmin.from("stripe_webhook_events").update({status:"failed",last_error:error instanceof Error?error.message:"Unknown error"}).eq("stripe_event_id",event.id);return Response.json({error:"Webhook processing failed."},{status:500});}
 }

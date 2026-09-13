@@ -6,11 +6,16 @@ export default function SettingsHomePage() {
   const router = useRouter();
 
   const items = [
-    // {
-    //   title: "Billing & Plan",
-    //   desc: "Review plan limits, usage, renewal, invoices, and upgrades.",
-    //   href: "/app/settings/billing",
-    // },
+    {
+      title: "Workspace setup",
+      desc: "Review your organization name, logo, timezone, mailing address, and team.",
+      href: "/app/setup",
+    },
+    {
+      title: "Billing & Plan",
+      desc: "Review plan limits, usage, renewal, invoices, and upgrades.",
+      href: "/app/settings/billing",
+    },
     {
       title: "Organization",
       desc: "Profile, branding, regional settings, and report preferences.",

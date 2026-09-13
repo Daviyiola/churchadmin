@@ -1,4 +1,5 @@
 "use client";
+import { roleDisplayLabel } from "@/lib/roleDisplay";
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
@@ -90,6 +91,7 @@ export default function UsersSettingsPage() {
   const [loadingInvite, setLoadingInvite] = useState(false);
   const [inviteError, setInviteError] = useState("");
   const [inviteUrl, setInviteUrl] = useState("");
+  const [inviteEmailed, setInviteEmailed] = useState(false);
 
   // Page data
   const [rows, setRows] = useState<Row[]>([]);
@@ -213,6 +215,7 @@ export default function UsersSettingsPage() {
     }
 
     setInviteUrl(json.inviteUrl);
+    setInviteEmailed(Boolean(json.emailed));
 
     setToastText(
       json.emailed
@@ -449,7 +452,7 @@ export default function UsersSettingsPage() {
                           </div>
 
                           <div className="col-span-2">
-                            {r.status === "active" && r.user_id && isAdmin && !isMe ? (
+                            {r.status === "active" && r.user_id && isAdmin && !isMe && r.role !== "owner" ? (
                               <select
                                 value={r.role}
                                 onChange={(e) => {
@@ -472,7 +475,7 @@ export default function UsersSettingsPage() {
                                 {/* {currentRole === "owner" ? <option value="owner">Owner</option> : null} */}
                               </select>
                             ) : (
-                              <span className="text-slate-700 capitalize">{String(r.role)}</span>
+                              <span className="text-slate-700">{roleDisplayLabel(String(r.role), r.email)}</span>
                             )}
                           </div>
 
@@ -559,8 +562,8 @@ export default function UsersSettingsPage() {
 
       {/* Change role modal */}
       {confirmRoleChange ? (
-      <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
-        <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-xl">
+      <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4">
+        <div className="mx-auto my-4 w-full max-w-md rounded-3xl bg-white p-6 shadow-xl">
           <div className="text-lg font-semibold">Confirm role change</div>
 
           <div className="mt-2 text-sm text-slate-600">
@@ -611,8 +614,8 @@ export default function UsersSettingsPage() {
 
       {/* Invite modal */}
       {inviteOpen ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
-          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-xl">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4">
+          <div className="mx-auto my-4 w-full max-w-lg rounded-3xl bg-white p-6 shadow-xl">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-lg font-semibold">Invite user</div>
@@ -674,7 +677,7 @@ export default function UsersSettingsPage() {
                       <input
                         readOnly
                         value={inviteUrl}
-                        className="flex-1 rounded-2xl border px-3 py-2 text-sm"
+                        className="min-w-0 flex-1 rounded-2xl border px-3 py-2 text-sm"
                       />
                       <button
                         onClick={async () => {
@@ -689,7 +692,7 @@ export default function UsersSettingsPage() {
                       </button>
                     </div>
                     <div className="mt-2 text-xs text-slate-500">
-                      We emailed this invite link to the user. Expires in 7 days.
+                      {inviteEmailed ? "We emailed this invite link to the user. Expires in 7 days." : "Email could not be sent. Copy and share this link. Expires in 7 days."}
                     </div>
                   </div>
                 ) : null}
@@ -701,8 +704,8 @@ export default function UsersSettingsPage() {
 
       {/* Remove invite confirmation */}
       {confirmRemoveInvite ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-xl">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4">
+          <div className="mx-auto my-4 w-full max-w-md rounded-3xl bg-white p-6 shadow-xl">
             <div className="text-lg font-semibold">Remove invite?</div>
             <div className="mt-2 text-sm text-slate-600">
               This will revoke the invite for{" "}
@@ -733,8 +736,8 @@ export default function UsersSettingsPage() {
 
       {/* Remove confirmation */}
       {confirmRemove ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-xl">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4">
+          <div className="mx-auto my-4 w-full max-w-md rounded-3xl bg-white p-6 shadow-xl">
             <div className="text-lg font-semibold">Remove user?</div>
             <div className="mt-2 text-sm text-slate-600">
               This will remove{" "}

@@ -7,7 +7,6 @@ import {
   type MappingSuggestion,
 } from "@/lib/forms/fieldMappingSuggestions";
 import { validatePersonFieldMapping } from "@/lib/forms/personFieldValidation";
-import { parseMonthDay } from "@/lib/people/birthDate";
 
 type SnapshotField = { key: string; label: string; type: string; options?: string[] };
 type Submission = {
@@ -27,6 +26,7 @@ type LoadPayload = {
   mappings: Mapping[];
   custom_fields: CustomField[];
   candidates: Candidate[];
+  processed_candidate?: Candidate | null;
   error?: string;
 };
 
@@ -108,6 +108,11 @@ export default function SaveSubmissionToPeopleModal({
         setManual(initialManual);
         setChosenStandard(new Set());
         setChosenCustom(new Set());
+        if (body.processed_candidate) {
+          setAction("update_person");
+          setCandidate(body.processed_candidate);
+          setSearch(`${body.processed_candidate.first_name} ${body.processed_candidate.last_name}`.trim());
+        }
       } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to load person fields."); }
       finally { if (!cancelled) setLoading(false); }
     })();
@@ -140,21 +145,28 @@ export default function SaveSubmissionToPeopleModal({
     ? standardRows.filter((row) => chosenStandard.has(row.key)).length
       + customRows.filter((field) => chosenCustom.has(field.key)).length
     : 0;
+  const isReprocessing = Boolean(payload?.processed_candidate);
   const mappedRequiredValues = Object.fromEntries(standardRows.filter((row) => PROTECTED.has(row.key)).map((row) => [row.key, answerText(submission.answers[row.field.key])]));
   const mappedDob = standardRows.find((row) => row.key === "dob");
   const dobText = mappedDob ? answerText(submission.answers[mappedDob.field.key]).trim() : "";
   const hasFullDob = /^\d{4}-\d{2}-\d{2}$/.test(dobText);
-  const hasBirthday = hasFullDob || parseMonthDay(dobText) !== null;
   const requiredKeys = ["first_name", "last_name", "gender"];
-  const ageGroupValue = (manual.age_group ?? mappedRequiredValues.age_group ?? "").trim();
-  if (!hasBirthday && !["1-12", "13-17", "18-35", "36+"].includes(ageGroupValue)) {
+  const mappedAgeGroupValue = (mappedRequiredValues.age_group ?? "").trim();
+  if (!hasFullDob && !["1-12", "13-17", "18-35", "36+"].includes(mappedAgeGroupValue)) {
     requiredKeys.push("age_group");
   }
+  function requiredValueIsValid(key: string, value: string) {
+    if (key === "gender") return ["male", "female"].includes(value.toLowerCase());
+    if (key === "age_group") return ["1-12", "13-17", "18-35", "36+"].includes(value);
+    return Boolean(value);
+  }
+  const manualRequiredKeys = requiredKeys.filter((key) => {
+    const mappedValue = (mappedRequiredValues[key] ?? "").trim();
+    return !requiredValueIsValid(key, mappedValue);
+  });
   const missingRequired = requiredKeys.filter((key) => {
     const value = (manual[key] ?? mappedRequiredValues[key] ?? "").trim();
-    if (key === "gender") return !["male", "female"].includes(value.toLowerCase());
-    if (key === "age_group") return !["1-12", "13-17", "18-35", "36+"].includes(value);
-    return !value;
+    return !requiredValueIsValid(key, value);
   });
 
   function existingValue(target: string) {
@@ -247,7 +259,7 @@ export default function SaveSubmissionToPeopleModal({
             <label className="text-sm font-semibold text-slate-800">What would you like to do?</label>
             <select value={action} onChange={(event) => switchAction(event.target.value as typeof action)} className="w-full rounded-xl border bg-white px-3 py-2.5 text-sm">
               <option value="update_person">Update existing person</option>
-              <option value="create_person">Create new person</option>
+              <option value="create_person" disabled={isReprocessing}>Create new person</option>
             </select>
             {action === "create_person" ? <label className="flex w-full items-start gap-3 rounded-2xl border bg-slate-50 p-3 text-sm sm:col-span-2">
               <input type="checkbox" checked={saveAsFirstTimer} onChange={(event) => setSaveAsFirstTimer(event.target.checked)} className="mt-0.5" />
@@ -256,12 +268,17 @@ export default function SaveSubmissionToPeopleModal({
           </div>
 
           {action === "update_person" ? <section className="rounded-2xl border bg-slate-50 p-4">
+            {isReprocessing && candidate ? <div>
+              <div className="text-sm font-semibold">Apply again to the linked person</div>
+              <div className="mt-2 rounded-xl border bg-white px-3 py-2.5 text-sm"><b>{candidate.first_name} {candidate.last_name}</b><span className="ml-2 text-xs text-slate-500">{candidateTypeLabel(candidate)}</span></div>
+              <p className="mt-2 text-xs text-slate-600">Choose the submitted values to overwrite. Church Admin will keep the earlier audit event and record this as another update.</p>
+            </div> : <>
             <label className="text-sm font-semibold">Find the existing person</label>
             <input value={search} onChange={(event) => { setSearch(event.target.value); setCandidate(null); }} placeholder="Search name, email, or phone" className="mt-2 w-full rounded-xl border bg-white px-3 py-2 text-sm" />
             {search.trim().length >= 2 ? <div className="mt-2 max-h-56 overflow-y-auto rounded-xl border bg-white">
               {(payload?.candidates ?? []).map((item, index) => <button key={item.id} type="button" onClick={() => setCandidate(item)} className={`flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm ${index ? "border-t border-slate-200" : ""} ${candidate?.id === item.id ? "bg-blue-50" : "hover:bg-slate-50"}`}><span><b>{item.first_name} {item.last_name}</b><span className="ml-2 text-xs text-slate-500">{candidateTypeLabel(item)}</span></span><span className="text-xs capitalize text-slate-500">{item.status}</span></button>)}
               {(payload?.candidates ?? []).length === 0 ? <div className="px-2 py-3 text-sm text-slate-500">No matching active or archived people.</div> : null}
-            </div> : null}
+            </div> : null}</>}
           </section> : null}
 
           <section>
@@ -299,13 +316,13 @@ export default function SaveSubmissionToPeopleModal({
             </div>
           </section>
 
-          {action !== "update_person" && missingRequired.length ? <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+          {action !== "update_person" && manualRequiredKeys.length ? <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
             <h3 className="font-semibold text-amber-950">Missing required details</h3><p className="mt-1 text-sm text-amber-800">Add only the details that could not be filled reliably from this response.</p>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              {missingRequired.includes("first_name") ? <label className="text-sm font-semibold">First name<input value={manual.first_name ?? ""} onChange={(e) => setManual((v) => ({...v,first_name:e.target.value}))} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 font-normal" /></label> : null}
-              {missingRequired.includes("last_name") ? <label className="text-sm font-semibold">Last name<input value={manual.last_name ?? ""} onChange={(e) => setManual((v) => ({...v,last_name:e.target.value}))} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 font-normal" /></label> : null}
-              {missingRequired.includes("gender") ? <label className="text-sm font-semibold">Gender<select value={manual.gender?.toLowerCase() ?? ""} onChange={(e) => setManual((v) => ({...v,gender:e.target.value}))} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 font-normal"><option value="">Choose…</option><option value="male">Male</option><option value="female">Female</option></select></label> : null}
-              {missingRequired.includes("age_group") ? <label className="text-sm font-semibold">Age group<select value={manual.age_group ?? ""} onChange={(e) => setManual((v) => ({...v,age_group:e.target.value}))} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 font-normal"><option value="">Choose…</option>{["1-12","13-17","18-35","36+"].map((v)=><option key={v}>{v}</option>)}</select></label> : null}
+              {manualRequiredKeys.includes("first_name") ? <label className="text-sm font-semibold">First name<input value={manual.first_name ?? ""} onChange={(e) => setManual((v) => ({...v,first_name:e.target.value}))} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 font-normal" /></label> : null}
+              {manualRequiredKeys.includes("last_name") ? <label className="text-sm font-semibold">Last name<input value={manual.last_name ?? ""} onChange={(e) => setManual((v) => ({...v,last_name:e.target.value}))} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 font-normal" /></label> : null}
+              {manualRequiredKeys.includes("gender") ? <label className="text-sm font-semibold">Gender<select value={manual.gender?.toLowerCase() ?? ""} onChange={(e) => setManual((v) => ({...v,gender:e.target.value}))} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 font-normal"><option value="">Choose…</option><option value="male">Male</option><option value="female">Female</option></select></label> : null}
+              {manualRequiredKeys.includes("age_group") ? <label className="text-sm font-semibold">Age group<select value={manual.age_group ?? ""} onChange={(e) => setManual((v) => ({...v,age_group:e.target.value}))} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 font-normal"><option value="">Choose…</option>{["1-12","13-17","18-35","36+"].map((v)=><option key={v}>{v}</option>)}</select></label> : null}
             </div>
           </section> : null}
         </div>}

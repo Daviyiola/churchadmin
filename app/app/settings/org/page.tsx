@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { supabase } from "@/lib/supabaseClient";
-import { getActiveOrgId } from "@/lib/auth";
+import { getAccessToken, getActiveOrgId } from "@/lib/auth";
 import BrandLogo from "@/components/BrandLogo";
 import { applyOrgTheme } from "@/lib/theme/applyOrgTheme";
 import { hexToRgbTriplet, rgbTripletToHex } from "@/lib/utils/color";
@@ -79,6 +79,7 @@ export default function OrgSettingsPage() {
   const [error, setError] = useState("");
 
   const [org, setOrg] = useState<OrgRow | null>(null);
+  const [orgName, setOrgName] = useState("");
 
   // persisted settings
   const [saved, setSaved] = useState<SettingsRow | null>(null);
@@ -128,6 +129,7 @@ export default function OrgSettingsPage() {
       rgbTripletToHex(saved.report_banner_text_rgb) ?? "#ffffff";
 
     return (
+      orgName !== (org?.name ?? "") ||
       useDefaultLogo !== !!saved.use_default_logo ||
       (useDefaultLogo
         ? false
@@ -147,6 +149,7 @@ export default function OrgSettingsPage() {
       mailingCountry !== (saved.mailing_country ?? "United States")
     );
   }, [
+    orgName, org,
     saved,
     useDefaultLogo,
     logoPath,
@@ -215,6 +218,7 @@ export default function OrgSettingsPage() {
       if (!alive) return;
 
       setOrg(orgRow ?? null);
+      setOrgName(orgRow?.name ?? "");
 
       const normalized: SettingsRow = {
         logo_path: setRow?.logo_path ?? null,
@@ -350,6 +354,15 @@ export default function OrgSettingsPage() {
     setError("");
 
     try {
+      if (orgName.trim().length < 2 || orgName.trim().length > 120) throw new Error("Enter an organization name between 2 and 120 characters.");
+      if (orgName.trim() !== org?.name) {
+        const token = await getAccessToken();
+        const response = await fetch("/api/org/setup", { method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ organization_id: orgId, name: orgName }), signal: AbortSignal.timeout(30000) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "Unable to update organization name.");
+        setOrg(value => value ? { ...value, name: orgName.trim() } : value);
+        setOrgName(orgName.trim());
+      }
       const triplet = hexToRgbTriplet(primaryHex);
       if (!triplet) {
         setSaving(false);
@@ -386,7 +399,7 @@ export default function OrgSettingsPage() {
         mailing_city: mailingCity.trim() || null,
         mailing_state: mailingState.trim() || null,
         mailing_postal_code: mailingPostalCode.trim() || null,
-        mailing_country: mailingCountry.trim() || null,
+        mailing_country: mailingCountry.trim(),
       };
 
       const { error: upErr } = await supabase
@@ -454,6 +467,7 @@ export default function OrgSettingsPage() {
   function resetToSaved() {
     if (!saved) return;
 
+    setOrgName(org?.name ?? "");
     setUseDefaultLogo(!!saved.use_default_logo);
     setLogoPath(saved.logo_path);
     setPendingFile(null);
@@ -484,7 +498,7 @@ export default function OrgSettingsPage() {
       <Toast show={toastOpen} text={toastText} />
 
       <div className="border-b">
-        <div className="flex items-center justify-between px-6 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4">
           <div>
             <div className="text-xl font-semibold">Organization</div>
             <div className="text-sm text-slate-600">
@@ -492,7 +506,7 @@ export default function OrgSettingsPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={saveAll}
               disabled={!canEdit || saving}
@@ -530,17 +544,17 @@ export default function OrgSettingsPage() {
             <div className="border-b px-5 py-4">
               <div className="text-xl font-semibold">Organization info</div>
               <div className="mt-1 text-xs text-slate-600">
-                Read-only details about this organization.
+                Update your organization name and review its details.
               </div>
             </div>
 
             <div className="px-5 py-4 text-sm">
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <div className="text-xs font-semibold text-slate-600">
+                  <label htmlFor="organization-name" className="text-xs font-semibold text-slate-600">
                     Registered name
-                  </div>
-                  <div className="mt-1 font-semibold">{org?.name ?? "—"}</div>
+                  </label>
+                  <input id="organization-name" value={orgName} disabled={!canEdit || saving} minLength={2} maxLength={120} onChange={e => setOrgName(e.target.value)} className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm" />
                 </div>
 
                 <div>

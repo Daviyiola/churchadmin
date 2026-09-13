@@ -1,3 +1,4 @@
+import { renderEmailDocument } from "@/lib/email/render";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendManagedEmail } from "@/lib/server/email";
@@ -60,44 +61,7 @@ async function downloadFileBase64(bucket: string, path: string) {
   return buf.toString("base64");
 }
 
-function escapeRegExp(s: string) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
-function rewriteInlineImages(html: string, uploads: UploadRow[]) {
-  let out = html;
-
-  for (const u of uploads) {
-    if (u.upload_mode !== "inline" || !u.inline_cid) continue;
-
-    // A) by data-upload-id
-    const reById = new RegExp(
-      `(<img\\b[^>]*\\bdata-upload-id=["']${escapeRegExp(u.id)}["'][^>]*\\bsrc=["'])([^"']*)(["'])`,
-      "gi",
-    );
-    out = out.replace(reById, `$1cid:${u.inline_cid}$3`);
-
-    // B) by preview_url exact match
-    if (u.preview_url) {
-      const reByUrl = new RegExp(
-        `(<img\\b[^>]*\\bsrc=["'])${escapeRegExp(u.preview_url)}(["'])`,
-        "gi",
-      );
-      out = out.replace(reByUrl, `$1cid:${u.inline_cid}$2`);
-    }
-
-    // ✅ C) by storage path appearing inside the src (covers signed/public URLs)
-    if (u.path) {
-      const reByPathInSrc = new RegExp(
-        `(<img\\b[^>]*\\bsrc=["'])([^"']*${escapeRegExp(u.path)}[^"']*)(["'])`,
-        "gi",
-      );
-      out = out.replace(reByPathInSrc, `$1cid:${u.inline_cid}$3`);
-    }
-  }
-
-  return out;
-}
 
 export async function POST(req: Request) {
   try {
@@ -228,7 +192,7 @@ export async function POST(req: Request) {
       .select(
         "id, bucket, path, filename, content_type, upload_mode, inline_cid, preview_url",
       )
-      .eq("campaign_id", campaign_id);
+      .eq("campaign_id", campaign_id).eq("org_id", organization_id);
 
     if (upErr) throw new Error(upErr.message);
 
@@ -236,7 +200,7 @@ export async function POST(req: Request) {
 
     const attachmentsRaw = await Promise.all(
       uploadRows.map(async (file) => {
-        if (!file.bucket || !file.path || !file.filename) return null;
+        if (!file.bucket || !file.path || !file.filename) throw new Error("An attachment is unavailable. Remove it and upload it again before sending.");
 
         const base64 = await downloadFileBase64(file.bucket, file.path);
 
@@ -265,11 +229,8 @@ export async function POST(req: Request) {
     const htmlFromBody = String(body?.body_html ?? "") || campaign.body_html;
     const subjectFromBody = String(body?.subject ?? "") || campaign.subject;
 
-    const firstImg = htmlFromBody.match(/<img\b[^>]*>/i)?.[0] ?? null;
-    console.log("first img tag:", firstImg);
 
-    const htmlWithCid = rewriteInlineImages(htmlFromBody, uploadRows);
-    console.log("has cid:", htmlWithCid.includes("cid:"));
+    const htmlWithCid = renderEmailDocument(htmlFromBody, uploadRows);
 
     // Send
     const sendRes = await sendManagedEmail({

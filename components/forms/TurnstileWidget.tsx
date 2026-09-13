@@ -18,9 +18,11 @@ const TEST_SITE_KEY = "1x00000000000000000000AA";
 export default function TurnstileWidget({
   onToken,
   resetSignal,
+  action = "public_form_submit",
 }: {
   onToken: (token: string) => void;
   resetSignal: number;
+  action?: "public_form_submit" | "attendance_checkin";
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetIdRef = useRef<string | null>(null);
@@ -33,7 +35,7 @@ export default function TurnstileWidget({
     if (!scriptReady || !siteKey || !containerRef.current || !window.turnstile || widgetIdRef.current) return;
     widgetIdRef.current = window.turnstile.render(containerRef.current, {
       sitekey: siteKey,
-      action: "public_form_submit",
+      action,
       appearance: "interaction-only",
       size: "flexible",
       theme: "auto",
@@ -55,7 +57,7 @@ export default function TurnstileWidget({
       if (widgetIdRef.current && window.turnstile) window.turnstile.remove(widgetIdRef.current);
       widgetIdRef.current = null;
     };
-  }, [onToken, scriptReady, siteKey]);
+  }, [action, onToken, scriptReady, siteKey]);
 
   useEffect(() => {
     if (!resetSignal || !widgetIdRef.current || !window.turnstile) return;

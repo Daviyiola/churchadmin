@@ -238,22 +238,21 @@ export default function FormSubmissionInboxPage() {
         {payload?.submissions.map((submission) => {
           const fields = submission.form_snapshot?.fields ?? [];
           return <details key={submission.id} className="group rounded-3xl border bg-white shadow-sm open:ring-1 open:ring-slate-200">
-            <summary className="flex cursor-pointer list-none flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+            <summary className="grid cursor-pointer list-none gap-3 p-5 sm:grid-cols-[minmax(0,1fr)_24rem] sm:items-center">
               <div className="min-w-0">
                 <div className="truncate font-semibold">{submissionName(submission)}</div>
                 <div className="mt-1 text-xs text-slate-500">Submitted {new Date(submission.submitted_at).toLocaleString()} · Form version {submission.form_revision}</div>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="rounded-full border bg-primary/[0.04] px-2.5 py-1 text-xs font-semibold text-slate-600">
+              <div className="flex items-center gap-2 sm:grid sm:grid-cols-[7rem_9.5rem_6.5rem]">
+                <span className="rounded-full border bg-primary/[0.04] px-2.5 py-1 text-center text-xs font-semibold text-slate-600">
                   {submission.source_type === "campaign"
                     ? submission.source_label || "Campaign link"
                     : submission.source_type === "personal"
                       ? "Personal link"
                       : "View"}
                 </span>
-                {submission.person_action ? <Link href="/app/people/members" className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:underline"><span className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[10px] leading-none text-white" aria-hidden="true">✓</span>{{created_member:"Member created",created_visitor:"Visitor created",updated_member:"Member updated",updated_visitor:"Visitor updated"}[submission.person_action]}</Link> : null}
-                {submission.capacity_status === "capacity_pending" ? <span className="rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-800">First-timer capacity pending</span> : null}
-                <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold capitalize ${submission.status === "new" ? "border-amber-200 bg-amber-50 text-amber-700" : submission.status === "archived" ? "border-slate-300 bg-slate-100 text-slate-600" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>{submission.status}</span>
+                {submission.person_action ? <Link href="/app/people/members" className="inline-flex w-full items-center justify-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-center text-xs font-semibold text-emerald-700 hover:underline"><span className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[10px] leading-none text-white" aria-hidden="true">✓</span>{{created_member:"Member created",created_visitor:"Visitor created",updated_member:"Member updated",updated_visitor:"Visitor updated"}[submission.person_action]}</Link> : submission.capacity_status === "capacity_pending" ? <span className="w-full rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-center text-xs font-semibold text-amber-800">Capacity pending</span> : <span className="hidden sm:block" aria-hidden="true" />}
+                <span className={`rounded-full border px-2.5 py-1 text-center text-xs font-semibold capitalize ${submission.status === "new" ? "border-amber-200 bg-amber-50 text-amber-700" : submission.status === "archived" ? "border-slate-300 bg-slate-100 text-slate-600" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>{submission.status}</span>
               </div>
             </summary>
             <div className="border-t px-5 py-5">
@@ -261,7 +260,7 @@ export default function FormSubmissionInboxPage() {
                 {fields.map((field) => <div key={field.key} className="rounded-2xl bg-primary/[0.035] px-4 py-3"><dt className="text-xs font-semibold text-slate-500">{field.label}</dt><dd className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{answerText(submission.answers[field.key])}</dd></div>)}
               </dl>
               <div className="mt-5 flex flex-wrap justify-end gap-2 border-t pt-4">
-                {(payload.form.form_kind !== "first_timer" || submission.capacity_status === "capacity_pending") && !submission.person_action ? <button disabled={updating === submission.id} onClick={() => setPeopleSubmission(submission)} className="rounded-xl bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50">Save to People</button> : null}
+                {(payload.form.form_kind !== "first_timer" || submission.capacity_status === "capacity_pending") ? <button disabled={updating === submission.id} onClick={() => setPeopleSubmission(submission)} className="rounded-xl bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50">Save to People</button> : null}
                 {submission.status === "new" ? <button disabled={updating === submission.id} onClick={() => void setSubmissionStatus(submission.id, "reviewed")} className="rounded-xl border px-3 py-1.5 text-xs font-semibold hover:bg-slate-50 disabled:opacity-50">Mark reviewed</button> : null}
                 {submission.status !== "archived" ? <button disabled={updating === submission.id} onClick={() => void setSubmissionStatus(submission.id, "archived")} className="rounded-xl border px-3 py-1.5 text-xs font-semibold hover:bg-slate-50 disabled:opacity-50">Archive</button> : <button disabled={updating === submission.id} onClick={() => void setSubmissionStatus(submission.id, "reviewed")} className="rounded-xl border px-3 py-1.5 text-xs font-semibold hover:bg-slate-50 disabled:opacity-50">Restore to reviewed</button>}
               </div>

@@ -67,7 +67,7 @@ export function GlobalModalProvider({ children }: { children: React.ReactNode })
       {/* Global modal UI */}
       {modal.open ? (
         <div className="fixed inset-0 z-[9999] grid place-items-center bg-black/40 p-4">
-          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-xl">
+          <div className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-3xl bg-white p-6 shadow-xl">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-lg font-semibold">{modal.title}</div>

@@ -18,6 +18,7 @@ export async function POST(req: Request) {
   if (userErr || !userData.user) return NextResponse.json({ error: "Invalid auth token" }, { status: 401 });
 
   const user = userData.user;
+  if (!user.email_confirmed_at) return NextResponse.json({ error: "Verify your email before accepting this invitation." }, { status: 409 });
 
   const { token } = await req.json();
   if (!token) return NextResponse.json({ error: "Missing invite token" }, { status: 400 });

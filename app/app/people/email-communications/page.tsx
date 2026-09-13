@@ -1,4 +1,6 @@
 "use client";
+import EmailPreview from "@/components/EmailPreview";
+import { emailCampaignContent } from "@/lib/email/campaign";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
@@ -151,97 +153,14 @@ function escapeHtml(s: string) {
     .replaceAll("'", "&#039;");
 }
 
-function normalizePreviewHtml(html: string) {
-  // Turn truly empty paragraphs OR <p><br></p> into <p>&nbsp;</p>
-  // so they occupy vertical space in preview like the editor.
-  return html
-    .replace(/<p>\s*<\/p>/g, "<p>&nbsp;</p>")
-    .replace(/<p>\s*<br\s*\/?>\s*<\/p>/g, "<p>&nbsp;</p>");
-}
+
 
 function stripOuterHtmlDoc(html: string) {
   // TipTap returns fragments, but just in case:
   return html.replace(/<\/?(html|head|body)[^>]*>/gi, "");
 }
 
-function wrapEmailHtml(innerHtml: string, opts?: { maxWidthPx?: number }) {
-  const w = Math.max(320, Math.min(900, opts?.maxWidthPx ?? 600));
 
-  return `
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="x-apple-disable-message-reformatting" />
-  </head>
-  <body style="margin:0;padding:0;background:#ffffff;">
-    <center style="width:100%;background:#ffffff;">
-      <!--[if mso]>
-      <table role="presentation" width="${w}" align="center" cellpadding="0" cellspacing="0" border="0">
-        <tr>
-          <td>
-      <![endif]-->
-
-      <table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0"
-        width="100%"
-        style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;">
-        <tr>
-          <td align="center" style="padding:24px 12px;">
-            <table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0"
-              width="${w}"
-              style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;width:${w}px;max-width:${w}px;">
-              <tr>
-                <td style="padding:0;">
-                  ${innerHtml}
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-      </table>
-
-      <!--[if mso]>
-          </td>
-        </tr>
-      </table>
-      <![endif]-->
-    </center>
-  </body>
-</html>
-  `.trim();
-}
-
-function clampEmailImages(html: string, maxWidthPx: number): string {
-  return html.replace(
-    /<img\b([^>]*?)>/gi,
-    (_match: string, attrs: string): string => {
-      // Ensure width attribute (helps Gmail + Outlook)
-      const hasWidthAttr = /\bwidth\s*=\s*["']/i.test(attrs);
-      const attrsWithWidth = hasWidthAttr
-        ? attrs
-        : `${attrs} width="${maxWidthPx}"`;
-
-      // Ensure responsive inline styles
-      const styleRe = /\bstyle\s*=\s*"([^"]*)"/i;
-
-      if (styleRe.test(attrsWithWidth)) {
-        return `<img${attrsWithWidth.replace(
-          styleRe,
-          (_styleMatch: string, styleValue: string): string => {
-            const extra = `width:100%;max-width:${maxWidthPx}px;height:auto;display:block;`;
-
-            const nextStyle = `${styleValue};${extra}`.replace(/;;+/g, ";");
-
-            return `style="${nextStyle}"`;
-          },
-        )}>`;
-      }
-
-      return `<img${attrsWithWidth} style="width:100%;max-width:${maxWidthPx}px;height:auto;display:block;">`;
-    },
-  );
-}
 
 type HistoryDetailPayload = {
   subject: string;
@@ -409,7 +328,6 @@ export default function CommunicationsPage() {
   const editorRef = useRef<TipTapHandle | null>(null);
 
   const [replyToEmail, setReplyToEmail] = useState<string>(""); // single source of truth
-  const [logoUrl, setLogoUrl] = useState<string | null>(null); // optional
 
   const [bodyHtml, setBodyHtml] = useState<string>("");
 
@@ -458,7 +376,7 @@ export default function CommunicationsPage() {
 
   const previewHtml = useMemo(() => {
     const raw = stripOuterHtmlDoc(fillVars(bodyHtml, vars));
-    return normalizePreviewHtml(raw);
+    return raw;
   }, [bodyHtml, vars]);
 
   const loadMembers = useCallback(async () => {
@@ -850,9 +768,7 @@ export default function CommunicationsPage() {
           Authorization: `Bearer ${jwt}`,
         },
         body: JSON.stringify({
-          organization_id: orgId,
-          subject: previewSubject,
-          body_html: previewHtml,
+          ...emailCampaignContent({ organizationId: orgId, subject: previewSubject, html: previewHtml, uploads }),
           total_recipients: 1,
         }),
       });
@@ -907,9 +823,7 @@ export default function CommunicationsPage() {
 
     try {
       const subj = previewSubject;
-      const w = 600;
       const bod = previewHtml.trim();
-      const safe = clampEmailImages(bod, w);
 
       if (!subj) throw new Error("Subject required");
       if (!bod) throw new Error("Body required");
@@ -926,14 +840,7 @@ export default function CommunicationsPage() {
           Authorization: `Bearer ${jwt}`,
         },
         body: JSON.stringify({
-          organization_id: orgId,
-          subject: previewSubject,
-          body_html: wrapEmailHtml(safe, { maxWidthPx: w }),
-          uploads: uploads.map((u) => ({
-            upload_id: u.upload_id,
-            upload_mode: u.mode,
-            inline_cid: u.mode === "inline" ? u.inline_cid : undefined,
-          })),
+          ...emailCampaignContent({ organizationId: orgId, subject: previewSubject, html: previewHtml, uploads }),
           total_recipients: tos.length,
         }),
       });
@@ -1517,38 +1424,9 @@ export default function CommunicationsPage() {
 
                 <div className="px-6 py-6">
                   {/* optional logo area */}
-                  {logoUrl ? (
-                    <div className="mb-4">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={logoUrl} alt="logo" className="h-10 w-auto" />
-                    </div>
-                  ) : null}
-                  <style jsx global>{`
-                    .emailPreview {
-                      max-width: 600px;
-                      margin: 0 auto;
-                    }
-                    .emailPreview ul {
-                      list-style: disc !important;
-                      padding-left: 24px !important;
-                      margin: 12px 0 !important;
-                    }
-                    .emailPreview ol {
-                      list-style: decimal !important;
-                      padding-left: 24px !important;
-                      margin: 12px 0 !important;
-                    }
-                    .emailPreview a {
-                      color: #2563eb !important;
-                      text-decoration: underline !important;
-                      text-underline-offset: 2px !important;
-                    }
-                  `}</style>
 
-                  <div
-                    className="emailPreview rounded-2xl border bg-white p-4 text-sm"
-                    dangerouslySetInnerHTML={{ __html: previewHtml }}
-                  />
+                  <EmailPreview html={previewHtml} />
+                  <p className="mt-2 text-xs text-slate-500">This previews the message body. Broadcasts also include your mailing address and email preference links. Your email app may adjust colors in dark mode.</p>
                 </div>
               </div>
 

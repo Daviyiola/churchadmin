@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import BrandLogo from "@/components/BrandLogo";
+import { applyOrgContext } from "@/lib/auth";
 
 function isAlreadyRegisteredError(msg: string) {
   const m = msg.toLowerCase();
@@ -30,6 +31,13 @@ export default function InviteAcceptPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
+  const [sessionEmail, setSessionEmail] = useState("");
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => {
+      const user = data.session?.user;
+      if (user?.email_confirmed_at && user.email) { setSessionEmail(user.email.toLowerCase()); setEmail(user.email); setMode("signin"); setNote("Your account is verified. Accept the invitation to continue."); }
+    });
+  }, []);
 
   const pwMismatch =
     mode === "signup" && pw.length > 0 && pw2.length > 0 && pw !== pw2;
@@ -37,16 +45,18 @@ export default function InviteAcceptPage() {
   const canSubmit = useMemo(() => {
     const e = email.trim().toLowerCase();
     if (!e || !e.includes("@") || !e.includes(".")) return false;
-    if (pw.length < 6) return false;
-    if (mode === "signup" && pwMismatch) return false;
+    if (sessionEmail === e) return true;
+    if (pw.length < (mode === "signup" ? 8 : 1)) return false;
+    if (mode === "signup" && (pwMismatch || !pw2)) return false;
     return true;
-  }, [email, pw, pwMismatch, mode]);
+  }, [email, pw, pw2, pwMismatch, mode, sessionEmail]);
 
   async function validateInviteOrFail(enteredEmail: string) {
     const v = await fetch("/api/invites/validate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token, email: enteredEmail }),
+      signal: AbortSignal.timeout(15000),
     });
 
     const vjson = await v.json();
@@ -61,10 +71,14 @@ export default function InviteAcceptPage() {
         Authorization: `Bearer ${accessToken}`,
       },
       body: JSON.stringify({ token }),
+      signal: AbortSignal.timeout(30000),
     });
 
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || "Failed to accept invite.");
+    const context = await applyOrgContext(json.organization_id);
+    if (!context.ok) throw new Error(context.message);
+    router.replace("/app");
   }
 
   async function getAccessTokenOrFail() {
@@ -72,7 +86,7 @@ export default function InviteAcceptPage() {
     const access = data.session?.access_token;
     if (!access) {
       throw new Error(
-        "No session found. If email confirmation is enabled in Supabase, disable it for v1 or we’ll add confirmation flow."
+        "Verify your email, then sign in here to accept the invitation."
       );
     }
     return access;
@@ -88,15 +102,13 @@ export default function InviteAcceptPage() {
     const accessToken = await getAccessTokenOrFail();
     await acceptInviteOrFail(accessToken);
 
-    // Keep your org-selection sign-in flow consistent
-    await supabase.auth.signOut();
-    router.push("/signin");
   }
 
   async function doSignUpAndAccept(enteredEmail: string) {
-    const { error: signUpErr } = await supabase.auth.signUp({
+    const { data, error: signUpErr } = await supabase.auth.signUp({
       email: enteredEmail,
       password: pw,
+      options: { emailRedirectTo: `${location.origin}/invite/${encodeURIComponent(token)}` },
     });
 
     if (signUpErr) {
@@ -109,11 +121,14 @@ export default function InviteAcceptPage() {
       throw new Error(signUpErr.message);
     }
 
+    if (!data.session) {
+      setMode("signin");
+      setNote("Check your email to verify your account, then return here to accept the invitation. If you already have an account, sign in below.");
+      return;
+    }
     const accessToken = await getAccessTokenOrFail();
     await acceptInviteOrFail(accessToken);
 
-    await supabase.auth.signOut();
-    router.push("/signin");
   }
 
   async function handleSubmit() {
@@ -127,7 +142,9 @@ export default function InviteAcceptPage() {
       // 0) Validate token + email FIRST (prevents junk auth users)
       await validateInviteOrFail(enteredEmail);
 
-      if (mode === "signin") {
+      if (sessionEmail === enteredEmail) {
+        await acceptInviteOrFail(await getAccessTokenOrFail());
+      } else if (mode === "signin") {
         await doSignInAndAccept(enteredEmail);
       } else {
         await doSignUpAndAccept(enteredEmail);
@@ -205,7 +222,7 @@ export default function InviteAcceptPage() {
             autoComplete="email"
           />
 
-          <label className="mt-4 block text-sm font-medium">
+          {(!sessionEmail || sessionEmail !== email.trim().toLowerCase()) && <><label className="mt-4 block text-sm font-medium">
             Password {mode === "signin" ? "(your existing password)" : ""}
           </label>
           <input
@@ -213,7 +230,7 @@ export default function InviteAcceptPage() {
             value={pw}
             onChange={(e) => setPw(e.target.value)}
             className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-slate-200"
-            placeholder="Minimum 6 characters"
+            placeholder={mode === "signup" ? "Minimum 8 characters" : "Your password"}
             autoComplete={mode === "signin" ? "current-password" : "new-password"}
           />
 
@@ -232,7 +249,7 @@ export default function InviteAcceptPage() {
                 <div className="mt-2 text-sm text-red-600">Passwords do not match.</div>
               ) : null}
             </>
-          ) : null}
+          ) : null}</>}
 
           <button
             disabled={loading || !canSubmit}
@@ -243,7 +260,7 @@ export default function InviteAcceptPage() {
               ? mode === "signin"
                 ? "Signing in..."
                 : "Creating account..."
-              : mode === "signin"
+              : sessionEmail === email.trim().toLowerCase() ? "Accept invite" : mode === "signin"
               ? "Sign in & accept invite"
               : "Accept invite"}
           </button>

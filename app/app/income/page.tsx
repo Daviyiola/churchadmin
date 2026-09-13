@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 import FloatingXScroll from "@/components/FloatingXScroll";
+import ServiceCombobox from "@/components/ServiceCombobox";
 
 /* ===================== Types ===================== */
 
@@ -1951,18 +1952,13 @@ export default function IncomePage() {
                 <div className="mb-1 text-xs font-semibold text-slate-600">
                   Service *
                 </div>
-                <select
-                  className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                <ServiceCombobox
+                  orgId={orgId ?? ""}
                   value={batchServiceId}
-                  onChange={(e) => setBatchServiceId(e.target.value)}
-                >
-                  <option value="">Select…</option>
-                  {serviceCats.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                  services={serviceCats}
+                  onChange={setBatchServiceId}
+                  onCreated={(service) => setServiceCats((current) => [...current, { ...service, type: "services", status: "active" } as CategoryRow].sort((a,b) => a.name.localeCompare(b.name)))}
+                />
               </div>
 
               <div>

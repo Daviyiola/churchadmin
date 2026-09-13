@@ -21,6 +21,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [orgName, setOrgName] = useState<string>("");
   const [logoPath, setLogoPath] = useState<string | null>(null);
   const [useDefaultLogo, setUseDefaultLogo] = useState(true);
+  const [needsSetup, setNeedsSetup] = useState(false);
 
   const [meId, setMeId] = useState<string | null>(null);
   const [meEmail, setMeEmail] = useState<string | null>(null);
@@ -85,7 +86,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     const { data: settings, error: setErr } = await supabase
       .from("organization_settings")
       .select(
-        "logo_path, use_default_logo, primary_rgb, primary_hover_rgb, accent_rgb",
+        "logo_path, use_default_logo, primary_rgb, primary_hover_rgb, accent_rgb, timezone_confirmed",
       )
       .eq("organization_id", orgId)
       .maybeSingle();
@@ -95,6 +96,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     setOrgName(org?.name ?? "");
     setLogoPath(settings?.logo_path ?? null);
     setUseDefaultLogo(settings?.use_default_logo ?? true);
+    setNeedsSetup(!settings?.timezone_confirmed);
 
     applyOrgTheme(settings ?? {});
     setReady(true);
@@ -118,10 +120,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-dvh bg-white text-slate-900">
-      <div className="flex min-h-dvh">
+      <div className="flex min-h-dvh flex-col md:flex-row">
         {/* Sidebar */}
-        <aside className="flex min-h-dvh w-72 flex-col border-r bg-slate-50">
-          <div className="p-5">
+        <aside className="flex w-full shrink-0 flex-col border-b bg-slate-50 md:min-h-dvh md:w-72 md:border-b-0 md:border-r">
+          <div className="flex items-center justify-between gap-3 p-5">
             <div className="flex items-center gap-3">
               <div className="h-10 w-10 overflow-hidden flex items-center justify-center">
                 {useDefaultLogo || !logoPath ? (
@@ -145,9 +147,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 </div>
               </div>
             </div>
+            <button className="shrink-0 rounded-2xl border bg-white px-3 py-2 text-sm md:hidden" onClick={async () => { await signOut(); router.push("/signin"); }}>Sign out</button>
           </div>
 
-          <nav className="space-y-1 px-3 pb-2">
+          <nav className="flex gap-1 overflow-x-auto px-3 pb-2 md:block md:space-y-1">
             {navItems.map((item) => {
               const active =
                 item.href === "/app"
@@ -159,7 +162,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 <button
                   key={item.label}
                   className={[
-                    "w-full rounded-2xl px-3 py-2 text-left text-sm transition",
+                    "shrink-0 whitespace-nowrap rounded-2xl px-3 py-2 text-left text-sm transition md:w-full",
                     active
                       ? "bg-primary text-white"
                       : "text-slate-800 hover:bg-white",
@@ -172,7 +175,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             })}
           </nav>
 
-          <div className="px-4 pb-4 pt-4">
+          <div className="hidden px-4 pb-4 pt-4 md:block">
             <div className="rounded-3xl border bg-white p-4">
               <div className="text-xs text-slate-500">Signed in</div>
               <div className="text-sm font-semibold truncate">
@@ -194,7 +197,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </aside>
 
         {/* Main */}
-        <main className="min-h-dvh min-w-0 flex-1">{children}</main>
+        <main className="min-h-dvh min-w-0 flex-1">
+          {needsSetup && role === "owner" && pathname !== "/app/setup" && <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-slate-50 px-6 py-4 text-sm"><span>Finish setting up your organization’s timezone, branding, and email address details.</span><button onClick={() => router.push("/app/setup")} className="rounded-2xl border bg-white px-4 py-2 font-semibold">Continue setup</button></div>}
+          {children}
+        </main>
       </div>
     </div>
   );

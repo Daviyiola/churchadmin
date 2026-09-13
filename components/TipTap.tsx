@@ -1,5 +1,6 @@
 "use client";
 
+import { EMAIL_EDITOR_CSS } from "@/lib/email/render";
 import React, {
   forwardRef,
   useEffect,
@@ -280,12 +281,7 @@ export const TipTap = forwardRef<TipTapHandle, Props>(function TipTap(
     content: valueHtml || "<p></p>",
     editorProps: {
       attributes: {
-        class:
-          "prose prose-sm max-w-none focus:outline-none px-4 py-3 " +
-          "prose-ul:list-disc prose-ol:list-decimal " +
-          "prose-ul:pl-6 prose-ol:pl-6 " +
-          "prose-li:my-1" +
-          "prose-a:text-blue-600 prose-a:underline prose-a:underline-offset-2",
+        class: "email-editor focus:outline-none",
       },
     },
     onUpdate({ editor }) {
@@ -406,31 +402,7 @@ export const TipTap = forwardRef<TipTapHandle, Props>(function TipTap(
         }
       `}</style>
 
-      <style jsx global>{`
-        .ProseMirror {
-          max-width: 600px;
-          margin: 0 auto;
-        }
-
-        .ProseMirror ul {
-          list-style-type: disc !important;
-          padding-left: 1.5rem !important;
-          margin: 0.5rem 0 !important;
-        }
-        .ProseMirror ol {
-          list-style-type: decimal !important;
-          padding-left: 1.5rem !important;
-          margin: 0.5rem 0 !important;
-        }
-        .ProseMirror li {
-          margin: 0.25rem 0 !important;
-        }
-        .ProseMirror a {
-          color: #2563eb !important; /* blue-600 */
-          text-decoration: underline !important;
-          text-underline-offset: 2px !important;
-        }
-      `}</style>
+      <style>{EMAIL_EDITOR_CSS}</style>
 
       <Toolbar editor={editor} />
 

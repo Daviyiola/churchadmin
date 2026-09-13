@@ -1,9 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 import { useRouter } from "next/navigation";
+import AttendanceQrManager from "@/components/attendance/AttendanceQrManager";
+import UnresolvedCheckins from "@/components/attendance/UnresolvedCheckins";
+import { confirmAttendancePublish } from "@/lib/attendance/publish";
+import ServiceCombobox from "@/components/ServiceCombobox";
 
 type Role = "owner" | "admin" | "finance" | "viewer" | "member";
 type CategoryType = "income" | "expense" | "services";
@@ -181,8 +185,7 @@ export default function AttendanceDraftPage() {
   const router = useRouter();
 
   const [role, setRole] = useState<Role | null>(null);
-  const isFinance = role === "finance" || role === "admin" || role === "owner";
-  const isAdmin = role === "admin" || role === "owner";
+  const canOperateAttendance = role !== null && role !== "viewer";
 
   // quick add member
   const [quickMemberOpen, setQuickMemberOpen] = useState(false);
@@ -236,6 +239,7 @@ export default function AttendanceDraftPage() {
 
   // publish
   const [publishing, setPublishing] = useState(false);
+  const [, setUnresolvedCount] = useState(0);
 
   const draftCount = useMemo(
     () => batches.filter((b) => b.status === "draft").length,
@@ -322,17 +326,19 @@ export default function AttendanceDraftPage() {
     window.setTimeout(() => setToastOpen(false), 1600);
   };
 
-  const loadAll = async () => {
+  const loadAll = async (showLoading = true) => {
     if (!orgId) return;
 
-    setLoading(true);
+    if (showLoading) setLoading(true);
     setErr("");
 
     const myRole = await getMyRoleForOrg(orgId);
     setRole(myRole);
 
-    const [membersRes, catsRes, batchesRes] = await Promise.all([
-      supabase
+    const fetchMembers = async () => {
+      const all: MemberRow[] = [];
+      for (let from = 0; ; from += 1000) {
+        const page = await supabase
         .from("members")
         .select(
           "id,first_name,last_name,status,gender,dob,age_group,segment",
@@ -341,7 +347,15 @@ export default function AttendanceDraftPage() {
         .eq("status", "active")
         .eq("membership_stage", "member")
         .order("last_name", { ascending: true })
-        .order("first_name", { ascending: true }),
+        .order("first_name", { ascending: true }).range(from, from + 999);
+        if (page.error) return { data: null, error: page.error };
+        all.push(...((page.data ?? []) as MemberRow[]));
+        if ((page.data?.length ?? 0) < 1000) break;
+      }
+      return { data: all, error: null };
+    };
+    const [membersRes, catsRes, batchesRes] = await Promise.all([
+      fetchMembers(),
       supabase
         .from("categories")
         .select("id,name,type,status")
@@ -390,24 +404,33 @@ export default function AttendanceDraftPage() {
   const loadDraftContent = async (batchId: string) => {
     if (!orgId) return;
 
-    const [mRes, hRes] = await Promise.all([
-      supabase
-        // IMPORTANT: table name assumption
-        .from("attendance_draft_members")
-        .select("id,org_id,session_id,member_id,note,created_by,created_at")
-        .eq("org_id", orgId)
-        .eq("session_id", batchId)
-        .order("created_at", { ascending: true }),
-      supabase
-        // IMPORTANT: table name assumption
-        .from("attendance_draft_headcounts")
-        .select(
-          "id,org_id,session_id,age_group,gender,count,created_by,created_at",
-        )
-        .eq("org_id", orgId)
-        .eq("session_id", batchId)
-        .order("created_at", { ascending: true }),
-    ]);
+    const fetchDraftMembers = async () => {
+      const rows: DraftMember[] = [];
+      for (let from = 0; ; from += 1000) {
+        const page = await supabase.from("attendance_draft_members")
+          .select("id,org_id,session_id,member_id,note,created_by,created_at")
+          .eq("org_id", orgId).eq("session_id", batchId)
+          .order("created_at", { ascending: true }).range(from, from + 999);
+        if (page.error) return { data: null, error: page.error };
+        rows.push(...((page.data ?? []) as DraftMember[]));
+        if ((page.data?.length ?? 0) < 1000) break;
+      }
+      return { data: rows, error: null };
+    };
+    const fetchHeadcounts = async () => {
+      const rows: DraftHeadcount[] = [];
+      for (let from = 0; ; from += 1000) {
+        const page = await supabase.from("attendance_draft_headcounts")
+          .select("id,org_id,session_id,age_group,gender,count,created_by,created_at")
+          .eq("org_id", orgId).eq("session_id", batchId)
+          .order("created_at", { ascending: true }).range(from, from + 999);
+        if (page.error) return { data: null, error: page.error };
+        rows.push(...((page.data ?? []) as DraftHeadcount[]));
+        if ((page.data?.length ?? 0) < 1000) break;
+      }
+      return { data: rows, error: null };
+    };
+    const [mRes, hRes] = await Promise.all([fetchDraftMembers(), fetchHeadcounts()]);
 
     if (mRes.error) {
       setErr(mRes.error.message);
@@ -423,6 +446,11 @@ export default function AttendanceDraftPage() {
     setDraftMembers((mRes.data ?? []) as DraftMember[]);
     setDraftHeadcounts((hRes.data ?? []) as DraftHeadcount[]);
   };
+  const refreshSelectedDraft = useCallback(() => {
+    if (selectedBatchId) void loadDraftContent(selectedBatchId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBatchId, orgId]);
+  const receiveUnresolvedCount = useCallback((count: number) => setUnresolvedCount(count), []);
 
   useEffect(() => {
     loadAll();
@@ -482,7 +510,7 @@ export default function AttendanceDraftPage() {
   const deleteDraftBatch = async (batchId: string) => {
     // you said: anyone can delete drafts (attendance low-stakes)
     const ok = confirm(
-      "Delete this attendance draft? This will remove its roll/headcount.",
+      "Delete this attendance draft? This will remove its roll/headcount. Any linked recurring QR occurrence will stay closed.",
     );
     if (!ok) return;
 
@@ -609,7 +637,7 @@ export default function AttendanceDraftPage() {
     setQmSaving(true);
     setQmErr("");
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("members")
       .insert({
         org_id: orgId,
@@ -688,28 +716,18 @@ export default function AttendanceDraftPage() {
       return;
     }
 
-    const ok = confirm("Publish this attendance draft?");
-    if (!ok) return;
-
     setPublishing(true);
     setErr("");
-
-    // IMPORTANT:
-    // This assumes you created an RPC named publish_attendance_draft(p_batch_id uuid)
-    // If you haven't, create it similar to publish_income_draft.
-    const { error } = await supabase.rpc("publish_attendance_session", {
-      p_session_id: selectedBatchId,
-    });
-
-    if (error) {
-      setErr(error.message);
+    try {
+      if (await confirmAttendancePublish(selectedBatch.id, window.confirm.bind(window))) {
+        await loadAll();
+        showToast("Published");
+      }
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : "Unable to publish attendance. Please try again.");
+    } finally {
       setPublishing(false);
-      return;
     }
-
-    setPublishing(false);
-    await loadAll();
-    showToast("Published");
   };
 
   if (!orgId)
@@ -724,29 +742,31 @@ export default function AttendanceDraftPage() {
 
       {/* Top bar */}
       <div className="border-b">
-        <div className="flex items-center justify-between px-6 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4">
           <div>
             <div className="text-xl font-semibold">Attendance</div>
             <div className="text-sm text-slate-600">Draft and Publish</div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
-                draftCount >= 10
-                  ? "bg-slate-300"
-                  : "bg-primary hover:bg-primary/85"
-              }`}
-              disabled={draftCount >= 10}
-              onClick={openCreateBatch}
-              title={
-                draftCount >= 10
-                  ? "Max 10 drafts reached"
-                  : "Create a new attendance draft"
-              }
-            >
-              New draft
-            </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {canOperateAttendance ? (
+              <button
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white ${
+                  draftCount >= 10
+                    ? "bg-slate-300"
+                    : "bg-primary hover:bg-primary/85"
+                }`}
+                disabled={draftCount >= 10}
+                onClick={openCreateBatch}
+                title={
+                  draftCount >= 10
+                    ? "Max 10 drafts reached"
+                    : "Create a new attendance draft"
+                }
+              >
+                New draft
+              </button>
+            ) : null}
 
             <button
               className="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50"
@@ -754,6 +774,15 @@ export default function AttendanceDraftPage() {
             >
               View Published
             </button>
+            {canOperateAttendance ? (
+              <AttendanceQrManager
+                orgId={orgId}
+                drafts={batches}
+                services={serviceCats}
+                initialDraftId={selectedBatchId}
+                onChanged={() => { void loadAll(false); }}
+              />
+            ) : null}
           </div>
         </div>
 
@@ -880,6 +909,13 @@ export default function AttendanceDraftPage() {
                   </div>
                 </div>
 
+                <UnresolvedCheckins
+                  sessionId={selectedBatch.id}
+                  members={members}
+                  onResolved={refreshSelectedDraft}
+                  onCount={receiveUnresolvedCount}
+                />
+
                 {/* Default UI: Individual roll (two-list click-to-move) */}
                 <div className="mt-4">
                   <div className="flex items-center justify-between">
@@ -993,11 +1029,9 @@ export default function AttendanceDraftPage() {
                             <div className="space-y-1">
                               {attendedMembers.map(
                                 ({ draftId, member, note }) => (
-                                  <button
+                                  <div
                                     key={draftId}
-                                    className="w-full rounded-xl border px-3 py-2 text-left text-sm hover:bg-slate-50"
-                                    onClick={() => removeDraftMember(draftId)}
-                                    title="Click to unmark"
+                                    className="w-full rounded-xl border px-3 py-2 text-left text-sm"
                                   >
                                     <div className="flex items-start justify-between gap-3">
                                       <div>
@@ -1031,11 +1065,9 @@ export default function AttendanceDraftPage() {
                                           </div>
                                         ) : null}
                                       </div>
-                                      <div className="text-xs text-slate-500">
-                                        Unmark
-                                      </div>
+                                      <button className="rounded-xl border px-3 py-1 text-xs text-slate-600 hover:bg-slate-50" onClick={() => removeDraftMember(draftId)}>Unmark</button>
                                     </div>
-                                  </button>
+                                  </div>
                                 ),
                               )}
                             </div>
@@ -1360,18 +1392,13 @@ export default function AttendanceDraftPage() {
                 <div className="mb-1 text-xs font-semibold text-slate-600">
                   Service *
                 </div>
-                <select
-                  className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-[rgb(var(--brand))]/30"
+                <ServiceCombobox
+                  orgId={orgId}
                   value={batchServiceId}
-                  onChange={(e) => setBatchServiceId(e.target.value)}
-                >
-                  <option value="">Select…</option>
-                  {serviceCats.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                  services={serviceCats}
+                  onChange={setBatchServiceId}
+                  onCreated={(service) => setServiceCats((current) => [...current, { ...service, type: "services", status: "active" } as CategoryRow].sort((a,b) => a.name.localeCompare(b.name)))}
+                />
               </div>
 
               <div>

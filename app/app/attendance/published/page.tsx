@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { getActiveOrgId } from "@/lib/auth";
 import FloatingXScroll from "@/components/FloatingXScroll";
+import ServiceCombobox from "@/components/ServiceCombobox";
 
 type Role = "owner" | "admin" | "finance" | "viewer" | "member";
 type CategoryType = "income" | "expense" | "services";
@@ -39,6 +40,8 @@ type PublishedSession = {
   last_edited_at: string | null;
   last_edited_by: string | null;
   last_edited_by_email: string | null;
+  unresolved_checkins_at_publish: number;
+  attendance_completeness: "complete" | "unresolved_omitted";
 };
 
 type SessionEdit = {
@@ -194,6 +197,29 @@ export default function AttendancePublishedPage() {
     const myRole = await getMyRoleForOrg(orgId);
     setRole(myRole);
 
+    const fetchMembers = async () => {
+      const rows: MemberRow[] = [];
+      for (let from = 0; ; from += 1000) {
+        const page = await supabase.from("members").select("id,first_name,last_name,status")
+          .eq("org_id", orgId).order("last_name", { ascending: true }).order("first_name", { ascending: true }).range(from, from + 999);
+        if (page.error) return { data: null, error: page.error };
+        rows.push(...((page.data ?? []) as MemberRow[]));
+        if ((page.data?.length ?? 0) < 1000) break;
+      }
+      return { data: rows, error: null };
+    };
+    const fetchSessions = async () => {
+      const rows: PublishedSession[] = [];
+      for (let from = 0; ; from += 1000) {
+        const page = await supabase.from("attendance_sessions")
+          .select("id,org_id,service_category_id,session_date,status,created_at,updated_at,published_by,published_at,deleted_at,deleted_by,revision,last_edited_at,last_edited_by,last_edited_by_email,unresolved_checkins_at_publish,attendance_completeness")
+          .eq("org_id", orgId).eq("status", "published").order("published_at", { ascending: false }).range(from, from + 999);
+        if (page.error) return { data: null, error: page.error };
+        rows.push(...((page.data ?? []) as PublishedSession[]));
+        if ((page.data?.length ?? 0) < 1000) break;
+      }
+      return { data: rows, error: null };
+    };
     const [catsRes, membersRes, sessionsRes] = await Promise.all([
       supabase
         .from("categories")
@@ -202,20 +228,8 @@ export default function AttendancePublishedPage() {
         .eq("status", "active")
         .eq("type", "services")
         .order("name", { ascending: true }),
-      supabase
-        .from("members")
-        .select("id,first_name,last_name,status")
-        .eq("org_id", orgId)
-        .order("last_name", { ascending: true })
-        .order("first_name", { ascending: true }),
-      supabase
-        .from("attendance_sessions")
-        .select(
-          "id,org_id,service_category_id,session_date,status,created_at,updated_at,published_by,published_at,deleted_at,deleted_by,revision,last_edited_at,last_edited_by,last_edited_by_email",
-        )
-        .eq("org_id", orgId)
-        .eq("status", "published")
-        .order("published_at", { ascending: false }),
+      fetchMembers(),
+      fetchSessions(),
     ]);
 
     if (catsRes.error)
@@ -237,23 +251,25 @@ export default function AttendancePublishedPage() {
 
   const loadEntries = async (sessionId: string) => {
     if (!orgId) return;
-
-    const res = await supabase
-      .from("attendance_entries")
-      .select(
-        "id,org_id,session_id,service_category_id,session_date,entry_source,member_id,gender,age_group,segment,count,note,published_by,published_at",
-      )
-      .eq("org_id", orgId)
-      .eq("session_id", sessionId)
-      .order("published_at", { ascending: true });
-
-    if (res.error) {
-      setErr(res.error.message);
+    const rows: AttendanceEntry[] = [];
+    for (let from = 0; ; from += 1000) {
+      const res = await supabase.from("attendance_entries")
+        .select("id,org_id,session_id,service_category_id,session_date,entry_source,member_id,gender,age_group,segment,count,note,published_by,published_at")
+        .eq("org_id", orgId).eq("session_id", sessionId)
+        .order("published_at", { ascending: true }).range(from, from + 999);
+      if (res.error) {
+        setErr(res.error.message);
+        setEntries([]);
+        return;
+      }
+      rows.push(...((res.data ?? []) as AttendanceEntry[]));
+      if ((res.data?.length ?? 0) < 1000) break;
+    }
+    if (!rows) {
       setEntries([]);
       return;
     }
-
-    setEntries((res.data ?? []) as AttendanceEntry[]);
+    setEntries(rows);
   };
 
   useEffect(() => {
@@ -603,7 +619,20 @@ export default function AttendancePublishedPage() {
                           </div>
                         </div>
                         <div className="shrink-0">
-                          <Pill>{s.deleted_at ? "Deleted" : "Published"}</Pill>
+                          <div className="flex flex-col items-end gap-1">
+                            <Pill>{s.deleted_at ? "Deleted" : "Published"}</Pill>
+                            {s.unresolved_checkins_at_publish > 0 ? (
+                              <span
+                                className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                                  active
+                                    ? "bg-amber-100 text-amber-950"
+                                    : "bg-amber-50 text-amber-800"
+                                }`}
+                              >
+                                Needs review
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                       </div>
                     </button>
@@ -646,6 +675,11 @@ export default function AttendancePublishedPage() {
                           : "—"}
                       </div>
                     </div>
+                    {selectedSession.unresolved_checkins_at_publish > 0 ? (
+                      <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                        {selectedSession.unresolved_checkins_at_publish} unresolved QR check-in{selectedSession.unresolved_checkins_at_publish === 1 ? " was" : "s were"} omitted. Revert this session to draft before resolving and republishing.
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="flex gap-2">
@@ -830,21 +864,13 @@ export default function AttendancePublishedPage() {
                   <div className="mb-1 text-xs font-semibold text-slate-600">
                     Service *
                   </div>
-                  <select
-                    className="w-full rounded-2xl border px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-200"
+                  <ServiceCombobox
+                    orgId={orgId ?? ""}
                     value={sessionEditServiceId}
-                    onChange={(e) => {
-                      setSessionEditServiceId(e.target.value);
-                      setSessionEditErr("");
-                    }}
-                  >
-                    <option value="">Select…</option>
-                    {serviceCats.map((service) => (
-                      <option key={service.id} value={service.id}>
-                        {service.name}
-                      </option>
-                    ))}
-                  </select>
+                    services={serviceCats}
+                    onChange={(id) => { setSessionEditServiceId(id); setSessionEditErr(""); }}
+                    onCreated={(service) => setServiceCats((current) => [...current, { ...service, type: "services", status: "active" } as CategoryRow].sort((a,b)=>a.name.localeCompare(b.name)))}
+                  />
                 </div>
 
                 <div>

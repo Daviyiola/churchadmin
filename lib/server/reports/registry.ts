@@ -137,8 +137,12 @@ export async function buildReportData(context: NikkyContext, p: CanonicalReportP
     let q = context.supabase.from("attendance_entries").select("session_date,service_category_id,entry_source,member_id,segment,count").eq("org_id", context.organizationId).gte("session_date", p.start_date).lte("session_date", p.end_date).limit(10000);
     if (p.service_ids.length) q = q.in("service_category_id", p.service_ids);
     const { data, error } = await q; if (error) throw new Error(error.message);
+    let incompleteQuery = context.supabase.from("attendance_sessions").select("unresolved_checkins_at_publish").eq("org_id", context.organizationId).eq("status", "published").gte("session_date", p.start_date).lte("session_date", p.end_date).gt("unresolved_checkins_at_publish", 0);
+    if (p.service_ids.length) incompleteQuery = incompleteQuery.in("service_category_id", p.service_ids);
+    const { data: incomplete, error: incompleteError } = await incompleteQuery;
+    if (incompleteError) throw new Error(incompleteError.message);
     const rows = (data ?? []).map((r) => ({ date: r.session_date, service: categories.get(String(r.service_category_id)) ?? "Unknown", source: r.entry_source, segment: r.segment, count: Number(r.count ?? 0) }));
-    return { title: "Quick Attendance", columns: ["date","service","source","segment","count"], rows, summary: { total: rows.reduce((s,r) => s + Number(r.count), 0) }, recordCount: rows.length };
+    return { title: "Quick Attendance", columns: ["date","service","source","segment","count"], rows, summary: { total: rows.reduce((s,r) => s + Number(r.count), 0), sessions_with_unresolved_omissions: incomplete?.length ?? 0, unresolved_responses_omitted: (incomplete ?? []).reduce((sum,row)=>sum+Number(row.unresolved_checkins_at_publish??0),0) }, recordCount: rows.length };
   }
   if (p.report_type === "income_statement") {
     const [income, expense] = await Promise.all([

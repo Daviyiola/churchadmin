@@ -34,7 +34,8 @@ export default function SignInPage() {
   async function choose(row: Membership) {
     const result = await applyOrgContext(row.organization_id);
     if (!result.ok) throw new Error(result.message);
-    router.push("/app");
+    const { data: settings } = await supabase.from("organization_settings").select("timezone_confirmed").eq("organization_id", row.organization_id).maybeSingle();
+    router.push(row.role === "owner" && !settings?.timezone_confirmed ? "/app/setup" : "/app");
   }
 
   async function loadMemberships() {
@@ -45,6 +46,10 @@ export default function SignInPage() {
     if (queryError) throw queryError;
 
     const rows = (data ?? []) as Membership[];
+    if (rows.length === 0) {
+      router.push("/get-started");
+      return;
+    }
     if (rows.length === 1) {
       await choose(rows[0]);
       return;
@@ -72,6 +77,16 @@ export default function SignInPage() {
         // Keep the response generic so the page never reveals whether an account exists.
       }
     }, 0);
+  }
+
+  async function handleSignIn(event: React.FormEvent) {
+    event.preventDefault(); setSigningIn(true); setMessage("");
+    try {
+      const result = await signIn(email.trim(), password);
+      if (!result.ok) throw new Error(result.message);
+      await loadMemberships();
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to sign in."); }
+    finally { setSigningIn(false); }
   }
 
   return (
@@ -121,17 +136,23 @@ export default function SignInPage() {
               })}
             </div>
           ) : (
-            <>
-              <label className="text-sm font-medium">Email</label>
+            <form onSubmit={handleSignIn}>
+              <label htmlFor="signin-email" className="text-sm font-medium">Email</label>
               <input
+                id="signin-email"
+                required
+                autoComplete="email"
                 className="mt-2 w-full rounded-2xl border px-4 py-3"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 type="email"
               />
 
-              <label className="mt-4 block text-sm font-medium">Password</label>
+              <label htmlFor="signin-password" className="mt-4 block text-sm font-medium">Password</label>
               <input
+                id="signin-password"
+                required
+                autoComplete="current-password"
                 className="mt-2 w-full rounded-2xl border px-4 py-3"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
@@ -140,32 +161,21 @@ export default function SignInPage() {
 
               <button
                 disabled={signingIn || resettingPassword || !email || !password}
-                onClick={async () => {
-                  setSigningIn(true);
-                  setMessage("");
-                  const result = await signIn(email.trim(), password);
-                  try {
-                    if (!result.ok) throw new Error(result.message);
-                    await loadMemberships();
-                  } catch (error) {
-                    setMessage(error instanceof Error ? error.message : "Unable to sign in.");
-                  } finally {
-                    setSigningIn(false);
-                  }
-                }}
+                type="submit"
                 className="mt-6 w-full rounded-2xl bg-primary px-4 py-3 font-semibold text-white disabled:opacity-50"
               >
                 {signingIn ? "Signing in…" : "Sign in"}
               </button>
 
               <button
+                type="button"
                 className="mt-4 text-sm underline disabled:opacity-50"
                 disabled={signingIn || resettingPassword}
                 onClick={requestPasswordReset}
               >
                 {resettingPassword ? "Sending reset email…" : "Forgot password?"}
               </button>
-            </>
+            </form>
           )}
 
           {message ? <div className="mt-4 text-sm text-slate-600">{message}</div> : null}
