@@ -1058,7 +1058,6 @@ export default function MembersPage() {
         phone: phone.trim() || null,
         joined_at: joinedAt || null,
         notes: notes.trim() || null,
-        updated_at: new Date().toISOString(),
         gender,
         dob: dobToSave,
         birth_month: birthMonthToSave,
