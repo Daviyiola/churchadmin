@@ -258,6 +258,13 @@ const pageProperty = {
 const leadershipTools: NikkyToolDefinition[] = [
   {
     type: "function",
+    name: "attendance_session_roster",
+    description: "List the recorded people who attended one published session, with names and separate anonymous/unresolved counts. Use for 'who attended?', 'who were the members?', or a roster follow-up. First obtain the session_id from attendance_summary or attendance_trends using the date and service in the conversation. Includes archived people and first-timers actually recorded at that session. Owner/admin only. Paginated, 50 names per page.",
+    strict: true,
+    parameters: objectSchema({ session_id: { type: "string", format: "uuid" }, page: { type: "integer", minimum: 1, maximum: 1000 } }),
+  },
+  {
+    type: "function",
     name: "prepare_member_giving_report_selection",
     description: "Resolve one exact active income category and the canonical members with identifiable giving in an exact period, so a monthly Member Giving report can list each contributor. Owner/admin only. This prepares selection data; it does not generate or confirm a report.",
     strict: true,
@@ -1322,6 +1329,50 @@ async function attendanceSummary(context: NikkyContext, args: Record<string, unk
   return result(rows.length ? "ok" : "no_records", { start_date: startDate, end_date: endDate }, data, rows.length);
 }
 
+export async function attendanceSessionRoster(context: NikkyContext, args: Record<string, unknown>) {
+  if (context.role !== "owner" && context.role !== "admin") return result("forbidden", {}, null, 0, "Attendance rosters are available only to organization owners and admins.");
+  const sessionId = text(args.session_id);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) throw new Error("Choose a published attendance session.");
+  const page = requestedPage(args);
+  const { data: session, error: sessionError } = await context.supabase.from("attendance_sessions")
+    .select("id,session_date,service_category_id,attendance_completeness,unresolved_checkins_at_publish")
+    .eq("org_id", context.organizationId).eq("id", sessionId).eq("status", "published").is("deleted_at", null).maybeSingle();
+  if (sessionError) throw new Error(sessionError.message);
+  if (!session) return result("no_records", { session_id: sessionId }, null, 0, "No accessible published session matched that identifier.");
+  const entries: Array<{ id: string; member_id: string | null; entry_source: string; count: number }> = [];
+  for (let offset = 0; ; offset += 1000) {
+    const { data, error } = await context.supabase.from("attendance_entries")
+      .select("id,member_id,entry_source,count").eq("org_id", context.organizationId).eq("session_id", sessionId)
+      .order("id").range(offset, offset + 999);
+    if (error) throw new Error(error.message);
+    entries.push(...(data ?? []));
+    if (entries.length > 20_000) throw new Error("The attendance roster exceeds the safe 20,000-entry limit.");
+    if (!data || data.length < 1000) break;
+  }
+  const recordedIds = [...new Set(entries.filter((entry) => entry.entry_source === "member" && entry.member_id && Number(entry.count) > 0).map((entry) => entry.member_id!))];
+  const people: Array<{ id: string; first_name: string | null; last_name: string | null; membership_stage: string | null }> = [];
+  for (let offset = 0; offset < recordedIds.length; offset += 200) {
+    const { data, error } = await context.supabase.from("members").select("id,first_name,last_name,membership_stage")
+      .eq("org_id", context.organizationId).in("id", recordedIds.slice(offset, offset + 200)).in("status", ["active", "archived"]);
+    if (error) throw new Error(error.message);
+    people.push(...(data ?? []));
+  }
+  const names = await categoryNames(context, [String(session.service_category_id)]);
+  const rows = people.map((person) => ({ member_id: person.id, name: memberName(person) || "Name not recorded", membership_stage: person.membership_stage }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.member_id.localeCompare(b.member_id));
+  const total = entries.reduce((sum, entry) => sum + Number(entry.count), 0);
+  const anonymous = entries.filter((entry) => entry.entry_source !== "member" || !entry.member_id).reduce((sum, entry) => sum + Number(entry.count), 0);
+  const missingNames = recordedIds.length - people.length + people.filter((person) => !memberName(person)).length;
+  const unresolved = Number(session.unresolved_checkins_at_publish ?? 0);
+  const complete = anonymous === 0 && missingNames === 0 && unresolved === 0 && session.attendance_completeness !== "unresolved_omitted" && total === rows.length;
+  return result("ok", { session_id: sessionId, start_date: session.session_date, end_date: session.session_date, page }, {
+    session_id: sessionId, date: session.session_date, service: names.get(String(session.service_category_id)) ?? "Service",
+    total_attendance: total, recorded_people_count: rows.length, anonymous_attendance_count: anonymous,
+    unavailable_member_name_count: missingNames, unresolved_checkins_at_publish: unresolved,
+    roster_complete: complete, attendees: pageRows(rows, page),
+  }, rows.length, complete ? "These are the people recorded as attending this published session." : "List the available recorded names, but do not describe them as the complete attendance total. Anonymous headcounts and unresolved or unavailable identities cannot be named.");
+}
+
 export async function attendanceMonthlySummary(
   context: NikkyContext,
   args: Record<string, unknown>,
@@ -2305,6 +2356,7 @@ export async function executeDataTool(
       output = result("forbidden", {}, null, 0,
         "This named member cohort analysis is available only to organization owners and admins.");
     }
+    else if (name === "attendance_session_roster") output = await attendanceSessionRoster(context, args);
     else if (name === "financial_summary") output = await financialSummary(context, args);
     else if (name === "compare_financial_periods") output = await financialComparison(context, args);
     else if (name === "income_breakdown") output = await breakdown(context, args, "income");
@@ -2340,6 +2392,7 @@ export async function executeDataTool(
 
     const identifiableFinancial = ["individual_giving", "prepare_member_giving_report_selection", "regular_tithe_activity", "donor_giving_patterns"].includes(name);
     const attendanceCohort = [
+      "attendance_session_roster",
       "members_attendance_history",
       "absent_members",
       "sunday_member_checkins",

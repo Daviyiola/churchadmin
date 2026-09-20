@@ -24,6 +24,7 @@ export default function AttendanceCheckinClient({ signedCode }: { signedCode: st
     if (!res.ok) throw new Error(data.error || "Unable to complete check-in. Please try again.");
     return data;
   }, []);
+  
   const load = useCallback(async () => {
     try { const body = await request(endpoint); setPayload(body); setLoadError(""); }
     catch (error) { setLoadError(error instanceof Error ? error.message : "Unable to load check-in."); }
