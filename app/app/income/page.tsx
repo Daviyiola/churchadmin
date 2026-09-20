@@ -1069,14 +1069,14 @@ export default function IncomePage() {
 
   const openCreateBatch = useCallback(() => {
     setErr("");
-    setBatchServiceId(serviceCats[0]?.id ?? "");
+    setBatchServiceId("");
     const today = new Date();
     const yyyy = today.getFullYear();
     const mm = String(today.getMonth() + 1).padStart(2, "0");
     const dd = String(today.getDate()).padStart(2, "0");
     setBatchDate(`${yyyy}-${mm}-${dd}`);
     setBatchOpen(true);
-  }, [serviceCats]);
+  }, []);
 
   /* ===================== Guards (no anys) ===================== */
 
@@ -1939,12 +1939,22 @@ export default function IncomePage() {
             className="w-full max-w-xl rounded-3xl bg-white shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="border-b px-6 py-4">
-              <div className="text-sm font-semibold">New draft batch</div>
-              <div className="text-xs text-slate-600">
-                Choose a service and date. You can create another batch with the
-                same service/date later.
+            <div className="flex items-start justify-between gap-4 border-b px-6 py-4">
+              <div>
+                <div className="text-sm font-semibold">New draft batch</div>
+                <div className="text-xs text-slate-600">
+                  Choose a service and date. You can create another batch with the
+                  same service/date later.
+                </div>
               </div>
+              <button
+                type="button"
+                onClick={() => setBatchOpen(false)}
+                aria-label="Close new income draft"
+                className="rounded-full p-1 text-xl leading-none text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+              >
+                ×
+              </button>
             </div>
 
             <div className="px-6 py-6 space-y-4">
@@ -1956,6 +1966,7 @@ export default function IncomePage() {
                   orgId={orgId ?? ""}
                   value={batchServiceId}
                   services={serviceCats}
+                  initialOpen
                   onChange={setBatchServiceId}
                   onCreated={(service) => setServiceCats((current) => [...current, { ...service, type: "services", status: "active" } as CategoryRow].sort((a,b) => a.name.localeCompare(b.name)))}
                 />

@@ -4,8 +4,8 @@ import { useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 export type ServiceOption = { id:string;name:string };
-export default function ServiceCombobox({orgId,value,services,onChange,onCreated,allowCreate=true}:{orgId:string;value:string;services:ServiceOption[];onChange:(id:string)=>void;onCreated?:(service:ServiceOption)=>void;allowCreate?:boolean}){
- const selected=services.find((s)=>s.id===value);const [query,setQuery]=useState(selected?.name??"");const [open,setOpen]=useState(false);const [error,setError]=useState("");const [busy,setBusy]=useState(false);
+export default function ServiceCombobox({orgId,value,services,onChange,onCreated,allowCreate=true,initialOpen=false}:{orgId:string;value:string;services:ServiceOption[];onChange:(id:string)=>void;onCreated?:(service:ServiceOption)=>void;allowCreate?:boolean;initialOpen?:boolean}){
+ const selected=services.find((s)=>s.id===value);const [query,setQuery]=useState(selected?.name??"");const [open,setOpen]=useState(initialOpen);const [error,setError]=useState("");const [busy,setBusy]=useState(false);
  const matches=useMemo(()=>services.filter((s)=>s.name.toLowerCase().includes(query.trim().toLowerCase())).slice(0,12),[services,query]);
  const exact=services.some((s)=>s.name.trim().toLowerCase()===query.trim().toLowerCase());
  async function create(){
